@@ -35,7 +35,20 @@ type memGrantKeys struct {
 	// loadErr, when set, is what Load answers for a key that IS there: a
 	// store that couldn't say (an enclave this jit can't reach).
 	loadErr error
+	// openErr, when set, is what every Open of a key Load hands out
+	// answers: a key that loads but can't be used (a locked keychain).
+	openErr error
 }
+
+// openFails is a key whose Open always fails, reporting the wrap of the key
+// it wraps.
+type openFails struct {
+	GrantKey
+	err error
+}
+
+func (k openFails) Open([]byte, string) ([]byte, error) { return nil, k.err }
+func (k openFails) Wrap() string                        { return keyWrap(k.GrantKey) }
 
 type memGrantKey struct{ key []byte }
 
@@ -79,6 +92,9 @@ func (m *memGrantKeys) Load(id string) (GrantKey, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %w", ErrGrantKeyAbsent, os.ErrNotExist)
 	}
+	if m.openErr != nil {
+		return openFails{m.handOut(k), m.openErr}, nil
+	}
 	return m.handOut(k), nil
 }
 
@@ -100,8 +116,14 @@ func (k *memGrantKey) Seal(dek []byte, class string) ([]byte, error) {
 	return seal(k.key, dek, []byte(class))
 }
 
+// Open marks a copy that doesn't open as ErrGrantKeyWrongKey, as the CLI's
+// adapters mark the keychain's and the enclave's.
 func (k *memGrantKey) Open(wrapped []byte, class string) ([]byte, error) {
-	return open(k.key, wrapped, []byte(class))
+	dek, err := open(k.key, wrapped, []byte(class))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrGrantKeyWrongKey, err)
+	}
+	return dek, nil
 }
 
 func (k *memGrantKey) Close() {}

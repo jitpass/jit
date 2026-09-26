@@ -291,7 +291,7 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 		var keyPtr *C.uchar
 		var keyLen C.int
 		result := C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 0)
-		if err := goErr(result); err != nil {
+		if err := readErr(result); err != nil {
 			return nil, err
 		}
 		mek := C.GoBytes(unsafe.Pointer(keyPtr), keyLen)
@@ -324,6 +324,42 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 	out := make([]byte, len(w.mek))
 	copy(out, w.mek)
 	return out, nil
+}
+
+// ErrCantReadNow is a keychain read that failed for a reason that says
+// nothing about the item: a locked keychain (errSecAuthFailed, -25293, the
+// answer a locked login keychain gives; TestHardwareLockedKeychainNeverAsks),
+// or a read that would have had to ask where no dialog may be shown
+// (errSecInteractionNotAllowed, -25308). The item may read fine a moment
+// later, so a caller must not take it for a key that is gone or wrong.
+var ErrCantReadNow = errors.New("the keychain can't be read right now")
+
+// readError is a failed read of the item's bytes, in the bridge's own
+// sentence (kw_fetch_mek's), with the OSStatus the sentence came from so a
+// caller can decide without parsing it.
+type readError struct {
+	status int32
+	msg    string
+}
+
+func (e *readError) Error() string { return e.msg }
+
+func (e *readError) Is(target error) bool {
+	return target == ErrCantReadNow && (e.status == errSecAuthFailed || e.status == errSecInteractionNotAllowed)
+}
+
+// readErr is goErr for kw_fetch_mek: the same sentence, as a *readError
+// that keeps the OSStatus.
+func readErr(r C.KWResult) error {
+	if r.success != 0 {
+		return nil
+	}
+	msg := "unknown error"
+	if r.error_message != nil {
+		msg = C.GoString(r.error_message)
+		C.free(unsafe.Pointer(r.error_message))
+	}
+	return &readError{status: int32(r.status), msg: msg}
 }
 
 // Close wipes the cached MEK and releases the mlock pinning its page. It is

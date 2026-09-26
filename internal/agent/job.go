@@ -679,7 +679,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 		// falls back to prompting, which would turn a job the human set to
 		// run while away into one that silently waits on a dialog.
 		if err := s.openJobKeys(&j, deks); err != nil {
-			if errors.As(err, &jobKeyUnloaded{}) {
+			if errors.As(err, &jobKeyUnready{}) {
 				return s.refuseJobRun(&j, c, requester, err.Error())
 			}
 			return s.refuseJob(&j, c, requester, err.Error())
@@ -802,7 +802,7 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 		// The store couldn't say whether the key is there (an enclave this
 		// jit can't reach, a lookup that failed): nothing about the job
 		// changed, so this run is refused and the next one tries again.
-		return jobKeyUnloaded{err}
+		return jobKeyUnready{"the job's key couldn't be loaded", err}
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
@@ -814,8 +814,14 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			return fmt.Errorf("%s's sealed key is damaged", sec.Var)
 		}
 		dek, oerr := key.Open(sealed, sec.Class)
-		if oerr != nil {
+		if errors.Is(oerr, ErrGrantKeyWrongKey) {
 			return fmt.Errorf("%s does not open under the job's key", sec.Var)
+		}
+		if oerr != nil {
+			// The key couldn't be used right now (a locked keychain, an
+			// enclave out of reach): nothing is known to be wrong with the
+			// job or its copy, so this is not a stop.
+			return jobKeyUnready{"the job's key couldn't open " + sec.Var, oerr}
 		}
 		deks[sec.DeviceDigest] = dek
 	}
@@ -837,19 +843,24 @@ func (s *Server) refuseJob(j *job.Job, c *caller, requester, why string) Respons
 	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. It won't run until you approve it again", j.Name, why)}
 }
 
-// jobKeyUnloaded is openJobKeys failing to load the job's key for a reason
-// that does not prove it gone (ErrGrantKeyAbsent does): not a stop.
-type jobKeyUnloaded struct{ err error }
-
-func (e jobKeyUnloaded) Error() string {
-	return fmt.Sprintf("the job's key couldn't be loaded (%s)", e.err)
+// jobKeyUnready is openJobKeys failing for a reason that proves nothing
+// about the job, its key or its copies: a Load that doesn't prove the key
+// gone (ErrGrantKeyAbsent does), or an Open that doesn't prove the copy
+// wrong (ErrGrantKeyWrongKey does). Not a stop.
+type jobKeyUnready struct {
+	what string
+	err  error
 }
 
-func (e jobKeyUnloaded) Unwrap() error { return e.err }
+func (e jobKeyUnready) Error() string { return fmt.Sprintf("%s (%s)", e.what, e.err) }
+
+func (e jobKeyUnready) Unwrap() error { return e.err }
 
 // refuseJobRun is refuseJob for a cause outside the job: the run did not
 // happen and says why, but the job is NOT stopped, so the next run tries
-// again without a new approval.
+// again without a new approval. Its event says "didn't run", never
+// "refused": the app reads a job_run error containing "refused" as a stop
+// and notifies "<job> stopped running" (jit-app, noteJobStop).
 func (s *Server) refuseJobRun(j *job.Job, c *caller, requester, why string) Response {
 	s.jobMu.Lock()
 	if cur, ok := s.jobs[j.Name]; ok && cur.ApprovedUnix == j.ApprovedUnix {
@@ -858,7 +869,7 @@ func (s *Server) refuseJobRun(j *job.Job, c *caller, requester, why string) Resp
 		_ = s.saveJobsLocked()
 	}
 	s.jobMu.Unlock()
-	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why)
+	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": didn't run, "+why)
 	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. The job wasn't stopped; the next run tries again", j.Name, why)}
 }
 

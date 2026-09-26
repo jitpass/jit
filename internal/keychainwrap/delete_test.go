@@ -368,6 +368,9 @@ var promptingReadCallers = map[string]map[string]bool{
 	"fetchMEK": {
 		"FetchMEK": true, "WrapKeyLabeled": true, "UnwrapKeyLabeled": true,
 		"RequireUserPresence": true, "PromoteStagedRekeyMEK": true,
+		// A grant key's Open: its own item, which the unwrap it replaced
+		// (UnwrapKeyLabeled) read the same way.
+		"Open": true,
 	},
 }
 

@@ -774,7 +774,7 @@ func (k keychainGrantKeys) Create(id string) (agent.GrantKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return key, nil
+	return markedKey{key, keychainwrap.ErrWrongKey}, nil
 }
 
 func (k keychainGrantKeys) Load(id string) (agent.GrantKey, error) {
@@ -782,7 +782,34 @@ func (k keychainGrantKeys) Load(id string) (agent.GrantKey, error) {
 	if err != nil {
 		return nil, absentAs(err, keychainwrap.ErrNoGrantKey)
 	}
-	return key, nil
+	return markedKey{key, keychainwrap.ErrWrongKey}, nil
+}
+
+// markedKey is a backend's grant key whose Open marks the backend's own
+// "the copy doesn't open under this key" (wrong) as
+// agent.ErrGrantKeyWrongKey, the one Open error that stops a never-ask job
+// for good; every other Open error (a locked keychain, an enclave this jit
+// can't use right now) passes through unmarked, and refuses one run.
+type markedKey struct {
+	agent.GrantKey
+	wrong error
+}
+
+func (k markedKey) Open(wrapped []byte, class string) ([]byte, error) {
+	dek, err := k.GrantKey.Open(wrapped, class)
+	if errors.Is(err, k.wrong) {
+		return nil, fmt.Errorf("%w: %w", agent.ErrGrantKeyWrongKey, err)
+	}
+	return dek, err
+}
+
+// Wrap is the wrapped key's, so the agent still tells the two kinds apart:
+// the keychain's key has none and is the keychain wrap.
+func (k markedKey) Wrap() string {
+	if w, ok := k.GrantKey.(interface{ Wrap() string }); ok {
+		return w.Wrap()
+	}
+	return agent.GrantWrapKeychain
 }
 
 // absentAs marks a backend's own "no such key" (gone) as
@@ -811,7 +838,7 @@ func (e enclaveGrantKeys) Create(id string) (agent.GrantKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return key, nil
+	return markedKey{key, secureenclave.ErrWrongKey}, nil
 }
 
 func (e enclaveGrantKeys) Load(id string) (agent.GrantKey, error) {
@@ -819,7 +846,7 @@ func (e enclaveGrantKeys) Load(id string) (agent.GrantKey, error) {
 	if err != nil {
 		return nil, absentAs(err, secureenclave.ErrNoGrantKey)
 	}
-	return key, nil
+	return markedKey{key, secureenclave.ErrWrongKey}, nil
 }
 
 func (e enclaveGrantKeys) Present(id string) (bool, error) { return e.keys.Present(id) }

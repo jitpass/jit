@@ -26,6 +26,7 @@ const (
 	statusItemNotFound          = -25300 // errSecItemNotFound
 	statusMissingEntitlement    = -34018 // errSecMissingEntitlement
 	statusInteractionNotAllowed = -25308 // errSecInteractionNotAllowed: locked, or no UI allowed
+	statusParam                 = -50    // errSecParam: what a sealed blob that won't decrypt gets (measured)
 	statusUserCanceled          = -128   // errSecUserCanceled
 	statusLAUserCancel          = -2     // LAErrorUserCancel
 	statusLASystemCancel        = -4     // LAErrorSystemCancel
@@ -52,6 +53,12 @@ var (
 	// (or no dialog may be shown). Spike S4 measured it about 9 s after a
 	// lock for a WhenUnlocked key.
 	ErrLocked = errors.New("the Mac is locked")
+
+	// ErrWrongKey: the key was used and the sealed bytes do not open under
+	// it (the AES-GCM step of ECIES failed: tampered or damaged bytes, or
+	// bytes sealed to another key), or what opened is not what was sealed
+	// for this use (GrantKey's class). Nothing about reaching the key.
+	ErrWrongKey = errors.New("the sealed bytes don't open under this key")
 )
 
 // classify turns a status into one of the errors above where one applies,
@@ -182,7 +189,16 @@ func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 	var out *C.uchar
 	var n C.int
 	n0 := C.int(len(sealed)) // #nosec G115 -- bounded by maxBytes above
-	if err := goResult(C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n)); err != nil {
+	r := C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n)
+	// A blob that won't decrypt is errSecParam from SecKeyCreateDecryptedData
+	// ("ECIES: Failed to aes-gcm decrypt data", TestHardwareKeyNeverAsking);
+	// only se_open's use of the key says it, so it is told apart here, not
+	// in classify.
+	param := r.success == 0 && int(r.status) == statusParam
+	if err := goResult(r); err != nil {
+		if param {
+			return nil, fmt.Errorf("%w: %w", ErrWrongKey, err)
+		}
 		return nil, err
 	}
 	return takeBytes(out, n), nil

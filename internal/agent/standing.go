@@ -88,6 +88,14 @@ var ErrGrantKeyUnreachable = errors.New("the Secure Enclave could not be reached
 // so any other Load error is a refusal of that one run.
 var ErrGrantKeyAbsent = errors.New("the key is gone")
 
+// ErrGrantKeyWrongKey is a GrantKey's Open saying the sealed copy does not
+// open under the key: its authentication failed (tampered or damaged bytes,
+// another key, another class). Only this makes a never-ask job's stop
+// sticky at Open. Any other Open error (a locked keychain, an enclave this
+// jit can't use right now, a read that failed) says nothing about the copy,
+// so it refuses that one run.
+var ErrGrantKeyWrongKey = errors.New("the sealed copy does not open under this key")
+
 // keyKeptNote is what a revoke or a remove says, instead of claiming a
 // delete, when the key its entries are sealed for is in an enclave this
 // copy of jit cannot reach.

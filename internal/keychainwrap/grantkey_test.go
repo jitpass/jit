@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -231,5 +232,84 @@ func TestGrantKeysList(t *testing.T) {
 	}
 	if len(ids) != 2 || !got["g-00000001"] || !got["j-00000002"] {
 		t.Fatalf("List = %v", ids)
+	}
+}
+
+// Open tells a copy that doesn't open under the key (ErrWrongKey) from a
+// keychain that won't hand the key over right now (ErrCantReadNow: locked,
+// or a read that would have had to ask), which says nothing about the copy.
+// The keychain's refusal is faked (GrantKey.read): the item itself is real
+// and TEST-ONLY, so Load and the presence check are the production path;
+// TestReadErrorKeepsItsStatus pins what fetchMEK's own failure carries.
+func TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead(t *testing.T) {
+	keys := testGrantKeys(t)
+	id := testGrantID(t, keys, "g-open")
+	key, err := keys.Create(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Close()
+	sealed, err := key.Seal(bytes.Repeat([]byte{0x07}, 32), "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := key.Open(sealed, "aws"); !errors.Is(err, ErrWrongKey) || errors.Is(err, ErrCantReadNow) {
+		t.Errorf("another class: %v, want ErrWrongKey", err)
+	}
+	tampered := append([]byte(nil), sealed...)
+	tampered[len(tampered)-1] ^= 1
+	if _, err := key.Open(tampered, "mcp"); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("tampered: %v, want ErrWrongKey", err)
+	}
+
+	for status, cantRead := range map[int32]bool{
+		errSecInteractionNotAllowed: true,
+		errSecAuthFailed:            true,
+		-25291:                      false, // errSecNotAvailable: neither a lock nor a wrong key
+	} {
+		// A fresh Load: its first Open reads the keychain.
+		loaded, err := keys.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded.read = func() ([]byte, error) {
+			return nil, &readError{status: status, msg: fmt.Sprintf("reading failed, OSStatus=%d", status)}
+		}
+		_, err = loaded.Open(sealed, "mcp")
+		if errors.Is(err, ErrCantReadNow) != cantRead || errors.Is(err, ErrWrongKey) {
+			t.Errorf("OSStatus=%d: Open = %v; ErrCantReadNow should be %v, and never ErrWrongKey", status, err, cantRead)
+		}
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("OSStatus=%d", status)) {
+			t.Errorf("OSStatus=%d: the cause was lost: %v", status, err)
+		}
+	}
+}
+
+func TestNewTestingGrantKeysRefusesProductionNames(t *testing.T) {
+	for _, service := range []string{grantService, "com.jitpass.grant.key.other"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewTestingGrantKeys(%q) did not panic", service)
+				}
+			}()
+			NewTestingGrantKeys(service)
+		}()
+	}
+}
+
+// fetchMEK's failure keeps its OSStatus behind the bridge's own sentence,
+// and only a lock or a read that would have had to ask is ErrCantReadNow.
+func TestReadErrorKeepsItsStatus(t *testing.T) {
+	for status, want := range map[int32]bool{
+		errSecAuthFailed:            true,
+		errSecInteractionNotAllowed: true,
+		errSecItemNotFound:          false,
+		-34018:                      false,
+	} {
+		e := &readError{status: status, msg: "the bridge's sentence"}
+		if errors.Is(e, ErrCantReadNow) != want || e.Error() != "the bridge's sentence" {
+			t.Errorf("OSStatus=%d: ErrCantReadNow %v (want %v), text %q", status, errors.Is(e, ErrCantReadNow), want, e)
+		}
 	}
 }

@@ -78,8 +78,11 @@ func TestHardwareKeyNeverAsking(t *testing.T) {
 			t.Fatalf("open: %v", err)
 		}
 		ct[len(ct)-1] ^= 1
-		if _, err := h.open(ct, "x"); err == nil {
-			t.Fatal("a tampered blob opened")
+		// Measured 2026-09-26: OSStatus -50, "ECIES: Failed to aes-gcm
+		// decrypt data". It is what makes a never-ask job's stop sticky, so
+		// it must not be mistaken for a key that can't be used right now.
+		if _, err := h.open(ct, "x"); !errors.Is(err, ErrWrongKey) {
+			t.Fatalf("a tampered blob: %v, want ErrWrongKey", err)
 		}
 		if err := h.remove(); err != nil {
 			t.Fatal(err)

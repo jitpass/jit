@@ -538,6 +538,107 @@ func TestNeverJobWhoseKeyWontLoadIsNotStopped(t *testing.T) {
 	}
 }
 
+// A non-sticky refusal must not read as a stop. The app notifies "<job>
+// stopped running" for any job_run error whose cause contains "refused"
+// (jit-app noteJobStop), so its event says "didn't run" instead, and still
+// names the cause.
+func TestNeverJobRunRefusalIsNotAnnouncedAsAStop(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	r.keys.mu.Lock()
+	r.keys.loadErr = errors.New("grant key: the Mac is locked")
+	r.keys.mu.Unlock()
+	if _, err := r.c.JobRun("notion-guests"); err == nil {
+		t.Fatal("ran with a key that couldn't be loaded")
+	}
+	const want = "notion-guests: didn't run, the job's key couldn't be loaded (grant key: the Mac is locked)"
+	if c := lastCause(t, r.s); c != want {
+		t.Fatalf("event cause:\n got %q\nwant %q", c, want)
+	}
+	if strings.Contains(lastCause(t, r.s), "refused") {
+		t.Fatal("the app would announce this as a stop")
+	}
+}
+
+// A key that loads but can't be used right now (a locked keychain answers
+// Open's read with errSecInteractionNotAllowed) proves nothing about the
+// job's copies: the run is refused naming the cause, and the job is NOT
+// stopped. It used to be stopped for good as "does not open under the
+// job's key".
+func TestNeverJobWhoseKeyWontOpenNowIsNotStopped(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	r.keys.mu.Lock()
+	r.keys.openErr = errors.New("grant key: the keychain can't be read right now (OSStatus=-25308)")
+	r.keys.mu.Unlock()
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil {
+		t.Fatal("ran with a key that couldn't open")
+	}
+	const want = "agent: job_run: notion-guests: the job's key couldn't open NOTION_API_KEY (grant key: the keychain can't be read right now (OSStatus=-25308)). The job wasn't stopped; the next run tries again"
+	if err.Error() != want {
+		t.Fatalf("refusal:\n got %q\nwant %q", err, want)
+	}
+	if j := r.stored(t); j.Stopped != "" {
+		t.Fatalf("stopped = %q; a key that can't be used right now must not stop the job", j.Stopped)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("prompted or ran")
+	}
+	r.keys.mu.Lock()
+	r.keys.openErr = nil
+	r.keys.mu.Unlock()
+	if _, err := r.c.JobRun("notion-guests"); err != nil || r.runs() != 1 {
+		t.Fatalf("the next run, with the key opening again: %v (runs %d)", err, r.runs())
+	}
+}
+
+// A copy that doesn't open under the key (ErrGrantKeyWrongKey: tampered,
+// sealed for another key or class) is the sticky stop, as before.
+func TestNeverJobWhoseCopyDoesntOpenStaysStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		openErr error
+	}{
+		{"marked by the store", fmt.Errorf("%w: cipher: message authentication failed", ErrGrantKeyWrongKey)},
+		{"a real tag mismatch", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newJobRig(t)
+			if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+				t.Fatal(err)
+			}
+			if tc.openErr != nil {
+				r.keys.mu.Lock()
+				r.keys.openErr = tc.openErr
+				r.keys.mu.Unlock()
+			} else {
+				// Another key under the job's id: its copies fail GCM.
+				id := r.stored(t).KeyID
+				_ = r.keys.Delete(id)
+				if _, err := r.keys.Create(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := r.c.JobRun("notion-guests")
+			if err == nil || !strings.Contains(err.Error(), "NOTION_API_KEY does not open under the job's key. It won't run until you approve it again") {
+				t.Fatalf("run: %v", err)
+			}
+			if got := r.stored(t).Stopped; got != "NOTION_API_KEY does not open under the job's key" {
+				t.Fatalf("stopped = %q", got)
+			}
+			if c := lastCause(t, r.s); !strings.HasPrefix(c, "notion-guests: refused, ") {
+				t.Fatalf("a stop's event must still read as one: %q", c)
+			}
+		})
+	}
+}
+
 // A job that could not be saved must not leave its key behind.
 func TestNeverJobThatCannotBeSavedLeavesNoKey(t *testing.T) {
 	r := newJobRig(t)

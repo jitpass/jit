@@ -7,6 +7,7 @@ package secureenclave
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -144,4 +145,63 @@ func TestHardwareGrantKey(t *testing.T) {
 	if ids, err := g.List(); err != nil || len(ids) != 0 {
 		t.Fatalf("List after Delete = %v, %v; want none", ids, err)
 	}
+}
+
+// Open tells a copy that doesn't open under the key (ErrWrongKey: the
+// class, a damaged frame; the hardware's -50 is pinned in
+// TestHardwareKeyNeverAsking) from a key that can't be used right now
+// (the enclave's own ErrLocked or ErrUnavailable), which says nothing about
+// the copy and must not be taken for it.
+func TestGrantKeyOpenTellsAWrongKeyFromAnUnusableOne(t *testing.T) {
+	g, keys := fakeGrantKeys(t)
+	k, err := g.Create("g-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := k.Seal(testMEK(t), "aws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Open(sealed, "mcp"); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("another class: %v, want ErrWrongKey", err)
+	}
+	fake := keys["com.jitpass.grant.TEST-ONLY.g-1"]
+	short, err := fake.seal([]byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Open(short, "aws"); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("a damaged frame: %v, want ErrWrongKey", err)
+	}
+	for _, cause := range []error{ErrLocked, ErrUnavailable} {
+		fake.openErr = cause
+		_, err := k.Open(sealed, "aws")
+		if !errors.Is(err, cause) || errors.Is(err, ErrWrongKey) {
+			t.Errorf("the enclave answering %v: Open = %v, want it, and not ErrWrongKey", cause, err)
+		}
+	}
+}
+
+// The lookup-only store other packages' tests use answers Load from its
+// lookup, with Load's own errors: a key it says is absent is ErrNoGrantKey.
+func TestLookupOnlyGrantKeysAnswerThroughLoad(t *testing.T) {
+	g := NewTestingGrantKeysLookup("com.jitpass.grant.TEST-ONLY.", func(tag string) (bool, error) {
+		return tag == "com.jitpass.grant.TEST-ONLY.there", nil
+	}, ErrLocked)
+	if _, err := g.Load("gone"); !errors.Is(err, ErrNoGrantKey) {
+		t.Fatalf("Load of an absent key = %v, want ErrNoGrantKey", err)
+	}
+	k, err := g.Load("there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Open([]byte{1}, "aws"); !errors.Is(err, ErrLocked) {
+		t.Fatalf("Open = %v, want the openErr it was given", err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a prefix without TEST-ONLY was accepted")
+		}
+	}()
+	NewTestingGrantKeysLookup(grantTagPrefix, nil, nil)
 }

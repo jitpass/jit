@@ -14,7 +14,10 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"unsafe"
+
+	"github.com/jitpass/jit/internal/unlockreason"
 )
 
 // A standing grant's own key (design/standing-grants.md): one plain keychain
@@ -62,6 +65,17 @@ type GrantKeys struct {
 	service string
 }
 
+// NewTestingGrantKeys returns a store over TEST-ONLY keychain items, for
+// another package's tests of the real keychain path (internal/cli's grant
+// key adapters). It panics on a service without "TEST-ONLY", as NewTesting
+// does.
+func NewTestingGrantKeys(service string) GrantKeys {
+	if !strings.Contains(service, "TEST-ONLY") || service == grantService {
+		panic("keychainwrap.NewTestingGrantKeys: service " + service + " is not a TEST-ONLY identifier")
+	}
+	return GrantKeys{service: service}
+}
+
 func (g GrantKeys) serviceName() string {
 	if g.service == "" {
 		return grantService
@@ -73,6 +87,9 @@ func (g GrantKeys) serviceName() string {
 // whose "missing" error names the grant rather than the vault.
 type GrantKey struct {
 	w *Wrapper
+	// read, when set, stands in for Open's keychain read: a test's way to
+	// have the keychain refuse to read an item that is there.
+	read func() ([]byte, error)
 }
 
 func (g GrantKeys) wrapper(id string) (*Wrapper, error) {
@@ -177,9 +194,33 @@ func (k *GrantKey) Seal(dek []byte, class string) ([]byte, error) {
 	return k.w.WrapKeyLabeled(dek, "", class)
 }
 
-// Open unwraps a copy Seal made.
+// ErrWrongKey is Open saying the copy does not open under this key: the
+// AES-GCM authentication failed (tampered or damaged bytes, another key, or
+// another class). A key Open couldn't read (ErrCantReadNow, or any other
+// keychain failure) is not this: it says nothing about the copy.
+var ErrWrongKey = errors.New("the sealed copy does not open under this grant's key")
+
+// Open unwraps a copy Seal made. Reading the key (the keychain, on the
+// first Open after a Load) fails with the keychain's own error, which is
+// ErrCantReadNow for a locked keychain; only the unwrap failing is
+// ErrWrongKey.
 func (k *GrantKey) Open(wrapped []byte, class string) ([]byte, error) {
-	return k.w.UnwrapKeyLabeled(wrapped, "", class)
+	var key []byte
+	var err error
+	if k.read != nil {
+		key, err = k.read()
+	} else {
+		key, err = k.w.fetchMEK(unlockreason.Read)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("grant key: %w", err)
+	}
+	defer wipe(key)
+	dek, err := open(key, wrapped, []byte(class))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrWrongKey, err)
+	}
+	return dek, nil
 }
 
 // Close wipes the cached key bytes; the keychain item stays.

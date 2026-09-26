@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,7 +92,8 @@ func (m *memMover) LoadWrap(id, wrap string) (GrantKey, error) {
 	defer m.mu.Unlock()
 	k, ok := m.of(wrap)[id]
 	if !ok {
-		return nil, os.ErrNotExist
+		// Marked as the CLI's store marks a key its backend proves gone.
+		return nil, fmt.Errorf("%w: %w", ErrGrantKeyAbsent, os.ErrNotExist)
 	}
 	return handOut(wrap, k), nil
 }
@@ -305,6 +307,21 @@ func TestMoveGrantKeysMovesANeverAskJob(t *testing.T) {
 	deks := map[string][]byte{}
 	if err := s.openJobKeys(reloaded["notion-guests"], deks); err != nil || !bytes.Equal(deks["dd"], dek) {
 		t.Fatalf("the moved job does not open: %v", err)
+	}
+}
+
+// memMover marks a key it doesn't hold as ErrGrantKeyAbsent, as the CLI's
+// store does (cli's TestGrantKeyAdaptersMarkAGoneKeyAbsent), so a job
+// whose key is gone from the kind its secrets are sealed for is the sticky
+// "gone" stop here too, not a refusal of one run.
+func TestAJobWhoseKeyAMoverLacksIsGone(t *testing.T) {
+	store := newMemMover()
+	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-gone",
+		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: "00", Wrap: GrantWrapEnclave}}}
+	s := &Server{GrantKeys: store}
+	err := s.openJobKeys(j, map[string][]byte{})
+	if err == nil || err.Error() != "the job's key is gone" || errors.As(err, &jobKeyUnready{}) {
+		t.Fatalf("openJobKeys with the key gone = %v, want the sticky gone stop", err)
 	}
 }
 
