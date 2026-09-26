@@ -23,7 +23,7 @@ jit mount register <project dir> [flags]
 ### Examples
 
 ```
-  jit mount register ~/Security-Ops/custom_scripts/hibob2
+  jit mount register ~/code/billing
 ```
 
 ### Options

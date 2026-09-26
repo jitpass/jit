@@ -52,11 +52,11 @@ Two things keep an approval meaning what you approved. jit fingerprints
 the job's folder, so a script, a library or a profile edited afterwards
 stops the job until you approve it again. And the secrets are fixed at
 approval: editing the profile later never changes what the job gets.`,
-	Example: `  cd ~/Security-Ops/custom_scripts/notion
-  jit job allow notion-guests -- .venv/bin/python list_guest_users.py
-  jit job run notion-guests
+	Example: `  cd ~/code/scripts/notion
+  jit job allow notion-export -- .venv/bin/python export_pages.py
+  jit job run notion-export
   jit job list
-  jit job remove notion-guests`,
+  jit job remove notion-export`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
@@ -80,12 +80,12 @@ to the tool by path, and changes there never stop the job.
 Some commands are refused because they hand the values straight back:
 env, cat, echo, or a program written into the command (python -c,
 sh -c, node -e). Save it as a file and approve that file.`,
-	Example: `  jit job allow notion-guests --show INTERNAL_DOMAINS \
-    --output ~/Security-Ops/reports_and_archives/csv_reports \
-    -- .venv/bin/python list_guest_users.py`,
+	Example: `  jit job allow notion-export --show NOTION_WORKSPACE \
+    --output ~/code/scripts/notion/out \
+    -- .venv/bin/python export_pages.py`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
-			return fmt.Errorf("jit job allow: give a name and the command, e.g. jit job allow notion-guests -- .venv/bin/python list_guest_users.py")
+			return fmt.Errorf("jit job allow: give a name and the command, e.g. jit job allow notion-export -- .venv/bin/python export_pages.py")
 		}
 		return nil
 	},

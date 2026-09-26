@@ -27,8 +27,8 @@ jit profile drop <name> VAR... [flags]
 ### Examples
 
 ```
-  jit profile drop hibob HIBOB_BASE_URL
-  jit profile drop hibob HIBOB_BASE_URL HIBOB_FIELDS --dry-run
+  jit profile drop billing BILLING_BASE_URL
+  jit profile drop billing BILLING_BASE_URL BILLING_REGION --dry-run
 ```
 
 ### Options

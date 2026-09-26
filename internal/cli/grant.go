@@ -76,15 +76,15 @@ A grant covers exactly the secrets the named profiles resolve to at
 creation time, and every serve under it is recorded in 'jit audit'. If one
 of those secrets is rotated it stops being served and 'jit grant list'
 says so; the rest keep working.`,
-	Example: `  # let claude use the jamf profile for 8 hours - current sessions and
+	Example: `  # let claude use the myapp profile for 8 hours - current sessions and
   # any started from this terminal within the window
-  jit grant --process claude --profile jamf --for 8h
+  jit grant --process claude --profile myapp --for 8h
 
   # no deadline: until you revoke it, across restarts and reboots
-  jit grant --process claude --profile mcp-caido --until-revoked
+  jit grant --process claude --profile mcp-github --until-revoked
 
   # several profiles, for one exact running process only
-  jit grant --pid 4211 --profile jamf --profile aws-ci --for 1d
+  jit grant --pid 4211 --profile myapp --profile aws-ci --for 1d
 
   # see, shorten, or end what is open
   jit grant list
@@ -185,7 +185,7 @@ func runGrantCreate(out io.Writer) error {
 		return fmt.Errorf("--process is required (the running program to grant to; tab-completes from recent callers)")
 	}
 	if len(grantProfileNames) == 0 {
-		return fmt.Errorf("--profile is required (repeat it for several: --profile jamf --profile aws-ci)")
+		return fmt.Errorf("--profile is required (repeat it for several: --profile myapp --profile aws-ci)")
 	}
 	// A grant lasts until a deadline or until revoked, never both and never
 	// neither: --until-revoked is an explicit flag so that omitting --for

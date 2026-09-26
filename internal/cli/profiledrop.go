@@ -81,8 +81,8 @@ var profileDropCmd = &cobra.Command{
 		"A `.pointers` companion left beside a live mount by an older jit is\n" +
 		"rewritten to match; none is created.\n\n" +
 		"No value is read, so no Touch ID is needed.",
-	Example: "  jit profile drop hibob HIBOB_BASE_URL\n" +
-		"  jit profile drop hibob HIBOB_BASE_URL HIBOB_FIELDS --dry-run",
+	Example: "  jit profile drop billing BILLING_BASE_URL\n" +
+		"  jit profile drop billing BILLING_BASE_URL BILLING_REGION --dry-run",
 	Args:              requireArgs(2, -1, "a profile name and at least one variable"),
 	ValidArgsFunction: completeProfileDropArgs,
 	SilenceUsage:      true,

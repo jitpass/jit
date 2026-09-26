@@ -31,7 +31,7 @@ var doctorIgnoreCmd = &cobra.Command{
 		"fails the run, flips ok or trips --strict, and the report folds it into one\n" +
 		"[ignored] line at the end (--show-ignored lists them). Nothing is fixed: a\n" +
 		"problem you ignore is still broken, doctor just stops counting it.\n\n" +
-		"A name is what a row leads with: a profile (aws-dev, mcp-okta), a file\n" +
+		"A name is what a row leads with: a profile (aws-dev, mcp-github), a file\n" +
 		"(~/.clisso.yaml, ~/ or absolute), or, for a section whose rows have no\n" +
 		"name of their own, the section (backup, orphan, storage-format). All of a\n" +
 		"profile's rows in one section are one finding. A name in more than one\n" +
@@ -45,7 +45,7 @@ var doctorIgnoreCmd = &cobra.Command{
 		"write it; doctor itself never does. With --format json it prints\n" +
 		"{ignored, unignored, error}, with the same exit codes.",
 	Example: "  jit doctor ignore aws-dev aws-admin\n" +
-		"  jit doctor ignore --kind config-deleted mcp-okta-mcp-server\n" +
+		"  jit doctor ignore --kind config-deleted mcp-github-server\n" +
 		"  jit doctor ignore --format json backup",
 	Args:         requireArgs(1, -1, "the name of a finding: the profile, file or section its row leads with"),
 	SilenceUsage: true,

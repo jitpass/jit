@@ -25,9 +25,9 @@ jit profile attach <config> [profile]... [flags]
 ### Examples
 
 ```
-  jit profile attach ~/Security-Ops/.mcp.json
-  jit profile attach ~/Security-Ops/.mcp.json mcp-okta
-  jit profile attach --dry-run --format json ~/Security-Ops/.mcp.json
+  jit profile attach ~/code/myapp/.mcp.json
+  jit profile attach ~/code/myapp/.mcp.json mcp-github
+  jit profile attach --dry-run --format json ~/code/myapp/.mcp.json
 ```
 
 ### Options

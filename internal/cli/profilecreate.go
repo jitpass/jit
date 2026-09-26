@@ -60,9 +60,9 @@ var profileCreateCmd = &cobra.Command{
 		"manifest is never overwritten without --force.\n\n" +
 		"Only names are read from the vault and only names are written, so no\n" +
 		"value is decrypted and no Touch ID is needed.",
-	Example: "  jit profile create mcp-jamf\n" +
-		"  jit profile create mcp-jamf --global\n" +
-		"  jit profile create mcp-jamf --from jamf\n" +
+	Example: "  jit profile create mcp-sentry\n" +
+		"  jit profile create mcp-sentry --global\n" +
+		"  jit profile create mcp-sentry --from sentry\n" +
 		"  jit profile create deploy AWS_SECRET=aws-prod/SECRET DB_URL=rds/URL",
 	Args:              requireArgs(1, -1, "a profile name"),
 	ValidArgsFunction: completeProfileCreateArgs,

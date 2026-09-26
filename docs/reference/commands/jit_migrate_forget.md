@@ -24,8 +24,8 @@ jit migrate forget <pointer file>... [flags]
 ### Examples
 
 ```
-  jit migrate forget ~/Security-Ops/custom_scripts/wiz/.env.pointers
-  jit migrate forget --dry-run ~/Security-Ops/custom_scripts/wiz/.env.pointers
+  jit migrate forget ~/code/myapp/.env.pointers
+  jit migrate forget --dry-run ~/code/myapp/.env.pointers
 ```
 
 ### Options
