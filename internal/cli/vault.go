@@ -1738,6 +1738,8 @@ var vaultImportCmd = &cobra.Command{
 		"you've imported every recovery file you have: it lists the secrets that\n" +
 		"may still not open, confirms unless --yes, and keeps the lost key's\n" +
 		"files under a dated name. It takes no file and needs no Touch ID.",
+	Example: "  jit vault import ~/jit-recovery.json\n" +
+		"  jit vault import --finish    # after a lost key, once every recovery file is in",
 	Args: func(cmd *cobra.Command, args []string) error {
 		if vaultImportFinish {
 			if len(args) > 0 {

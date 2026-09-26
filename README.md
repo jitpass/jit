@@ -623,7 +623,7 @@ secrets, grants and AI jobs stay as they are, and nothing is re-encrypted.
 <summary><b>Prefer the terminal?</b> Moving the key, and its limits</summary>
 
 ```sh
-jit vault export                            # a current recovery file is required first
+jit vault export <file>                     # a current recovery file is required first
 jit vault rekey --wrapper secure-enclave    # move the vault key into the Secure Enclave
 jit vault rekey --wrapper keychain          # move it back, any time
 ```
@@ -631,7 +631,8 @@ jit vault rekey --wrapper keychain          # move it back, any time
 It needs an Apple Silicon Mac and the `jit` inside JitPass.app; a `jit`
 installed on its own cannot reach the Secure Enclave, and says so. The key
 cannot follow you to a new Mac, so jit refuses the move until you have a
-current recovery file.
+current recovery file. [The Secure Enclave page](./docs/vault/secure-enclave.md)
+covers moving back, a new or erased Mac, and what `jit doctor` may report.
 
 </details>
 

@@ -140,8 +140,10 @@ you the facts to approve or cancel on.
 
 ## 5. Nothing leaves your machine
 
-The vault is a local encrypted store bound to this machine's login Keychain.
-Nothing syncs anywhere. There is no account to create, no cloud to trust, no
+The vault is a local encrypted store bound to this machine: its master key
+is in your login Keychain, or, if you choose, in your Mac's
+[Secure Enclave](./vault/secure-enclave.md), where it can't be copied off
+the Mac at all. Nothing syncs anywhere. There is no account to create, no cloud to trust, no
 telemetry, and it works fully offline. jit is free for personal and internal
 use.
 
@@ -228,9 +230,9 @@ No copy of the value ever lands in jit's vault. See
 jit is a local, per-developer tool by design, and it is still early. Landing
 next:
 
-- **Keys in the Secure Enclave.** Hardware-backed, OS-level enforcement of the
-  Touch ID gate. The blocker isn't signing (releases are Developer-ID signed)
-  but packaging: the entitlement it needs can only live in an
-  `.app`-bundled agent, which is its own piece of work.
+- **The Secure Enclave by default.** Since 2.3.0 the vault key can move into
+  the [Secure Enclave](./vault/secure-enclave.md), where the enclave, not
+  jit, enforces the Touch ID gate. It is opt-in for now; making it the
+  default for new vaults comes later.
 - **More platforms.** jit goes deep on macOS first; Linux and beyond are on the
   roadmap.

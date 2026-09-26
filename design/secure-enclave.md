@@ -1,6 +1,6 @@
 # Secure Enclave: the master key behind hardware, nothing else moves
 
-**Status: jit built and merged (B1–B4, C1–C2, 2026-09-25); the app side (jit-app #52, #53) waits on a signed test build, so no user can move a vault yet. `design/secure-enclave-plan.md` has the per-step table; the spikes are in `spike/secure-enclave-mek/FINDINGS.md`.** Read
+**Status: shipped in v2.3.0 as an opt-in (2026-09-26).** jit's side (B1–B5, C1–C5) and the app's (jit-app #52, #53 for the helper bundle and its entitlement, #56 for the Settings › Protection row) are merged, and `jit vault rekey --wrapper` is shown in help. Rotating the master key of a vault already in the enclave is not in v2.3.0: plain `jit vault rekey` refuses it and says it comes in a later version. It is planned for 2.4 (`design/secure-enclave-rotation.md`, #174), and v2.3.0 reads both key slots so a vault 2.4 rotated still opens (see "Rotating the MEK" below). `design/secure-enclave-plan.md` has the per-step table; the spikes are in `spike/secure-enclave-mek/FINDINGS.md`; the user page is `docs/vault/secure-enclave.md`. Read
 `standing-grants.md` ("For the Secure Enclave move") and
 `agent-jobs.md` (branch `ai-jobs`) first; this page keeps both working
 unchanged.
@@ -198,9 +198,19 @@ then deletes the sealed file and the enclave key. An item already under
 the vault key's name that it can't read quietly
 (`keychainwrap.ErrExistingKeyUnreadable`) is never written over: the move
 stops with nothing changed, worded by the cause as above. **The reverse ships
-tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK
-itself stays today's `vault rekey`; under the enclave, staging a new MEK is
-sealing it, which S1b shows needs no prompt.
+tested before the forward** (`menu-bar-app.md:133`). **Rotating the MEK**
+itself stays `vault rekey`; under the enclave, staging a new MEK is sealing
+it, which S1b shows needs no prompt. The enclave half of rotation is
+not in v2.3.0, which refuses it and names a later version; it is planned
+for 2.4 (`design/secure-enclave-rotation.md`, #174). v2.3.0 reads both
+key slots, so a vault 2.4 rotated still opens. Until then, rotating an
+enclave vault's key is: move it back (`--wrapper keychain`), `vault rekey`,
+a new `vault export` (the rotation rewrites every envelope, so D3's check
+sees the old export as stale), move it in again. Rotation on either store
+also stops every AI job and grant until it is approved again: each pins the
+digest of its secrets' wrapped DEKs (`job.go` `DeviceDigest`, checked in
+`job_run`; a standing grant's secrets are keyed by the same digest), and
+`RewrapAll` changes every one. The fix comes with 2.4's rotation work.
 
 **What status and doctor say about the key** (files only, never a prompt):
 

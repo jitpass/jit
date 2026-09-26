@@ -13,9 +13,10 @@ the rest of the time. Five pieces make that happen.
 
 A local encrypted store at `~/Library/Application Support/jitpass/`. Each
 secret is an individually encrypted file; the master key lives in your macOS
-login Keychain, gated by a Touch ID/passcode challenge. Nothing syncs
-anywhere - the vault's encryption is bound to this machine's keychain
-(disaster recovery goes through a
+login Keychain, gated by a Touch ID/passcode challenge, or, if you move it
+there, in your Mac's [Secure Enclave](../vault/secure-enclave.md), where only
+JitPass can use it. Nothing syncs anywhere - the vault's encryption is bound
+to this Mac (disaster recovery goes through a
 [passphrase-encrypted export](../vault/backup-restore.md) instead).
 
 ## The background service

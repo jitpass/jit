@@ -105,6 +105,7 @@ then **[Install](./getting-started/install.md)** →
 
 - [Store, read, and delete secrets](./vault/index.md) - `set`/`get`/`list`/`rm`, rotating a key, undoing a rotation with `history`/`restore`
 - [Back up and restore](./vault/backup-restore.md) - passphrase-encrypted export/import
+- [The vault key in the Secure Enclave](./vault/secure-enclave.md) - move the master key into the Secure Enclave and back, and restore on a new Mac
 - [Maintenance](./vault/maintenance.md) - `rekey`, `duplicates`, `prune`, `orphans`, `clean`, `delete`
 
 ## Adapters - secrets that live somewhere else
