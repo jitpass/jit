@@ -29,6 +29,8 @@
 #     -h, --help       this help
 #   Env:
 #     JIT_BIN=/path/to/jit   test a specific binary (default: `jit` on PATH)
+#     E2E_ENCLAVE_DELETE=1   let phase 9 delete a vault whose key is in the
+#                            Secure Enclave (undoes the move; owner's call)
 #
 # EXIT: 0 = all checks passed, 1 = one or more failed, 2 = harness/setup error.
 set -uo pipefail
@@ -51,6 +53,7 @@ expect_contains(){ case "$2" in *"$3"*) pass "$1";; *) fail "$1 — expected to 
 expect_missing(){  case "$2" in *"$3"*) fail "$1 — should NOT contain: $3";; *) pass "$1";; esac; }
 expect_exit(){ if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 — exit $3, wanted $2"; fi; }
 expect_file(){ if [ -f "$2" ]; then pass "$1"; else fail "$1 — no regular file at $2"; fi; }
+expect_absent(){ if [ ! -e "$2" ] && [ ! -L "$2" ]; then pass "$1"; else fail "$1: something is at $2"; fi; }
 expect_fifo(){ if [ -p "$2" ]; then pass "$1"; else fail "$1 — not a FIFO at $2"; fi; }
 expect_eq(){ if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 — got '$2', wanted '$3'"; fi; }
 
@@ -60,7 +63,8 @@ NS="jit-e2e"                 # every test secret path contains this
 PROJ_NAME="jit-e2e-proj"    # migrate derives the profile name from the dir base
 CLISSO_APP="jit-e2e-aws"    # → profile aws-jit-e2e-aws
 WRAP_TOOL="jit-e2e-tool"    # → profile wrap-jit-e2e-tool
-WORK=""; BASELINE=""; CLEANED=0
+WORK=""; BASELINE=""; DOCTOR_BASELINE=""; CLEANED=0
+RUN_START=""                # unix seconds at start: the run's own _backups/ entries are newer
 KEEP=0; DESTRUCTIVE=0; OS_CREDS=0; PHASES="0,c,1,2,3,4,5,6,8"
 EXPORT_PASS="e2e-export-passphrase"
 
@@ -96,6 +100,25 @@ vault_paths(){ "$JIT" vault list --all 2>/dev/null | grep -E '^[A-Za-z0-9._-]+/'
 # Excludes _backups: migrate-undo backups are cruft, not the invariant we assert.
 real_secret_count(){ vault_paths | grep -vE '^_backups' | grep -vE "${NS}|${CLISSO_APP}|${WRAP_TOOL}|${PROJ_NAME}" | grep -cE '.'; }
 list_test_secrets(){ vault_paths | grep -vE '^_backups' | grep -E "${NS}|${CLISSO_APP}|${WRAP_TOOL}|${PROJ_NAME}"; }
+# The encrypted file backups THIS run's migrates left under _backups/
+# (<sanitized original path>.jit-bak-<unix seconds>): only backups of a file
+# the script itself migrated or had rewritten (the fixture tree under $WORK,
+# ~/.aws, ~/.docker/config.json, ~/.git-credentials, ~/.gitconfig), and only
+# those stamped at or after RUN_START. A backup of yours, of any other file or
+# from before this run, never matches.
+list_run_backups(){
+  [ -n "$RUN_START" ] || return 0
+  vault_paths | grep -E '^_backups/' \
+    | grep -E "jit-e2e|\.aws/(config|credentials)\.jit-bak-|\.docker/config\.json\.jit-bak-|\.git-credentials\.jit-bak-|\.gitconfig\.jit-bak-" \
+    | while IFS= read -r p; do
+        ts=${p##*.jit-bak-}
+        case "$ts" in ''|*[!0-9]*) continue;; esac
+        [ "$ts" -ge "$RUN_START" ] && printf '%s\n' "$p"
+      done
+}
+# The vault's key is in the Secure Enclave (`jit status --format json`,
+# vault.key_store). Files only, no prompt.
+key_in_enclave(){ "$JIT" status --format json 2>/dev/null | grep -qE '"key_store": *"secure-enclave"'; }
 
 # One unlock covers the whole run. Only `jit vault <sub>` commands force their
 # own gesture (they never ride the session, by design); migrate/clisso/run/
@@ -206,7 +229,13 @@ phase0(){
   cliv=$(printf '%s' "$svc" | grep -oE 'CLI [0-9.]+' | awk '{print $2}')
   svcv=$(printf '%s' "$svc" | grep -oE 'service [0-9.]+' | awk '{print $2}')
   expect_eq "service build == CLI build ($svcv vs $cliv)" "$svcv" "$cliv"
-  local doc; doc=$("$JIT" doctor 2>&1); expect_contains "doctor resolves references" "$doc" "resolve cleanly"
+  # Whole-machine doctor reads YOUR profiles, so its verdict is recorded as a
+  # baseline here, not asserted: phase 4 checks the fixture's own profile, and
+  # phase 8 checks the machine is no worse than it was.
+  local doc; doc=$("$JIT" doctor 2>&1)
+  case "$doc" in *"resolve cleanly"*) DOCTOR_BASELINE=clean;; *) DOCTOR_BASELINE=not-clean;; esac
+  info "doctor baseline: $DOCTOR_BASELINE (your own profiles; asserted against in phase 8)"
+  key_in_enclave && info "vault key is in the Secure Enclave (see the playbook's enclave section)"
   BASELINE=$(real_secret_count)
   info "vault baseline: $BASELINE non-test secret(s) recorded"
 }
@@ -234,6 +263,11 @@ phase1(){
 # =============================================================== PHASE 2: rekey
 phase2(){
   section "Phase 2 · Vault rekey"
+  if key_in_enclave; then
+    info "vault key is in the Secure Enclave: skipping the scripted rekey;"
+    info "→ rotate by hand per the playbook's enclave section."
+    return
+  fi
   gesture "vault rekey"
   local out; out=$("$JIT" vault rekey -y 2>&1)
   expect_contains "rekey re-wrapped envelopes" "$out" "re-wrapped"
@@ -277,16 +311,20 @@ phase4(){
   [ -n "$FIX" ] || FIX=$(make_fixtures)
   local proj="$FIX"
   # dry-run changes nothing
-  local dry; dry=$("$JIT" migrate "$proj/.env" --dry-run 2>&1)
+  # --only env throughout: a bare migrate also sweeps AI agents' caches and
+  # transcripts for the vault's values, which would rewrite the user's own.
+  local dry; dry=$("$JIT" migrate "$proj/.env" --only env --dry-run 2>&1)
   expect_contains "migrate --dry-run shows a plan" "$dry" "DRY RUN"
   expect_file ".env untouched by dry-run" "$proj/.env"
   expect_contains "dry-run really changed nothing" "$(head -1 "$proj/.env")" "APP_ENV=production"
-  # real migrate → FIFO mount + pointers + vault group + profile
-  "$JIT" migrate "$proj/.env" -y >/dev/null 2>&1
+  # real migrate → FIFO mount + vault group + profile manifest. No .pointers
+  # companion: none has been written since v2.2.0, the manifest is the record.
+  "$JIT" migrate "$proj/.env" --only env -y >/dev/null 2>&1
   expect_fifo ".env became a live FIFO mount" "$proj/.env"
-  expect_file ".pointers companion written" "$proj/.env.pointers"
-  expect_contains ".pointers holds vault paths only" "$(cat "$proj/.env.pointers")" "jit://vault/"
+  expect_absent "no .pointers companion written" "$proj/.env.pointers"
   expect_file "profile manifest created (project-local)" "$proj/.jit/profiles/${PROJ_NAME}.yaml"
+  expect_contains "manifest names the vault path" "$(cat "$proj/.jit/profiles/${PROJ_NAME}.yaml" 2>/dev/null)" "$PROJ_NAME/STRIPE_SECRET_KEY"
+  expect_contains "doctor resolves the fixture's profile" "$(cd "$proj" && "$JIT" doctor --profile "$PROJ_NAME" 2>&1)" "resolve cleanly"
   expect_contains "vault holds migrated group" "$("$JIT" vault list 2>&1)" "$PROJ_NAME/"
   # jit run injects the REAL values; ambient stays empty
   expect_eq "ambient shell has no secret" "${STRIPE_SECRET_KEY:-empty}" "empty"
@@ -363,7 +401,7 @@ phase7(){
   cat > "$HOME/.docker/config.json" <<EOF
 {"auths":{"registry.jit-e2e.example.com":{"auth":"$(printf 'e2euser:e2e-registry-pw' | base64)"}}}
 EOF
-  local dm; dm=$("$JIT" migrate "$HOME/.docker/config.json" -y 2>&1)
+  local dm; dm=$("$JIT" migrate "$HOME/.docker/config.json" --only docker -y 2>&1)
   expect_contains "docker migrate routed the registry" "$dm" "registry.jit-e2e.example.com"
   expect_file "docker-credential-jit shim exists" "$HOME/.jit/shims/docker-credential-jit"
   local dcfg; dcfg=$(cat "$HOME/.docker/config.json")
@@ -375,7 +413,7 @@ EOF
   save_real "$HOME/.git-credentials"
   # seed a plaintext store credential (https://user:token@host), then migrate it
   printf 'https://e2euser:git-e2e-token@git.jit-e2e.example.com\n' > "$HOME/.git-credentials" 2>/dev/null || true
-  "$JIT" migrate "$HOME/.git-credentials" -y >/dev/null 2>&1
+  "$JIT" migrate "$HOME/.git-credentials" --only git -y >/dev/null 2>&1
   expect_file "git-credential-jit shim exists" "$HOME/.jit/shims/git-credential-jit"
   # behavioral proof: git's own config now routes credential lookups to jit
   local gh; gh=$(git config --global --get-all credential.helper 2>/dev/null)
@@ -403,6 +441,13 @@ phase8(){
   expect_contains "doctor --format json emits JSON" "$dj" '{'
   local do; do=$("$JIT" doctor --orphans 2>&1)
   expect_contains "doctor --orphans runs" "$do" "profile"
+  # Against phase 0's baseline: a machine that resolved cleanly still does.
+  # One that didn't is your own state, not this run's, so it isn't asserted.
+  if [ "$DOCTOR_BASELINE" = clean ]; then
+    expect_contains "doctor still resolves cleanly (as at phase 0)" "$("$JIT" doctor 2>&1)" "resolve cleanly"
+  else
+    info "doctor did not resolve cleanly at phase 0 either: not asserted"
+  fi
 }
 
 # ================================================= PHASE 9: destructive (opt-in)
@@ -428,6 +473,14 @@ phase9(){
   # Full delete→init→import only when NO live mount exists — a mount blocks
   # delete by design, and auto-unmounting the operator's real mounts is out of
   # scope for an automated gate. The manual delete drill covers the mounted case.
+  # On a vault whose key is in the Secure Enclave, delete destroys the enclave
+  # key and init makes a keychain vault: the move is lost. Only with the
+  # owner's say-so (E2E_ENCLAVE_DELETE=1).
+  if key_in_enclave && [ "${E2E_ENCLAVE_DELETE:-0}" != 1 ]; then
+    info "skipping live vault delete: the vault key is in the Secure Enclave, and delete would undo the move."
+    info "→ set E2E_ENCLAVE_DELETE=1 only if the owner accepts moving the key in again afterwards."
+    return
+  fi
   local mounts; mounts=$("$JIT" status 2>&1 | grep -oE '[0-9]+ registered mount' | grep -oE '^[0-9]+' || echo 0)
   if [ "${mounts:-0}" -gt 0 ]; then
     info "skipping live vault delete: $mounts mount(s) registered (would require unmounting your real mounts)."
@@ -460,7 +513,9 @@ cleanup(){
   "$JIT" wrap undo "$WRAP_TOOL" >/dev/null 2>&1
   # remove every namespaced secret in ONE gesture (targeted — never
   # `orphans --prune`, which is machine-wide). Word-splitting is intentional.
-  local paths; paths=$(list_test_secrets | tr '\n' ' ')
+  # This run's own _backups/ entries go in the same batch (list_run_backups:
+  # the files it migrated, stamped since RUN_START; never one of yours).
+  local paths; paths=$({ list_test_secrets; list_run_backups; } | tr '\n' ' ')
   if [ -n "${paths// }" ]; then
     gesture "1 × vault rm (whole test batch, one gesture)"
     # shellcheck disable=SC2086
@@ -488,6 +543,7 @@ main(){
   done
   command -v "$JIT" >/dev/null 2>&1 || die "jit binary not found: $JIT"
   WORK=$(mktemp -d "${TMPDIR:-/tmp}/jit-e2e.XXXXXX") || die "cannot make work dir"
+  RUN_START=$(date +%s)
   trap 'cleanup' EXIT INT TERM
 
   printf "${BLD}jit pre-release live test${RST}  (binary: %s)\n" "$(command -v "$JIT")"

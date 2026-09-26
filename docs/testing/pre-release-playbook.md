@@ -103,7 +103,11 @@ be silently missing or broken. Run it every release; it costs nothing.
 4. **Verify the swap took:** `jit service status` - service build and CLI build must match. A stale
    service on the old build is the #1 release-day trap.
 5. `jit doctor` - should resolve cleanly. Anything already broken here is either a real bug or
-   leftover test state; investigate before proceeding.
+   leftover test state; investigate before proceeding. The script records this verdict as its
+   phase-0 baseline rather than asserting it, since it reads your own profiles: it checks the
+   fixture's profile with `jit doctor --profile`, and at phase 8 that a clean machine is still clean.
+6. Check where the vault key is: `jit status --format json` (`vault.key_store`). If it says
+   `"secure-enclave"`, read §8a before going further.
 
 ## 3. Fast mechanical baseline (the helper script)
 
@@ -114,6 +118,9 @@ JIT_BIN=/path/to/jit-rc scripts/pre-release-live-test.sh --os-creds --destructiv
 ```
 - Read the summary. Every `✗` is a finding (or a bug in the script - decide which).
 - Confirm the final line: **vault returned to baseline**. If not, the run leaked state - investigate.
+- The script migrates with `--only env` (and `--only docker` / `--only git` in phase 7), so a run
+  never sweeps your AI agents' caches or transcripts. Teardown removes the `_backups/…jit-bak-<ts>`
+  entries its own migrates made (files it migrated, stamped since the run started), never yours.
 - Budget: ~7 gestures default, ~13 with `--os-creds --destructive`.
 
 The script covers the mechanical happy-paths. The sections below are where you *use* jit and *hunt*.
@@ -215,7 +222,10 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
   `jit job run NAME`, `jit job remove NAME`; `--ask never`; edit a file in the job's folder (and swap
   one out and back) and run again; `jit mcp install/status/uninstall` for `claude-desktop` and
   `--client cursor`; drive `jit mcp` over stdio (`initialize`, `tools/list`, `run_job`, `request_job`).
-- **Expect:** the prompt names the job, the command and who asked; output carries `[hidden: NAME]`
+- **Expect:** the prompt says what the service resolved and never the job's name (a caller chooses
+  that): approving names the folder/program, the vault groups, how many are shown and whether it
+  will ask again; each run of an asking job names the folder/program, who asked and how many
+  secrets; the full command is printed before the prompt; output carries `[hidden: NAME]`
   for every secret not marked shown; any folder change stops the job, sticky, naming the file, until
   `--replace`; a never-ask job runs with the vault locked; removing it deletes its keychain key;
   `mcp install` backs the config up and touches only the `jit` entry; a proposal creates nothing.
@@ -255,7 +265,9 @@ Re-check these each time - they've bitten before or are inherent edges:
 
 ## 8. The delete drill (destructive, deliberate, export-first)
 
-Only on a mount-free vault (or after unmounting your own mounts). Proves the disaster-recovery path:
+Only on a mount-free vault (or after unmounting your own mounts), and not on a vault whose key is
+in the Secure Enclave unless the owner accepts losing the move (§8a). Proves the disaster-recovery
+path:
 ```
 jit vault export /tmp/qa-backup.jitx     # passphrase; safety net
 jit vault delete                         # destroys keychain key too
@@ -264,6 +276,30 @@ jit vault import /tmp/qa-backup.jitx      # restore
 jit vault get <a-known-secret>           # decrypts under the NEW key → round-trip proven
 ```
 **Hunt:** the mount guard fires when it should; export/import round-trips; nothing of the user's is lost.
+
+## 8a. A vault whose key is in the Secure Enclave
+
+When `jit status --format json` shows `vault.key_store` `"secure-enclave"`:
+- **Test the jit inside a signed JitPass build.** A bare RC binary (`/tmp/jit-rc`, `go build`,
+  the tarball) can't use the Secure Enclave, so it can't open this vault at all; it refuses with
+  "this copy of jit can't use the Secure Enclave; use the jit inside JitPass.app". That refusal is
+  itself worth checking once, but the rest of the run needs the app's jit (`JIT_BIN=` pointing into
+  JitPass.app).
+- **Expect:** every vault read shows the enclave's dialog ("JitPass is trying to …"); `jit status`
+  and `jit doctor` show no `vault_key_copy`; `jit vault rekey --wrapper secure-enclave` says
+  "Nothing to do"; standing grants and never-ask AI jobs still serve, including with the screen
+  locked for 15 seconds or more.
+- **Rotation:** the script skips phase 2 on an enclave vault. Rotate by hand (`jit vault rekey`),
+  then check every secret still opens and grants and AI jobs still work.
+- **Moving out and back** (`--wrapper keychain`, then `--wrapper secure-enclave`) only with the
+  owner's OK: moving in again needs a recovery file newer than the newest secret, and each
+  direction takes its own dialogs.
+- **No delete drill (§8) on an enclave vault** unless the owner accepts losing the move: delete
+  destroys the enclave key, and `init` makes a keychain vault, so the key has to be moved in again
+  afterwards. The script's phase 9 skips its delete on an enclave vault unless
+  `E2E_ENCLAVE_DELETE=1`.
+- **Hunt:** a refusal that names a command which wouldn't work; a finding with no fix; a jit outside
+  the app falling back to the keychain instead of refusing.
 
 ## 9. Findings report (what I hand back each run)
 
