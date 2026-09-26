@@ -1,6 +1,6 @@
 # Secure Enclave: working plan
 
-**Status (2026-09-25):**
+**Status (2026-09-26):**
 
 | Step | State |
 |---|---|
@@ -8,15 +8,16 @@
 | B1 `internal/secureenclave` | merged, #157 |
 | B2 `internal/keystore` | merged, #159 |
 | B3 per-vault backend | merged, #160 |
-| B4 `vault rekey --wrapper` (hidden) | merged, #161; hardware move test passed |
+| B4 `vault rekey --wrapper` | merged, #161; hardware move test passed; shown in help for v2.3.0, #173 |
 | C1 ledger keeps each wrap | merged, #162 |
 | C2 enclave grant and job keys | merged, #163 |
-| C3 move existing keys at start | open, #164 |
-| C4 delete unused keys at start | open, #165 |
-| C5 prompt wording | open, #166 |
-| B5 docs | open, this PR |
-| A1 helper bundle, A2 entitlement and profile | open, jit-app #52, #53; waiting on a signed test build |
-| A4 app UI | not started: now one row in the Settings v2 Protection card (the Settings redesign, not yet approved), not frame A's Vault card |
+| C3 move existing keys at start | merged, #164 |
+| C4 delete unused keys at start | merged, #165 |
+| C5 prompt wording | merged, #166 |
+| B5 docs | merged, #167; the user page `docs/vault/secure-enclave.md`, #173 |
+| A1 helper bundle, A2 entitlement and profile | merged, jit-app #52, #53 |
+| A4 app UI | merged, jit-app #56: the Vault key row in Settings › Protection, not frame A's Vault card |
+| Rotating an enclave vault's MEK | planned, in progress (B4's note below) |
 
 **Plan, 2026-09-25.** Companion to `secure-enclave.md` (the design,
 the readiness table and the spike results). This page is the order of work:
@@ -197,14 +198,16 @@ reverse is written and tested first.
   enclave key.
 - The MEK does not change, so there is no `RewrapAll`: no envelope, grant
   or job is touched. Rotating the MEK stays plain `vault rekey`, which on
-  the enclave stages by sealing (S1b: no prompt).
+  the enclave will stage by sealing (S1b: no prompt). That half is
+  planned, in progress.
 - D3's export check before the forward move.
 - Tests: crash injection after every step, each leaving a vault that opens;
   a fixture vault's every envelope opens after each direction; resume from
   each crash point.
 - The flag is hidden until A2 has shipped in an app release.
 
-**B4 status (2026-09-25):** built in PR #161. The flag is hidden until A2.
+**B4 status (2026-09-26):** built in PR #161, and shown in help from
+v2.3.0 (#173), the release whose JitPass carries A1 and A2.
 Two dialogs into the enclave (not one: the keychain's and the enclave's are
 separate contexts; the mockup's frame D caption needs that correction), one
 back. It passed on hardware with TEST-ONLY names.

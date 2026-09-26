@@ -1,6 +1,6 @@
 # Secure Enclave: the master key behind hardware, nothing else moves
 
-**Status: jit built and merged (B1–B4, C1–C2, 2026-09-25); the app side (jit-app #52, #53) waits on a signed test build, so no user can move a vault yet. `design/secure-enclave-plan.md` has the per-step table; the spikes are in `spike/secure-enclave-mek/FINDINGS.md`.** Read
+**Status: shipped in v2.3.0 as an opt-in (2026-09-26).** jit's side (B1–B5, C1–C5) and the app's (jit-app #52, #53 for the helper bundle and its entitlement, #56 for the Settings › Protection row) are merged, and `jit vault rekey --wrapper` is shown in help. Rotating the master key of a vault already in the enclave is planned, in progress (see "Rotating the MEK" below). `design/secure-enclave-plan.md` has the per-step table; the spikes are in `spike/secure-enclave-mek/FINDINGS.md`; the user page is `docs/vault/secure-enclave.md`. Read
 `standing-grants.md` ("For the Secure Enclave move") and
 `agent-jobs.md` (branch `ai-jobs`) first; this page keeps both working
 unchanged.
@@ -198,9 +198,10 @@ then deletes the sealed file and the enclave key. An item already under
 the vault key's name that it can't read quietly
 (`keychainwrap.ErrExistingKeyUnreadable`) is never written over: the move
 stops with nothing changed, worded by the cause as above. **The reverse ships
-tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK
-itself stays today's `vault rekey`; under the enclave, staging a new MEK is
-sealing it, which S1b shows needs no prompt.
+tested before the forward** (`menu-bar-app.md:133`). **Rotating the MEK**
+itself stays `vault rekey`; under the enclave, staging a new MEK is sealing
+it, which S1b shows needs no prompt. The enclave half of rotation is
+planned, in progress.
 
 **What status and doctor say about the key** (files only, never a prompt):
 
