@@ -10,11 +10,14 @@
 # with the JitPass Agent profile, signs it, and runs it with JIT_SE_TEST=1.
 #
 # Every key the tests make has a TEST-ONLY tag and is deleted before they
-# end; nothing here touches the real vault key (tag com.jitpass.vault.kek).
+# end; nothing here touches the real vault key (slot A, tag
+# com.jitpass.vault.kek) or slot B's (com.jitpass.vault.kek.b).
 #
 # Usage:
 #   scripts/se-test.sh                        # unattended: keys that never ask
 #   JIT_SE_INTERACTIVE=1 scripts/se-test.sh   # also the Touch ID key (one dialog)
+#   IDENTIFIER=jit scripts/se-test.sh -test.run TestHardwareSlots
+#                                             # both vault-key slots, keys that never ask
 #   PKG=./internal/cli JIT_SE_INTERACTIVE=1 scripts/se-test.sh -test.run TestHardwareMoveRoundTrip
 #                                             # the key move, TEST-ONLY names (three dialogs)
 # Env:

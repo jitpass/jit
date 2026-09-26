@@ -31,15 +31,33 @@ const (
 )
 
 // sealedKey is the file's shape. Nothing in it is secret: the blob opens
-// only inside this Mac's enclave. Tag records which key sealed it, and is
-// checked against the Wrapper's own, never trusted to choose one: the file
-// sits in a folder any program running as the user can write.
+// only inside this Mac's enclave. Tag records which key sealed it, and so
+// which of the vault's two slots (design/secure-enclave-rotation.md, D1):
+// the tag of slot A (every file written before rotation existed, and every
+// move into the enclave) or of slot B. The Wrapper follows it only to one of
+// its own two slots, never further: the file sits in a folder any program
+// running as the user can write.
+//
+// The bytes of a slot A file are exactly what every jit before the slots
+// wrote (TestTodaysSealedFileReadsAsSlotA), so the slots needed no new
+// version: a jit that rotates writes version 1 with the slot B tag.
 type sealedKey struct {
 	Version int    `json:"version"`
 	Wrap    string `json:"wrap"`
 	Tag     string `json:"kek_tag"`
 	Blob    string `json:"blob"`
 }
+
+// errUpdateJit ends every refusal of a sealed file that only a newer jit
+// can read, with the same words those refusals always had. Presence tells
+// them apart by it (NeedsNewerJit): such a file says nothing about whether
+// the key is lost.
+var errUpdateJit = errors.New("update jit")
+
+// ErrSealedByNewerJit: the sealed file names a slot of this vault's key that
+// this jit does not know, so a newer jit wrote it. It fails closed, and is
+// never a lost key: the key may be fine, and only the newer jit can tell.
+var ErrSealedByNewerJit = fmt.Errorf("this vault's key was sealed by a newer jit; %w", errUpdateJit)
 
 // readSealed loads and checks the file. A missing file comes back as an
 // error satisfying errors.Is(err, os.ErrNotExist).
@@ -53,10 +71,10 @@ func readSealed(path string) (sealedKey, []byte, error) {
 		return k, nil, fmt.Errorf("%s is not a sealed vault key: %w", path, err)
 	}
 	if k.Version != sealedVersion {
-		return k, nil, fmt.Errorf("%s is version %d, and this jit reads version %d; update jit", path, k.Version, sealedVersion)
+		return k, nil, fmt.Errorf("%s is version %d, and this jit reads version %d; %w", path, k.Version, sealedVersion, errUpdateJit)
 	}
 	if k.Wrap != wrapECIES {
-		return k, nil, fmt.Errorf("%s is sealed as %q, which this jit cannot open; update jit", path, k.Wrap)
+		return k, nil, fmt.Errorf("%s is sealed as %q, which this jit cannot open; %w", path, k.Wrap, errUpdateJit)
 	}
 	blob, err := hex.DecodeString(k.Blob)
 	if err != nil || len(blob) == 0 {

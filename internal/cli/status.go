@@ -571,10 +571,10 @@ func printStatusBackupRow(w io.Writer, v statusVault) {
 // vaultInitializedWord renders the master-key probe for statusVault.Initialized.
 func vaultInitializedWord(p keystore.Presence) string {
 	switch p {
-	// A lost or unreachable enclave key is still a vault that was set up:
-	// "no" would have the app offer a fresh setup over existing secrets.
-	// `jit doctor` is what says the key is lost.
-	case keystore.Present, keystore.KeyLost, keystore.Unavailable:
+	// A lost or unreachable enclave key, or one sealed by a newer jit, is
+	// still a vault that was set up: "no" would have the app offer a fresh
+	// setup over existing secrets. `jit doctor` is what says the key is lost.
+	case keystore.Present, keystore.KeyLost, keystore.Unavailable, keystore.NeedsNewerJit:
 		return "yes"
 	case keystore.Absent:
 		return "no"

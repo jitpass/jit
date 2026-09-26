@@ -79,8 +79,8 @@ same-user debugger, which S3 confirms on the signed helper.
 
 | Item | Where | Access control |
 |---|---|---|
-| Vault key-encryption key | Secure Enclave, tag `com.jitpass.vault.kek` | `PrivateKeyUsage \| UserPresence`, `WhenUnlockedThisDeviceOnly` |
-| Sealed MEK | `<vault root>/vault-key.sealed`, 0600, JSON `{version, wrap: "se-p256-ecies-v1", kek_tag, blob}` | ciphertext; its presence is how every jit knows this vault uses the enclave |
+| Vault key-encryption key | Secure Enclave, tag `com.jitpass.vault.kek` (slot A) or `com.jitpass.vault.kek.b` (slot B, a rotation's; `secure-enclave-rotation.md`, D1) | `PrivateKeyUsage \| UserPresence`, `WhenUnlockedThisDeviceOnly` |
+| Sealed MEK | `<vault root>/vault-key.sealed`, 0600, JSON `{version, wrap: "se-p256-ecies-v1", kek_tag, blob}` | ciphertext; its presence is how every jit knows this vault uses the enclave. `kek_tag` names the slot; a jit follows it only to one of the two, and refuses a slot it does not know as "sealed by a newer jit; update jit", never as a lost key |
 
 Both keys live in the keychain access group **`CZC6BH93GJ.com.jitpass.vault`**,
 not one derived from a bundle ID. `menu-bar-app.md` warns that a key tied to

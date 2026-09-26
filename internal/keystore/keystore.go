@@ -70,6 +70,11 @@ const (
 	// Unavailable: the key is in the Secure Enclave and this process cannot
 	// reach it (a jit outside JitPass.app). The key may be fine.
 	Unavailable
+	// NeedsNewerJit: the key is in the Secure Enclave, sealed in a way only
+	// a newer jit reads (secureenclave.ErrSealedByNewerJit). The key may be
+	// fine; like Unavailable, the vault is set up and never offered a new
+	// key.
+	NeedsNewerJit
 )
 
 // Fetcher is what the service builds per unlock: FetchMEK copies the key
@@ -243,7 +248,13 @@ type enclaveStore struct{ root string }
 func (enclaveStore) Kind() Kind { return KindSecureEnclave }
 
 func (s enclaveStore) Presence() Presence {
-	switch newEnclaveWrapper(s.root).Presence() {
+	return EnclavePresence(newEnclaveWrapper(s.root).Presence())
+}
+
+// EnclavePresence is what an enclave vault's Store reports for what its
+// secureenclave.Wrapper found.
+func EnclavePresence(p secureenclave.Presence) Presence {
+	switch p {
 	case secureenclave.Present:
 		return Present
 	case secureenclave.Absent:
@@ -255,6 +266,8 @@ func (s enclaveStore) Presence() Presence {
 		return KeyLost
 	case secureenclave.Unavailable:
 		return Unavailable
+	case secureenclave.NeedsNewerJit:
+		return NeedsNewerJit
 	}
 	return Indeterminate
 }
@@ -322,6 +335,8 @@ func (s enclaveStore) Init() (InitResult, error) {
 			"then run `jit vault init` again")
 	case Unavailable:
 		return InitReady, secureenclave.ErrUnavailable
+	case NeedsNewerJit:
+		return InitReady, secureenclave.ErrSealedByNewerJit
 	}
 	return InitReady, errors.New("could not check this vault's Secure Enclave key")
 }
