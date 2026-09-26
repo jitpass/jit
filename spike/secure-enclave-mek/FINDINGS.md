@@ -238,6 +238,140 @@ enclave's check of the staged copy, then promote, then the keychain copy
 deleted) and came back (enclave dialog, keychain write read back). It was
 byte-identical to the original, with no sealed file and no marker left.
 
+## S3g: the helper can read an old jit's vault key but not delete it (2026-09-25, a bug found and fixed)
+
+Found on Meni's Mac with test build app 0.0.2 (jit 2.2.8-dev.c087861):
+`jit vault rekey --wrapper secure-enclave`, run through the signed helper,
+sealed and verified the key, then stopped at the last step with
+`delete failed, OSStatus=-25244` (`errSecInvalidOwnerEdit`), leaving the
+`move secure-enclave` marker. The B4 hardware run had passed because its
+TEST-ONLY item was made by the same binary that deleted it.
+
+`s3g/build.sh` signs one program (`owner.m`) four ways; `s3g/owner.m` makes
+a TEST-ONLY item with `kw_ensure_mek`'s exact attributes and tries every way
+to remove it. Every call ran with user interaction disallowed
+(`SecKeychainSetUserInteractionAllowed(false)`), so a would-be dialog comes
+back as `errSecInteractionNotAllowed` (-25308) instead of appearing; only
+the `security` child process (row 9) could have shown one, and it returned
+at once. The item's ACL, read with `owner acl`: decrypt trusts the creator
+(path plus `identifier jit and anchor apple generic and certificate
+leaf[subject.CN] = ...`), the partition list is `teamid:CZC6BH93GJ`, and
+the change-ACL (owner) entry lists no application.
+
+| # | Created by | Operation, from | Result |
+|---|---|---|---|
+| 1 | old jit (bare, `-i jit`, no entitlements) | read, helper (bundle, profile, entitlements, `-i jit`) | OK, no dialog |
+| 2 | old jit | `SecItemDelete`, helper | **-25244** |
+| 3 | old jit | `SecItemDelete`, helper bundle with no entitlements or profile | **-25244** (the entitlements are not the cause) |
+| 4 | old jit | `SecItemDelete`, the same old-jit binary **copied to another path** | **-25244** (the creator's PATH is what counts) |
+| 5 | old jit | `SecItemDelete`, the old jit itself | OK |
+| 6 | helper | `SecItemDelete`, helper (the B4 hardware test's case) | OK |
+| 7 | old jit | `SecItemDelete` + `kSecUseAuthenticationUIAllow` + `kSecUseOperationPrompt`, helper, interaction disallowed and allowed | -25244 both ways, no dialog: not a question the UI can answer |
+| 8 | old jit | `SecItemCopyMatching(kSecReturnRef)` then **`SecKeychainItemDelete`**, helper (and the no-entitlement bundle) | **OK, no dialog** (three runs) |
+| 9 | old jit | `/usr/bin/security delete-generic-password` as the helper's child | OK, returned at once (exit 0) |
+| 10 | old jit | `SecItemUpdate` of the data, helper | OK, no dialog |
+| 11 | ad hoc | read, helper | -25293 (partition `cdhash:...`, not the team) |
+| 12 | ad hoc | `SecItemDelete` / `SecKeychainItemDelete`, helper | -25244 / OK |
+
+So `SecItemDelete` on a file-keychain item is refused to every executable
+but the creator at the creator's path, whatever it may read, while the
+legacy `SecKeychainItemDelete` on the item's reference is not. Every
+existing vault's key was made by a jit at some path (a tarball in
+`/usr/local/bin`, a cask in `/opt/homebrew`, a build in a worktree), so
+every move from the helper would have stopped here.
+
+The fix (`internal/keychainwrap/keychain.m`, `kwDeleteItems`): on exactly
+`errSecInvalidOwnerEdit`, find the items' references and delete each with
+`SecKeychainItemDelete`. `kw_delete_mek` and `kw_set_mek` (a rotation's
+promote replaces the primary item the same way) both use it. The move also
+no longer blocks on this step: if the copy still won't go, the move finishes
+and `jit status` / `jit doctor` report the copy (`keychain_copy_left`,
+`vault_key_copy`) until `jit vault rekey --wrapper secure-enclave` removes
+it. Hardware tests: `TestHardwareDeleteAnOldJitsItem` and
+`TestHardwareReplaceAnOldJitsItem` (keychainwrap) and
+`TestHardwareFinishMoveOverAnOldJitsItem` (cli) run the owner's exact state
+with TEST-ONLY names, unattended; each fails with the fallback switched off.
+
+Review of #170 (2026-09-26) tightened the fix: the reference lookup carries
+`kSecUseAuthenticationUIFail` and searches only the default (login)
+keychain, the lookup and each `SecKeychainItemDelete` run with keychain
+interaction off (scoped, restored), an empty lookup after -25244 is the
+original error rather than success, and a reference delete counts only once
+a presence check finds the item gone (`deleteItem`, Go, fake-tested). The
+hardware tests now run with keychain interaction off for the whole binary
+(`DisallowKeychainUITesting`), and each old-jit test starts from the same
+control: `SecItemDelete` alone still answers -25244 on that item. All pass
+on this Mac; with the fallback switched off, the delete, the promote and
+the cli move test fail with -25244.
+
+Second review of #170 (2026-09-26): the process-wide switch
+(`SecKeychainSetUserInteractionAllowed`) was reachable from the service,
+through a grant key's delete. It now runs only from CLI commands:
+`deleteItem` takes the reference fallback only when its caller asks for it
+(`cliRefFallback`), and `GrantKeys.Delete` never does (this helper made
+every grant key at its own path, so -25244 does not arise; if it does, it
+is the error). Overlapping and nested uses share one save and one restore
+(a mutex and a depth count), race-tested. The check after a reference
+delete searches only the default keychain, where the fallback deletes; an
+unconfirmed answer there lets a replace go on to the add, which fails on a
+duplicate if the item really stayed.
+
+Measured on a temporary, LOCKED file keychain (TEST-ONLY item made by the
+test binary, interaction off; `TestHardwareLockedKeychainNeverAsks`): the
+presence query answers 0 and the delete answers 0 (and deletes): neither
+needs an unlock. The data read fails at once with errSecAuthFailed
+(-25293), not errSecInteractionNotAllowed. So a locked keychain is not a
+case where `kSecUseAuthenticationUIFail` stands between presence or the
+delete and a dialog, and it cannot make them answer -25308. Whether the
+flag alone (switch ON) keeps the READ from asking to unlock is not
+measured: that half of the test runs only attended (JIT_SE_INTERACTIVE=1),
+because an openclaw fix measured the flag NOT holding for a legacy item's
+access dialog. While writing the test, `security show-keychain-info` on the
+locked temporary keychain raised its unlock prompt once (the `security`
+tool's, cancelled); the test uses only subcommands that take the password
+or never prompt.
+
+Third review of #170 (2026-09-26): with the fallback CLI-only, a grant or
+job key made by a jit at another path (a switch between the tarball or
+cask and the app) could never be deleted by the service: a revoked
+grant's key stayed, and the unused-key cleanup failed on it at every
+start. The service now takes the same reference delete WITHOUT the
+process-wide switch (`kw_item_delete_by_ref_no_switch`,
+`serviceRefFallback`): the lookup keeps `kSecUseAuthenticationUIFail`, and
+`SecKeychainItemDelete` runs with interaction as the service has it. That
+the delete needs no UI was shown before it was ever run with interaction
+on: row 8 (it succeeded with interaction OFF, so it needed none), row 9
+(Apple's `security`, interaction on, deleted the same item at once), and
+the locked-keychain test, which now also deletes by reference on a LOCKED
+temporary keychain with interaction off: 0, no unlock needed. Then, on
+this Mac, IDENTIFIER=jit, TEST-ONLY items made by `s3g/out/oldjit`:
+`TestHardwareGrantKeyDeleteAnOldJitsItem` (interaction off for the whole
+binary) passes, and fails with -25244 with the fallback removed;
+`TestHardwareGrantKeyDeleteAnOldJitsItemWithInteractionAllowed` first
+deletes one such item with interaction off (its gate), then a second with
+interaction ON: deleted in 9.5 ms, no dialog, the switch left on.
+
+Fourth review of #170 (2026-09-26): that delete was never measured with
+interaction ON against a LOCKED keychain (the locked-keychain test runs it
+with interaction off), and the service's form runs with it on. So the
+service now reads the default keychain's lock state first
+(`SecKeychainGetStatus`, `kw_default_keychain_lock_state`) and does not
+attempt the reference delete on a locked keychain, or one whose state it
+can't read: the error ("your keychain is locked: delete failed,
+OSStatus=-25244") reaches the revoke's or remove's key note, and the
+start-up cleanup tries the key again the next time the service starts.
+`TestHardwareLockedKeychainNeverAsks` measures the check on its locked
+temporary keychain with interaction off: 0 (locked) at once, 1 once
+unlocked, so the check itself needs no UI. The interaction-ON half on a
+locked DEFAULT keychain was not run: making a temporary keychain the
+default for the length of a test would also redirect the running JitPass
+service's keychain writes, and no dialog could be ruled out beforehand.
+
+Not measured: an item created by a Developer ID signed jit (this Mac has only
+the team's Apple Development identity). The partition entry is
+`teamid:CZC6BH93GJ` for both certificates, and row 4 shows the refusal
+follows the path, not the signature, so the result should not differ.
+
 ## Not run yet
 
 - **S3d** (a same-user debugger is refused): needs the Developer ID build,

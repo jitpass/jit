@@ -14,7 +14,8 @@ package keychainwrap
 import "C"
 
 import (
-	"bytes"
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"unsafe"
 )
@@ -83,7 +84,7 @@ func (w *Wrapper) HasMEK() bool {
 
 	var keyPtr *C.uchar
 	var keyLen C.int
-	if err := goErr(C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen)); err != nil {
+	if err := goErr(C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 0)); err != nil {
 		return false
 	}
 	wipe(unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), int(keyLen)))
@@ -117,12 +118,17 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 		return fmt.Errorf("verifying new master key: %w", err)
 	}
 	defer wipe(got)
-	if !bytes.Equal(got, mek) {
+	if subtle.ConstantTimeCompare(got, mek) != 1 {
 		return fmt.Errorf("verifying new master key: keychain read back a different key, staged key kept, rekey NOT complete")
 	}
 
 	return staged.deleteMEK()
 }
+
+// ErrExistingKeyUnreadable is InstallMEK finding an item under its name
+// that it couldn't read quietly: nothing was written, and the error it
+// wraps (a *QuietReadError, or an item that isn't a master key) says why.
+var ErrExistingKeyUnreadable = errors.New("couldn't read the key already in the keychain")
 
 // InstallMEK stores mek as this wrapper's master key and reads it back — the
 // keychain half of moving a vault's key OUT of the Secure Enclave (`jit
@@ -131,38 +137,68 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 // is success, so a resumed move is idempotent; one holding anything else is
 // refused, never overwritten: it would be the key some other vault state
 // depends on. No challenge: the caller opened the enclave to get mek, which
-// was the approval.
+// was the approval. And no dialog: both reads, the check of an existing item
+// and the read-back, are the quiet read. An existing item it can't read is
+// refused too (ErrExistingKeyUnreadable), never written over.
 func (w *Wrapper) InstallMEK(mek []byte) error {
 	if len(mek) != mekSize {
 		return fmt.Errorf("refusing to install a %d-byte master key, want %d", len(mek), mekSize)
 	}
-	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
-	if w.MEKPresence() == MEKPresent {
-		got, err := check.fetchMEK("")
+	switch mekPresence(w) {
+	case MEKPresent:
+		// The quiet read: a comparison that must never raise the keychain's
+		// access dialog (an older jit's item, read by another binary).
+		got, err := w.quietFetch()
 		if err != nil {
-			return fmt.Errorf("reading the existing master key: %w", err)
+			// Refused, never overwritten: an item this copy of jit can't
+			// read may be the key something else depends on.
+			return fmt.Errorf("%w: %w", ErrExistingKeyUnreadable, err)
 		}
 		defer wipe(got)
-		check.Close()
-		if !bytes.Equal(got, mek) {
+		if subtle.ConstantTimeCompare(got, mek) != 1 {
 			return fmt.Errorf("the keychain already holds a different master key; refusing to replace it")
 		}
 		return nil
+	case MEKAbsent:
+	default:
+		// setMEK deletes whatever is there first, so writing over an item
+		// that could not be checked could replace a different key, which
+		// this method promises never to do.
+		return fmt.Errorf("couldn't check the keychain for an existing master key; nothing was written")
 	}
 	if err := w.setMEK(mek); err != nil {
 		return fmt.Errorf("installing the master key: %w", err)
 	}
-	got, err := check.fetchMEK("")
+	got, err := w.quietFetch()
 	if err != nil {
 		return fmt.Errorf("verifying the installed master key: %w", err)
 	}
 	defer wipe(got)
-	check.Close()
-	if !bytes.Equal(got, mek) {
+	if subtle.ConstantTimeCompare(got, mek) != 1 {
 		return fmt.Errorf("verifying the installed master key: the keychain read back a different key")
 	}
 	return nil
 }
+
+// MatchesMEK reports whether this wrapper's keychain item holds exactly mek,
+// reading it with no challenge and no dialog (the quiet read) and handing
+// no byte of it back. It is the check before `jit vault rekey --wrapper
+// secure-enclave` removes a copy a move left behind: the caller has just
+// opened the Secure Enclave to get mek, which was the approval, and
+// deletes the keychain item only when it is that same key. An item that
+// can't be read without asking is an error, never a dialog.
+func (w *Wrapper) MatchesMEK(mek []byte) (bool, error) {
+	got, err := w.quietFetch()
+	if err != nil {
+		return false, err
+	}
+	defer wipe(got)
+	return subtle.ConstantTimeCompare(got, mek) == 1, nil
+}
+
+// mekPresence is (*Wrapper).MEKPresence, a var so a test can make InstallMEK
+// see a keychain that would not answer.
+var mekPresence = (*Wrapper).MEKPresence
 
 // DeleteStagedRekeyMEK removes a staged key outright — cleanup for `jit
 // uninstall --purge` (which destroys the vault the staged key was meant
@@ -180,16 +216,28 @@ func Challenge(reason string) error {
 }
 
 // setMEK stores the given bytes as this wrapper's keychain item,
-// replacing any existing one. Private: only the promote step above has
-// any business writing chosen key bytes.
-func (w *Wrapper) setMEK(mek []byte) error {
-	cService := C.CString(w.service)
-	defer C.free(unsafe.Pointer(cService))
-	cAccount := C.CString(w.account)
-	defer C.free(unsafe.Pointer(cAccount))
-	var p *C.uchar
-	if len(mek) > 0 {
-		p = (*C.uchar)(unsafe.Pointer(&mek[0]))
+// replacing any existing one: deleteItem (with the CLI fallback, since the
+// item being replaced may be one an older jit, at another path, created:
+// S3g; setMEK runs only from `jit vault rekey`, a CLI command), then the
+// add. Replace-then-add, not SecItemUpdate: identical outcome for the
+// promote step either way, and the add is kw_ensure_mek's exact shape.
+// Private: only the promote step and InstallMEK have any business writing
+// chosen key bytes.
+func (w *Wrapper) setMEK(mek []byte) error { return setMEKWith(newItemOps(w), mek) }
+
+// setMEKWith is setMEK over ops. A reference delete whose result couldn't
+// be confirmed goes on to the add, which fails with a duplicate if the old
+// item is really still there; that failure then says both halves.
+func setMEKWith(ops itemOps, mek []byte) error {
+	unconfirmed, err := deleteItem(ops, deleteOpts{fallback: cliRefFallback, addFollows: true, verb: "replacing existing key failed"})
+	if err != nil {
+		return err
 	}
-	return goErr(C.kw_set_mek(cService, cAccount, p, C.int(len(mek))))
+	if err := ops.add(mek); err != nil {
+		if unconfirmed {
+			return fmt.Errorf("replacing existing key failed: deleted the old item through its reference but couldn't confirm it was gone, and storing the new one failed: %w", err)
+		}
+		return err
+	}
+	return nil
 }

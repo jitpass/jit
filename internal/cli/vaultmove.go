@@ -4,7 +4,7 @@
 package cli
 
 import (
-	"bytes"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/keystore"
@@ -31,6 +32,22 @@ import (
 // after the new one has been read back and compared. A crash anywhere
 // leaves the rekey marker, which makes every other vault command refuse,
 // and re-running the same command finishes the move.
+//
+// One step may not complete and still not block the vault: deleting the
+// keychain copy once the enclave copy is proven. An older jit's keychain item
+// once refused the delete (errSecInvalidOwnerEdit, S3g in
+// spike/secure-enclave-mek/FINDINGS.md; keychainwrap now removes it another
+// way). If a delete still fails, the move finishes anyway, because the vault
+// already opens from the enclave and keystore.Open never reads the keychain
+// for a vault with a sealed file. The copy is not harmless for all that: an
+// older jit elsewhere on this Mac still reads the keychain item, as can any
+// program running as the user, so the move says so. The copy left behind is
+// not recorded anywhere: `jit status` (keychain_copy_left) and `jit doctor`
+// (vault_key_copy) see it directly, an item under the vault key's name in an
+// enclave vault, so the report can't go stale and also catches an item that
+// got there some other way. `jit vault rekey --wrapper secure-enclave` on an
+// enclave vault with such an item removes it when it is the same key, and
+// with --force when it is not or can't be read (removeKeychainCopy).
 
 // moveMarkerPrefix marks rekey.inprogress as a MOVE, not a rotation: the
 // two share the marker (so every command refuses mid-move the way it does
@@ -169,6 +186,7 @@ const (
 	reasonMoveIn    = "move the vault key into the Secure Enclave"
 	reasonMoveCheck = "check the vault key in the Secure Enclave"
 	reasonMoveBack  = "move the vault key back to the keychain"
+	reasonCopyGone  = "remove a key under the vault key's name from your keychain"
 
 	reasonVaultDelete = "permanently destroy the entire vault and its encryption key"
 	reasonRekey       = "rotate the vault's master encryption key"
@@ -181,10 +199,13 @@ type keyMover struct {
 	root string
 	out  io.Writer
 
-	kcPresent func() keystore.Presence            // never prompts
-	kcFetch   func(reason string) ([]byte, error) // the keychain's own Touch ID
-	kcInstall func(mek []byte) error              // writes and reads back; no prompt
-	kcDelete  func() error
+	kcPresent  func() keystore.Presence            // never prompts
+	kcFetch    func(reason string) ([]byte, error) // the keychain's own Touch ID
+	kcInstall  func(mek []byte) error              // writes and reads back; no prompt
+	kcDelete   func() error
+	kcMatches  func(mek []byte) (bool, error)      // reads with no prompt; returns no bytes
+	kcReadable func() error                        // the quiet read alone (no prompt, no dialog); keeps nothing
+	kcOpens    func() (keystore.KeyMeasure, error) // the item against every live secret; reads with no prompt or dialog
 
 	seInstallStaged func(mek []byte) error              // seals; never prompts
 	seOpenStaged    func(reason string) ([]byte, error) // the enclave's dialog
@@ -250,14 +271,58 @@ func (m *keyMover) finish() error {
 	return nil
 }
 
-// toEnclave moves the MEK from the keychain into the Secure Enclave. Two
-// dialogs: the keychain's (to read the key) and the enclave's (to prove the
-// sealed copy opens before the keychain copy is deleted).
-func (m *keyMover) toEnclave() error {
-	resumed := moveInProgress(m.root) == wrapperSecureEnclave
-	if !resumed && m.sealedExists() {
+// enclavePlan is what `jit vault rekey --wrapper secure-enclave` does,
+// decided once by planToEnclave from ONE keychain check and then passed
+// through, so the question runVaultMove asks and the action toEnclaveAs
+// takes can never disagree, and a keychain that would not answer can never
+// put the recovery-file rule (which guards a move) in front of a vault that
+// is already in the enclave.
+type enclavePlan int
+
+const (
+	planMove       enclavePlan = iota // the key is in the keychain: move it
+	planResume                        // an interrupted move: finish it
+	planRemoveCopy                    // in the enclave, a keychain item under its name: remove it
+	planNothing                       // in the enclave, no keychain item
+	planCantCheck                     // in the enclave, and the keychain would not say
+)
+
+// planToEnclave decides what a move into the enclave would do now.
+func (m *keyMover) planToEnclave() enclavePlan {
+	switch {
+	case moveInProgress(m.root) == wrapperSecureEnclave:
+		return planResume
+	case !m.sealedExists():
+		return planMove
+	}
+	switch m.kcPresent() {
+	case keystore.Present:
+		return planRemoveCopy
+	case keystore.Absent:
+		return planNothing
+	}
+	return planCantCheck
+}
+
+// toEnclave plans and runs a move into the enclave (tests, and callers with
+// nothing to ask in between).
+func (m *keyMover) toEnclave() error { return m.toEnclaveAs(m.planToEnclave(), false) }
+
+// toEnclaveAs moves the MEK from the keychain into the Secure Enclave, or
+// does what plan says instead. Two dialogs for a move: the keychain's (to
+// read the key) and the enclave's (to prove the sealed copy opens before the
+// keychain copy is deleted). force is removeKeychainCopy's.
+func (m *keyMover) toEnclaveAs(plan enclavePlan, force bool) error {
+	switch plan {
+	case planRemoveCopy:
+		return m.removeKeychainCopy(force)
+	case planNothing:
 		fmt.Fprintln(m.out, "The vault key is already in the Secure Enclave. Nothing to do.")
 		return nil
+	case planCantCheck:
+		return errors.New("the vault key is already in the Secure Enclave,\n" +
+			"but jit couldn't check your keychain for a key under its name.\n" +
+			"Nothing changed; try again")
 	}
 	if err := m.writeMarker(wrapperSecureEnclave); err != nil {
 		return err
@@ -266,6 +331,9 @@ func (m *keyMover) toEnclave() error {
 
 	// A real sealed file under a move marker was renamed into place only
 	// after it was verified, so all that can be left is the keychain copy.
+	// opened: the enclave copy opened in THIS run, which is what lets the
+	// warning below name Keychain Access.
+	opened := false
 	if !m.sealedExists() {
 		// A staged file from an interrupted run was never verified; start
 		// that half again rather than trust it.
@@ -287,11 +355,12 @@ func (m *keyMover) toEnclave() error {
 		if err != nil {
 			return m.abort(fmt.Errorf("checking the sealed key: %w (nothing changed, the key is still in the keychain)", err))
 		}
-		same := bytes.Equal(got, mek)
+		same := subtle.ConstantTimeCompare(got, mek) == 1
 		wipeBytes(got)
 		if !same {
 			return m.abort(errors.New("the Secure Enclave returned a different key; nothing changed, the key is still in the keychain"))
 		}
+		opened = true
 		if err := m.step("verified"); err != nil {
 			return m.abort(err)
 		}
@@ -303,10 +372,12 @@ func (m *keyMover) toEnclave() error {
 		}
 	}
 
+	// From here the vault opens from the enclave (keystore.Open follows the
+	// sealed file), so a keychain copy that won't go must not keep the
+	// vault refusing changes: the move finishes, and says so.
+	var copyErr error
 	if m.kcPresent() != keystore.Absent {
-		if err := m.kcDelete(); err != nil {
-			return fmt.Errorf("the key is in the Secure Enclave, but its old keychain copy could not be deleted: %w (re-run to finish)", err)
-		}
+		copyErr = m.kcDelete()
 	}
 	if err := m.step("keychain deleted"); err != nil {
 		return err
@@ -315,8 +386,265 @@ func (m *keyMover) toEnclave() error {
 		return err
 	}
 	fmt.Fprintln(m.out, "Moved the vault key into the Secure Enclave. Every secret opens as before.")
+	if copyErr != nil {
+		fmt.Fprint(m.out, hlCmds(copyLeftWarning(copyErr, m.kcReadable(), opened)))
+	}
 	return nil
 }
+
+// copyLeftWarning is what a move prints when it finished but the keychain
+// copy would not go: one clause a line. The copy is not "never used again":
+// an older jit elsewhere on this Mac still reads the keychain item, so the
+// warning says so. The way on depends on why (readErr, the quiet read the
+// move tried after the delete failed), because it must not be a jit
+// command that fails the same way:
+//
+//   - the keychain may be locked (-25293): unlock it, then the command.
+//   - this copy of jit isn't allowed to read it (-25308), or can't use it:
+//     every quiet read from this jit fails the same way, so the command's
+//     removal is no way out. Keychain Access is named, as the person's
+//     choice, only when the enclave opened in this run (opened): then this
+//     vault doesn't need the item. Otherwise the command, which opens the
+//     enclave first and then names that way out itself.
+//   - otherwise: the command, and Keychain Access as the person's choice
+//     when the enclave opened in this run.
+//
+// It never says "delete".
+func copyLeftWarning(err, readErr error, opened bool) string {
+	head := fmt.Sprintf("The vault key's keychain copy could not be deleted.\n"+
+		"The keychain said: %s\n"+
+		"An older jit elsewhere on this Mac can still read it.\n", truncateEnd(err.Error(), 54))
+	const retry = "`jit vault rekey --wrapper secure-enclave`"
+	cause, detail := keychainReadCause(readErr)
+	var why string
+	switch cause {
+	case readLocked:
+		return head + fmt.Sprintf("Your keychain may be locked (%s). Unlock it,\n"+
+			"then remove the copy with %s\n", detail, retry)
+	case readNotAllowed:
+		why = fmt.Sprintf("This copy of jit can't read it (%s).\n", detail)
+	case readItem:
+		why = fmt.Sprintf("jit can't use it (%s).\n", detail)
+	}
+	switch {
+	case why != "" && opened:
+		return head + why + removeItYourself("") + "\n"
+	case why != "":
+		return head + why + retry + " opens the vault key\n" +
+			"in the Secure Enclave first, then says how that copy can go.\n"
+	case opened:
+		return head + "To remove it: " + retry + "\n" +
+			fmt.Sprintf("Or remove it yourself in Keychain Access (%q).\n", keystore.KeychainItemName)
+	}
+	return head + "To remove it: " + retry + "\n"
+}
+
+// readCause is why a quiet read of the keychain item failed, as far as the
+// way on differs.
+type readCause int
+
+const (
+	readOK         readCause = iota // it was read
+	readLocked                      // errSecAuthFailed: the keychain may be locked (measured)
+	readNotAllowed                  // errSecInteractionNotAllowed: this copy of jit isn't allowed to read it
+	readItem                        // the item itself: another refusal, or not a master key
+	readOther                       // not about the item (the vault's own files, say)
+)
+
+// keychainReadCause sorts a quiet read's error (keychainwrap's
+// QuietReadError, ErrNotAMasterKey) by what the person can do about it,
+// with a short detail to show: the keychain's status, or what is wrong
+// with the item.
+func keychainReadCause(err error) (readCause, string) {
+	var q *keychainwrap.QuietReadError
+	switch {
+	case err == nil:
+		return readOK, ""
+	case errors.As(err, &q) && q.MayBeLocked():
+		return readLocked, fmt.Sprintf("OSStatus=%d", q.Status)
+	case errors.As(err, &q) && q.NotAllowed():
+		return readNotAllowed, fmt.Sprintf("OSStatus=%d", q.Status)
+	case errors.As(err, &q):
+		return readItem, fmt.Sprintf("OSStatus=%d", q.Status)
+	case errors.Is(err, keychainwrap.ErrNotAMasterKey):
+		return readItem, "it isn't a master key"
+	}
+	return readOther, truncateEnd(err.Error(), 40)
+}
+
+// removeItYourself is the way on from a refusal over a keychain item jit
+// couldn't read or measure, once the vault key has opened from the Secure
+// Enclave in this run: the vault doesn't need that item, but jit can't
+// tell what else might, so removing it is the person's choice, never
+// jit's advice. then, if set, is the command to run after.
+func removeItYourself(then string) string {
+	s := "The vault opens from the Secure Enclave and doesn't need that key;\n" +
+		"jit can't tell whether anything else does. If nothing does,\n" +
+		fmt.Sprintf("you can remove it yourself in Keychain Access (%q)", keystore.KeychainItemName)
+	if then != "" {
+		s += ",\nthen run " + then + " again"
+	}
+	return s
+}
+
+// removeKeychainCopy deletes the keychain item under the vault key's name
+// from a vault whose key is already in the Secure Enclave: usually the copy
+// a move whose last delete failed leaves behind. One dialog, the enclave's,
+// always first: nothing goes unless the enclave copy opens in this run, so
+// this can never delete the only key that works. Then:
+//
+//   - the item holds the same key: it is deleted.
+//   - it holds a different key, or can't be read: without force it is left
+//     alone, and the error says why and what to do, by cause: a locked
+//     keychain is "unlock it and run this again"; an item this copy of jit
+//     isn't allowed to read, or can't use, names Keychain Access as the
+//     person's choice (the enclave opened, so this vault doesn't need it),
+//     never --force, whose measure fails the same way. With force it is
+//     measured first (kcOpens: how many of this vault's live secrets it
+//     opens, read with no dialog): one that opens any is refused, since an
+//     older jit may have saved those secrets with it, and one that can't be
+//     measured is refused too. Only a key that opens none is deleted;
+//     runVaultMove asked first, on a typed yes, naming the risk (whatever
+//     that key protects elsewhere is lost).
+//
+// Changes nothing about where the vault opens from, so no marker.
+func (m *keyMover) removeKeychainCopy(force bool) error {
+	mek, err := m.seOpen(reasonCopyGone)
+	if err != nil {
+		return fmt.Errorf("opening the vault key in the Secure Enclave: %w (nothing changed)", err)
+	}
+	defer wipeBytes(mek)
+	same, err := m.kcMatches(mek)
+	switch {
+	case err == nil && same:
+	case force:
+		if err := m.forceCheck(); err != nil {
+			return err
+		}
+	case err != nil:
+		return unreadableCopyRefusal(err)
+	default:
+		return errors.New("the key in your keychain under the vault key's name isn't this vault's.\n" +
+			"It was left alone.\n" +
+			"If nothing needs it: `jit vault rekey --wrapper secure-enclave --force`")
+	}
+	if err := m.kcDelete(); err != nil {
+		// The enclave opened, and the item is the same key or --force
+		// measured it as opening none of this vault's secrets.
+		return fmt.Errorf("couldn't delete the key in your keychain: %s\n"+
+			"You can remove it yourself in Keychain Access (%q)", truncateEnd(err.Error(), 54), keystore.KeychainItemName)
+	}
+	fmt.Fprintln(m.out, "Removed the key under the vault key's name from your keychain.")
+	fmt.Fprintln(m.out, "The vault key is only in the Secure Enclave now.")
+	return nil
+}
+
+// forceCheck is --force's measure before it deletes a key that isn't this
+// vault's (or can't be matched): whether it opens any live secret here. It
+// deletes only on a measure that covered everything: the item was read (a
+// nil error from kcOpens says so), and every live secret was tried against
+// it. A secret whose envelope couldn't be read is one the key may open, so
+// even one refuses.
+func (m *keyMover) forceCheck() error {
+	got, err := m.kcOpens()
+	switch {
+	case err != nil:
+		return unmeasuredCopyRefusal(err)
+	case got.Opened > 0:
+		return fmt.Errorf("the key in your keychain under the vault key's name isn't this vault's,\n"+
+			"but it opens %s in this vault; jit won't delete it.\n"+
+			"It was left alone: an older jit may have saved them with it", countWord(got.Opened, "secret", "secrets"))
+	case got.Untested > 0:
+		return fmt.Errorf("jit couldn't test %s against that key; it was left alone", countWord(got.Untested, "secret", "secrets"))
+	}
+	return nil
+}
+
+// unreadableCopyRefusal is removeKeychainCopy's refusal when the item
+// couldn't be read to compare it, worded by the cause (keychainReadCause).
+// The enclave has opened in this run.
+func unreadableCopyRefusal(err error) error {
+	const retry = "`jit vault rekey --wrapper secure-enclave`"
+	cause, detail := keychainReadCause(err)
+	switch cause {
+	case readLocked:
+		return fmt.Errorf("couldn't read the key in your keychain under the vault key's name\n"+
+			"(%s): your keychain may be locked.\n"+
+			"It was left alone. Unlock it, then run\n"+
+			"%s again", detail, retry)
+	case readNotAllowed:
+		return fmt.Errorf("this copy of jit can't read the key in your keychain under the\n"+
+			"vault key's name (%s); another copy of jit likely saved it.\n"+
+			"It was left alone.\n%s", detail, removeItYourself(""))
+	case readItem:
+		return fmt.Errorf("couldn't use the key in your keychain under the vault key's name\n"+
+			"(%s).\n"+
+			"It was left alone.\n%s", detail, removeItYourself(""))
+	}
+	return fmt.Errorf("couldn't read the key in your keychain under the vault key's name\n"+
+		"(%s).\n"+
+		"It was left alone. Try %s again", detail, retry)
+}
+
+// unmeasuredCopyRefusal is forceCheck's refusal when the item couldn't be
+// measured, worded by the cause (keychainReadCause). The enclave has
+// opened in this run.
+func unmeasuredCopyRefusal(err error) error {
+	const retry = "`jit vault rekey --wrapper secure-enclave --force`"
+	cause, detail := keychainReadCause(err)
+	switch cause {
+	case readLocked:
+		return fmt.Errorf("jit couldn't check whether the key in your keychain\n"+
+			"opens any of this vault's secrets (%s):\n"+
+			"your keychain may be locked. It was left alone.\n"+
+			"Unlock it, then run\n"+
+			"%s again", detail, retry)
+	case readNotAllowed:
+		return fmt.Errorf("this copy of jit can't read the key in your keychain (%s),\n"+
+			"so it couldn't check whether it opens any of this vault's secrets.\n"+
+			"It was left alone.\n%s", detail, removeItYourself(""))
+	case readItem:
+		return fmt.Errorf("jit couldn't check whether the key in your keychain\n"+
+			"opens any of this vault's secrets (%s).\n"+
+			"It was left alone.\n%s", detail, removeItYourself(""))
+	}
+	return fmt.Errorf("jit couldn't check whether the key in your keychain\n"+
+		"opens any of this vault's secrets (%s).\n"+
+		"It was left alone. Try %s again", detail, retry)
+}
+
+// existingKeyRefusal is the move back to the keychain finding an item under
+// the vault key's name that it couldn't read (keychainwrap's
+// ErrExistingKeyUnreadable): it never writes over it, and says why by the
+// cause. The enclave has opened in this run.
+func existingKeyRefusal(err error) error {
+	const retry = "`jit vault rekey --wrapper keychain`"
+	const kept = "Nothing changed; the vault key is still in the Secure Enclave."
+	cause, detail := keychainReadCause(err)
+	switch cause {
+	case readLocked:
+		return fmt.Errorf("a key is already in your keychain under the vault key's name,\n"+
+			"and jit couldn't read it (%s): your keychain may be locked.\n"+
+			"%s\n"+
+			"Unlock it, then run %s again", detail, kept, retry)
+	case readNotAllowed:
+		return fmt.Errorf("a key is already in your keychain under the vault key's name,\n"+
+			"and this copy of jit can't read it (%s), so it won't\n"+
+			"write over it; another copy of jit likely saved it.\n"+
+			"%s\n%s", detail, kept, removeItYourself(retry))
+	case readItem:
+		return fmt.Errorf("a key is already in your keychain under the vault key's name,\n"+
+			"and jit can't use it (%s), so it won't write over it.\n"+
+			"%s\n%s", detail, kept, removeItYourself(retry))
+	}
+	return fmt.Errorf("a key is already in your keychain under the vault key's name,\n"+
+		"and jit couldn't read it (%s), so it won't write over it.\n"+
+		"%s Try %s again", detail, kept, retry)
+}
+
+// stdinIsTerminal reports whether a question can be answered here; a var so
+// a test can say yes.
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // toKeychain moves the MEK from the Secure Enclave back into the keychain.
 // One dialog: the enclave's, to read the key. The keychain copy is read
@@ -339,6 +667,9 @@ func (m *keyMover) toKeychain() error {
 		}
 		defer wipeBytes(mek)
 		if err := m.kcInstall(mek); err != nil {
+			if errors.Is(err, keychainwrap.ErrExistingKeyUnreadable) {
+				return m.abort(existingKeyRefusal(err))
+			}
 			return m.abort(fmt.Errorf("writing the key to the keychain: %w (nothing changed, the key is still in the Secure Enclave)", err))
 		}
 		if err := m.step("installed"); err != nil {
@@ -406,37 +737,70 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 			return fmt.Errorf("jit vault rekey: a move to %s is unfinished; run `jit vault rekey --wrapper %s` to finish it first", marker.target, marker.target)
 		}
 	}
-	resuming := marker.kind == markerMove && marker.target == target
-	if target == wrapperSecureEnclave && !resuming {
-		if err := recoveryFileCurrent(root); err != nil {
-			return fmt.Errorf("jit vault rekey: %w", err)
+	m := runMover(root, out)
+	if target == wrapperKeychain {
+		if vaultRekeyForce {
+			return errors.New("jit vault rekey: --force only goes with --wrapper secure-enclave")
 		}
-	}
-	if !vaultRekeyYes {
-		prompt := "Move the vault key into the Secure Enclave? After this it can't leave this Mac; your recovery file is how the secrets would. [y/N] "
-		if target == wrapperKeychain {
-			prompt = "Move the vault key back to the keychain? A program running as you could read it there again. [y/N] "
-		}
-		if resuming {
-			prompt = "A move of the vault key was interrupted. Finish it now? [y/N] "
-		}
-		if !confirmPrompt(cmd, prompt) {
+		if !vaultRekeyYes && !confirmPrompt(cmd, "Move the vault key back to the keychain? A program running as you could read it there again. [y/N] ") {
 			fmt.Fprintln(out, "Aborted. Nothing was changed.")
 			return nil
 		}
+		if err := m.toKeychain(); err != nil {
+			return fmt.Errorf("jit vault rekey: %w", err)
+		}
+		return nil
 	}
-	m := newKeyMover(root, out)
-	var err error
-	if target == wrapperSecureEnclave {
-		err = m.toEnclave()
-	} else {
-		err = m.toKeychain()
+	// Decided once, from one keychain check: the question below and the
+	// action after it follow the same plan (enclavePlan).
+	plan := m.planToEnclave()
+	if vaultRekeyForce && plan != planRemoveCopy {
+		return errors.New("jit vault rekey: --force only removes a keychain key from a vault\n" +
+			"already in the Secure Enclave, and there is none to remove")
 	}
-	if err != nil {
+	// --force deletes a key that may protect something else, so it never
+	// runs on anything but a person's typed answer to its question.
+	if vaultRekeyForce && vaultRekeyYes {
+		return errors.New("jit vault rekey: --force deletes a key only on your typed yes,\n" +
+			"so it won't run with --yes")
+	}
+	if vaultRekeyForce && !stdinIsTerminal() {
+		return errors.New("jit vault rekey: --force deletes a key only on your typed yes,\n" +
+			"and there's no terminal here to ask in")
+	}
+	var prompt string
+	switch plan {
+	case planMove:
+		// The recovery-file rule guards the move itself, and only the move:
+		// removing a keychain item, or finding nothing to do, moves nothing.
+		if err := recoveryFileCurrent(root); err != nil {
+			return fmt.Errorf("jit vault rekey: %w", err)
+		}
+		prompt = "Move the vault key into the Secure Enclave? After this it can't leave this Mac; your recovery file is how the secrets would. [y/N] "
+	case planResume:
+		prompt = "A move of the vault key was interrupted. Finish it now? [y/N] "
+	case planRemoveCopy:
+		prompt = "A key is still in your keychain under the vault key's name.\n" +
+			"Remove it if it is the vault key? [y/N] "
+		if vaultRekeyForce {
+			prompt = "A key is in your keychain under the vault key's name.\n" +
+				"This deletes it even if it isn't this vault's key,\n" +
+				"and whatever it protects is lost for good. Delete it? [y/N] "
+		}
+	}
+	if prompt != "" && !vaultRekeyYes && !confirmPrompt(cmd, prompt) {
+		fmt.Fprintln(out, "Aborted. Nothing was changed.")
+		return nil
+	}
+	if err := m.toEnclaveAs(plan, vaultRekeyForce); err != nil {
 		return fmt.Errorf("jit vault rekey: %w", err)
 	}
 	return nil
 }
+
+// runMover is the mover runVaultMove drives: newKeyMover, a var so a test
+// runs the command against the in-memory keychain and enclave.
+var runMover = newKeyMover
 
 // newKeyMover wires the production operations: the vault's own keychain
 // item and enclave key.
@@ -469,8 +833,13 @@ func newKeyMoverWith(root string, out io.Writer, kc *keychainwrap.Wrapper, se, s
 			defer kc.Close()
 			return kc.FetchMEK(reason)
 		},
-		kcInstall:       kc.InstallMEK,
-		kcDelete:        kc.DeleteMEK,
+		kcInstall:  kc.InstallMEK,
+		kcDelete:   kc.DeleteMEK,
+		kcMatches:  kc.MatchesMEK,
+		kcReadable: kc.CheckQuietRead,
+		kcOpens: func() (keystore.KeyMeasure, error) {
+			return keystore.KeychainKeyOpens(root, kc)
+		},
 		seInstallStaged: func(mek []byte) error { return seStaged().Install(mek) },
 		seOpenStaged: func(reason string) ([]byte, error) {
 			w := seStaged()

@@ -1,0 +1,752 @@
+// Copyright 2026 Meni Tasa
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
+
+//go:build darwin
+
+package keychainwrap
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+)
+
+// fakeOps answers deleteItem's and setMEK's calls and counts them.
+type fakeOps struct {
+	del, ref      int32
+	after         MEKPresence // presenceInDefault
+	anywhere      MEKPresence // presence (every keychain)
+	addErr        error
+	refs, pres    int // refs: the CLI reference delete (the process switch)
+	refsAsIs      int // the service's reference delete (no switch)
+	anyPres, adds int
+	locked        bool  // defaultKeychainLock: the default keychain is locked
+	lockErr       int32 // defaultKeychainLock: the check failed with this status
+	lockChecks    int
+}
+
+func (f *fakeOps) defaultKeychainLock() (keychainLock, int32) {
+	f.lockChecks++
+	switch {
+	case f.locked:
+		return lockLocked, 0
+	case f.lockErr != 0:
+		return lockUnknown, f.lockErr
+	}
+	return lockUnlocked, 0
+}
+
+func (f *fakeOps) secItemDelete() int32   { return f.del }
+func (f *fakeOps) deleteByRefNoUI() int32 { f.refs++; return f.ref }
+func (f *fakeOps) deleteByRefAsIs() int32 { f.refsAsIs++; return f.ref }
+func (f *fakeOps) presenceInDefault() MEKPresence {
+	f.pres++
+	return f.after
+}
+func (f *fakeOps) presence() MEKPresence { f.anyPres++; return f.anywhere }
+func (f *fakeOps) add([]byte) error      { f.adds++; return f.addErr }
+
+// deleteItem's decisions. The one this was written for: SecItemDelete saw
+// an item and refused it (errSecInvalidOwnerEdit), and the fallback's
+// lookup, which searches only the login keychain, found nothing. That item
+// is somewhere and still there; it used to be reported deleted.
+func TestDeleteItemDecisions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ops      fakeOps
+		fallback bool
+		wantErr  string // "" for success
+		wantRefs int
+		wantPres int
+	}{
+		{"deleted", fakeOps{del: errSecSuccess}, true, "", 0, 0},
+		{"not there", fakeOps{del: errSecItemNotFound}, true, "", 0, 0},
+		{"another error", fakeOps{del: -25293}, true, "OSStatus=-25293", 0, 0},
+		{"owner edit, no fallback", fakeOps{del: errSecInvalidOwnerEdit}, false, "OSStatus=-25244", 0, 0},
+		{"owner edit, the lookup finds nothing", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecItemNotFound, after: MEKAbsent}, true, "OSStatus=-25244", 1, 0},
+		{"owner edit, the lookup would have asked", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecInteractionNotAllowed}, true, "OSStatus=-25308", 1, 0},
+		{"owner edit, removed through the reference", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent}, true, "", 1, 1},
+		{"owner edit, the reference delete said yes and the item stayed", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKPresent}, true, "still there", 1, 1},
+		{"owner edit, gone can't be confirmed", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKIndeterminate}, true, "couldn't confirm it is gone", 1, 1},
+	} {
+		// The same decisions whichever form of the fallback is asked for;
+		// only which reference delete runs differs.
+		forms := []refFallback{noRefFallback}
+		if tc.fallback {
+			forms = []refFallback{cliRefFallback, serviceRefFallback}
+		}
+		for _, form := range forms {
+			t.Run(fmt.Sprintf("%s/fallback %d", tc.name, form), func(t *testing.T) {
+				ops := tc.ops
+				_, err := deleteItem(&ops, deleteOpts{fallback: form, verb: "delete failed"})
+				switch {
+				case tc.wantErr == "" && err != nil:
+					t.Fatalf("got %v, want success", err)
+				case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+					t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+				}
+				if tc.wantErr != "" && !strings.Contains(err.Error(), "delete failed, OSStatus=") {
+					t.Errorf("error %q lost the original status", err)
+				}
+				wantCLI, wantAsIs := tc.wantRefs, 0
+				if form == serviceRefFallback {
+					wantCLI, wantAsIs = 0, tc.wantRefs
+				}
+				if ops.refs != wantCLI || ops.refsAsIs != wantAsIs || ops.pres != tc.wantPres {
+					t.Errorf("reference deletes %d with the switch, %d without; presence checks %d; want %d, %d, %d",
+						ops.refs, ops.refsAsIs, ops.pres, wantCLI, wantAsIs, tc.wantPres)
+				}
+			})
+		}
+	}
+}
+
+// The check after a reference delete looks where the reference delete
+// deleted, the default keychain, and nowhere else: an item of the same name
+// in another keychain on the search list is not the one that was deleted,
+// and must not turn a delete that worked into "still there".
+func TestDeleteChecksOnlyTheDefaultKeychain(t *testing.T) {
+	ops := fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent}
+	if _, err := deleteItem(&ops, deleteOpts{fallback: cliRefFallback, verb: "delete failed"}); err != nil {
+		t.Fatalf("an item in another keychain failed the delete: %v", err)
+	}
+	if ops.anyPres != 0 || ops.pres != 1 {
+		t.Errorf("presence over every keychain %d times, over the default one %d; want 0 and 1", ops.anyPres, ops.pres)
+	}
+}
+
+// setMEK over a reference delete whose result can't be confirmed: the old
+// item is most likely gone, so the add goes ahead, and the add is what
+// finds out. It used to abort with the old key already deleted and no new
+// one written.
+func TestSetMEKOverAnUnconfirmedDelete(t *testing.T) {
+	mek := bytes.Repeat([]byte{1}, 32)
+	ops := fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKIndeterminate}
+	if err := setMEKWith(&ops, mek); err != nil {
+		t.Fatalf("an unconfirmed delete stopped the replace: %v", err)
+	}
+	if ops.adds != 1 {
+		t.Fatalf("adds = %d, want 1", ops.adds)
+	}
+	// The item really was still there: the add fails on a duplicate, and
+	// the error says both halves.
+	ops = fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKIndeterminate,
+		addErr: errors.New("storing key in keychain failed, OSStatus=-25299")}
+	err := setMEKWith(&ops, mek)
+	if err == nil || !strings.Contains(err.Error(), "couldn't confirm it was gone") || !strings.Contains(err.Error(), "-25299") {
+		t.Fatalf("got %v, want the unconfirmed delete and the duplicate named", err)
+	}
+	// A confirmed-present item never reaches the add.
+	ops = fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKPresent}
+	if err := setMEKWith(&ops, mek); err == nil || ops.adds != 0 {
+		t.Fatalf("err %v, adds %d: want a refusal before any add", err, ops.adds)
+	}
+}
+
+// The service deletes grant and job keys (revoke, expiry, the unused-key
+// cleanup, a move). A key another jit made at another path answers
+// SecItemDelete with errSecInvalidOwnerEdit (S3g), and the delete must get
+// past it, or a revoked grant's key stays and the cleanup fails on it at
+// every start. But never through the CLI's reference delete, which switches
+// keychain UI off for the whole process: through the service's form, which
+// leaves the switch alone.
+func TestGrantKeyDeleteFallsBackWithoutTheProcessSwitch(t *testing.T) {
+	var got *fakeOps
+	orig := newItemOps
+	t.Cleanup(func() { newItemOps = orig })
+	for _, tc := range []struct {
+		name    string
+		ref     int32
+		after   MEKPresence
+		wantErr string
+	}{
+		{"deleted through its reference", errSecSuccess, MEKAbsent, ""},
+		{"the reference delete fails", errSecInteractionNotAllowed, MEKPresent, "OSStatus=-25244 (deleting it through its reference: OSStatus=-25308)"},
+		{"the item stays", errSecSuccess, MEKPresent, "still there"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newItemOps = func(*Wrapper) itemOps {
+				got = &fakeOps{del: errSecInvalidOwnerEdit, ref: tc.ref, after: tc.after, anywhere: MEKPresent}
+				return got
+			}
+			err := GrantKeys{service: "com.jitpass.grant.key.TEST-ONLY"}.Delete("g-1")
+			if got == nil {
+				t.Fatal("the delete did not go through newItemOps")
+			}
+			if got.refs != 0 {
+				t.Fatalf("the grant key delete called the CLI reference delete %d times; it switches keychain UI off process-wide", got.refs)
+			}
+			if got.refsAsIs != 1 {
+				t.Fatalf("the grant key delete called the service's reference delete %d times, want 1", got.refsAsIs)
+			}
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("got %v, want the key deleted", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The service's reference delete runs with keychain interaction on, as the
+// service has it, and a delete on a LOCKED keychain was never measured that
+// way: it might ask to unlock. So the service checks the default
+// keychain's lock state first (SecKeychainGetStatus, no UI) and, locked or
+// not known, never attempts the reference delete: the error says why, and
+// GrantKeys.Delete's caller turns it into the key note ("... tries again
+// the next time it starts"). The CLI form, whose delete runs with
+// interaction off, needs no such check and makes none.
+func TestServiceReferenceDeleteSkipsALockedKeychain(t *testing.T) {
+	orig := newItemOps
+	t.Cleanup(func() { newItemOps = orig })
+	for _, tc := range []struct {
+		name    string
+		ops     fakeOps
+		wantErr string
+	}{
+		{"locked", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent, locked: true},
+			"your keychain is locked: delete failed, OSStatus=-25244"},
+		{"lock state unknown", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent, lockErr: -25294},
+			"couldn't check whether your keychain is locked (OSStatus=-25294): delete failed, OSStatus=-25244"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *fakeOps
+			newItemOps = func(*Wrapper) itemOps {
+				ops := tc.ops
+				got = &ops
+				return got
+			}
+			err := GrantKeys{service: "com.jitpass.grant.key.TEST-ONLY"}.Delete("g-1")
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+			// The key note splits on "; " into lines (printKeyNote).
+			if strings.Contains(err.Error(), "; ") {
+				t.Errorf("%q would split the key note mid-clause", err)
+			}
+			if got.lockChecks != 1 || got.refsAsIs != 0 || got.refs != 0 {
+				t.Fatalf("lock checks %d, reference deletes %d (service) %d (CLI); want 1, 0, 0", got.lockChecks, got.refsAsIs, got.refs)
+			}
+		})
+	}
+	t.Run("the CLI form makes no check", func(t *testing.T) {
+		ops := fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, locked: true}
+		if _, err := deleteItem(&ops, deleteOpts{fallback: cliRefFallback, verb: "delete failed"}); err != nil {
+			t.Fatalf("the CLI's reference delete (interaction off) was stopped by the lock check: %v", err)
+		}
+		if ops.lockChecks != 0 || ops.refs != 1 {
+			t.Fatalf("lock checks %d, CLI reference deletes %d; want 0 and 1", ops.lockChecks, ops.refs)
+		}
+	})
+	for st, want := range map[int32]keychainLock{1: lockUnlocked, 0: lockLocked, -25294: lockUnknown, errSecInteractionNotAllowed: lockUnknown} {
+		if got, _ := lockFromState(st); got != want {
+			t.Errorf("lockFromState(%d) = %v, want %v", st, got, want)
+		}
+	}
+}
+
+// kwWithoutUI, which the fallback's lookup and deletes and the quiet read
+// run inside: interaction is off inside it (and inside a nested use) and
+// back to what it was after, whichever way it started. Nothing here touches
+// a keychain item, so it runs in a plain `go test` with no dialog possible.
+func TestKeychainUIIsOffOnlyInsideTheScope(t *testing.T) {
+	for _, start := range []bool{true, false} {
+		during, after := uiScopeProbe(start)
+		if during {
+			t.Errorf("started %v: keychain interaction was allowed inside the scope", start)
+		}
+		if after != start {
+			t.Errorf("started %v: left at %v after the scope", start, after)
+		}
+	}
+}
+
+// Many overlapping kwWithoutUI scopes: interaction stays off inside every
+// one of them for as long as it runs, and the process ends where it started.
+// Before the guard each scope saved and restored on its own, so a scope
+// that began while another had the switch off saved "off" and put it back
+// last, leaving interaction off for good, and one that ended early turned it
+// back on under the others. No keychain item is touched.
+func TestKeychainUIGuardSurvivesOverlap(t *testing.T) {
+	orig := uiAllowed()
+	t.Cleanup(func() { setUIAllowed(orig) })
+	for _, start := range []bool{true, false} {
+		setUIAllowed(start)
+		var wg sync.WaitGroup
+		var broken atomic.Int32
+		for g := 0; g < 32; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				for i := 0; i < 20; i++ {
+					if !uiOverlapProbe(50 + (g*37+i*11)%300) {
+						broken.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		if n := broken.Load(); n > 0 {
+			t.Errorf("started %v: interaction came back on inside %d scopes", start, n)
+		}
+		if got := uiAllowed(); got != start {
+			t.Errorf("started %v: left at %v after every scope ended", start, got)
+		}
+	}
+}
+
+// Every query keychain.m builds, walked from its registry (kw_query_count),
+// against the traits it must have. A query added to the registry with no
+// line here fails, so none can be left out; the ones status, doctor, the
+// presence checks, the deletes and the quiet read use must never ask.
+func TestEveryQueryIsChecked(t *testing.T) {
+	const noUI, loginOnly, data, attrs, refs = 1, 2, 4, 8, 16
+	want := map[string]int{
+		"presence":                         noUI,
+		"presence in the default keychain": noUI | loginOnly,
+		"the reference delete's lookup":    noUI | loginOnly | refs,
+		"the delete":                       noUI,
+		"the quiet read":                   noUI | data,
+		// The read behind jit's own Touch ID check may show the login
+		// keychain's access dialog (keychain.m, KW_Q_FETCH); nothing that
+		// must stay silent uses it.
+		"the read behind Touch ID": data,
+		"the check before an add":  0,
+		"the grant key list":       attrs,
+	}
+	n := queryCount()
+	if n != len(want) {
+		t.Errorf("the registry holds %d queries, this test states %d", n, len(want))
+	}
+	seen := map[string]bool{}
+	for i := 0; i < n; i++ {
+		name := queryName(i)
+		traits, ok := want[name]
+		if !ok {
+			t.Errorf("query %d (%q) has no stated traits here", i, name)
+			continue
+		}
+		seen[name] = true
+		if got := queryTraits(i); got != traits {
+			t.Errorf("%s query: traits %05b, want %05b (1 no dialog, 2 login keychain only, 4 data, 8 attributes, 16 refs)", name, got, traits)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("%q is stated here but not in the registry", name)
+		}
+	}
+	// The one query that may ask (the read behind Touch ID) is reached only
+	// from the callers listed here; every comparison that must not prompt
+	// uses the quiet read.
+	assertPromptingReadCallers(t)
+}
+
+// promptingReadCallers are the only functions that may reach KW_Q_FETCH,
+// the read that can show the keychain's access dialog: kw_fetch_mek with
+// quiet 0 (fetchMEK itself, and HasMEK, rotation's check of its own
+// items), and fetchMEK's callers. Each is a read behind jit's own Touch ID
+// check (FetchMEK, the wrap and unwrap, RequireUserPresence) or a
+// rotation's promote reading the items it wrote in the same command.
+// MatchesMEK, InstallMEK and CountOpens compare or measure an item that may
+// be another jit's, and must never prompt: they are not here.
+var promptingReadCallers = map[string]map[string]bool{
+	"kw_fetch_mek": {"fetchMEK": true, "HasMEK": true},
+	"fetchMEK": {
+		"FetchMEK": true, "WrapKeyLabeled": true, "UnwrapKeyLabeled": true,
+		"RequireUserPresence": true, "PromoteStagedRekeyMEK": true,
+	},
+}
+
+// neverPrompts are the functions that read an item that may be another
+// jit's, which must not reach the prompting read by ANY path: not by
+// calling fetchMEK, and not by calling something that does (w.FetchMEK,
+// RequireUserPresence, ...).
+var neverPrompts = []string{"MatchesMEK", "InstallMEK", "CountOpens", "CheckQuietRead", "quietFetch"}
+
+// calledName is the name a call goes to, whether written f(...) or
+// x.f(...); "" for anything else (a call through a func value).
+func calledName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	}
+	return ""
+}
+
+// inPackage reports whether call goes to a function or method of this
+// package, resolved by the type checker, so a call such as an AEAD's
+// Open is not taken for this package's Open. A C.* call counts (keychain.m
+// is this package's too); a call through an interface of this package
+// counts as a call to every method of that name here.
+func inPackage(info *types.Info, pkg *types.Package, call *ast.CallExpr) bool {
+	var id *ast.Ident
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		id = fun
+	case *ast.SelectorExpr:
+		if x, ok := fun.X.(*ast.Ident); ok && x.Name == "C" {
+			return true
+		}
+		id = fun.Sel
+	default:
+		return false
+	}
+	obj, ok := info.Uses[id].(*types.Func)
+	return ok && obj.Pkg() == pkg
+}
+
+// assertPromptingReadCallers walks this package's source (tests excluded)
+// for every call that reaches the prompting read, fails on a caller not in
+// promptingReadCallers, fails when a function in neverPrompts reaches it
+// through any chain of calls, and checks keychain.m builds KW_Q_FETCH in
+// one place, kw_fetch_mek's non-quiet branch.
+func assertPromptingReadCallers(t *testing.T) {
+	t.Helper()
+	_, self, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(self)
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]map[string]bool{"kw_fetch_mek": {}, "fetchMEK": {}}
+	// calls: function (or method) name -> the names it calls. By name
+	// alone, so a method and a function of the same name are one node: a
+	// chain can only be over-reported, never missed.
+	calls := map[string]map[string]bool{}
+	fset := token.NewFileSet()
+	var parsed []*ast.File
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed = append(parsed, f)
+	}
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+	conf := types.Config{FakeImportC: true, Importer: importer.Default(), Error: func(error) {}}
+	pkg, _ := conf.Check("keychainwrap", fset, parsed, info)
+	for _, f := range parsed {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			caller := fn.Name.Name
+			if calls[caller] == nil {
+				calls[caller] = map[string]bool{}
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name := calledName(call)
+				var target string
+				switch name {
+				case "":
+					return true
+				case "kw_fetch_mek":
+					// quiet is the last argument: a literal 1 is the quiet
+					// read; anything else may prompt.
+					if lit, ok := call.Args[len(call.Args)-1].(*ast.BasicLit); ok && lit.Value == "1" {
+						return true
+					}
+					target = "kw_fetch_mek"
+				case "fetchMEK":
+					target = "fetchMEK"
+				}
+				if inPackage(info, pkg, call) {
+					calls[caller][name] = true
+				}
+				if target == "" {
+					return true
+				}
+				seen[target][caller] = true
+				if !promptingReadCallers[target][caller] {
+					t.Errorf("%s: %s calls %s, the read that may show the keychain's dialog; a comparison or check that must not prompt uses quietFetch", fset.Position(call.Pos()), caller, target)
+				}
+				return true
+			})
+		}
+	}
+	for target, callers := range promptingReadCallers {
+		for c := range callers {
+			if !seen[target][c] {
+				t.Errorf("%s is listed as calling %s but no longer does: take it off the list", c, target)
+			}
+		}
+	}
+	// The graph is only as good as the type check: a known edge of each
+	// kind must be in it, or every chain below would pass by being empty.
+	for _, e := range [][2]string{{"MatchesMEK", "quietFetch"}, {"FetchMEK", "fetchMEK"}, {"InstallMEK", "setMEK"}, {"deleteItem", "secItemDelete"}, {"quietFetch", "cNames"}, {"setMEKWith", "add"}} {
+		if !calls[e[0]][e[1]] {
+			t.Errorf("the call graph has no %s -> %s: the type check resolved too little to trust it", e[0], e[1])
+		}
+	}
+	// Every chain from a function that must never prompt: none may reach
+	// the prompting read (a non-quiet kw_fetch_mek, or fetchMEK).
+	for _, root := range neverPrompts {
+		if calls[root] == nil {
+			t.Errorf("%s is listed as never prompting but isn't in this package", root)
+			continue
+		}
+		prev := map[string]string{root: ""}
+		queue := []string{root}
+		for len(queue) > 0 {
+			fn := queue[0]
+			queue = queue[1:]
+			for callee := range calls[fn] {
+				if _, ok := prev[callee]; ok {
+					continue
+				}
+				prev[callee] = fn
+				if seen["kw_fetch_mek"][callee] || callee == "fetchMEK" {
+					chain := []string{callee}
+					for at := fn; at != ""; at = prev[at] {
+						chain = append([]string{at}, chain...)
+					}
+					t.Errorf("%s reaches the read that may show the keychain's dialog: %s", root, strings.Join(chain, " -> "))
+					continue
+				}
+				queue = append(queue, callee)
+			}
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "keychain.m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if n := strings.Count(src, "kwCopyMatching(KW_Q_FETCH,"); n != 1 {
+		t.Errorf("keychain.m reads with KW_Q_FETCH %d times, want once (kw_fetch_mek, not quiet)", n)
+	} else if fn := strings.Index(src, "KWResult kw_fetch_mek("); fn < 0 || strings.Index(src, "kwCopyMatching(KW_Q_FETCH,") < fn ||
+		strings.Contains(src[fn:strings.Index(src, "kwCopyMatching(KW_Q_FETCH,")], "\n}\n") {
+		t.Error("keychain.m's KW_Q_FETCH read is not inside kw_fetch_mek")
+	}
+}
+
+// No query is built outside the registry: keychain.m calls
+// SecItemCopyMatching and SecItemDelete once each, inside kwCopyMatchingIn
+// and kwDeleteItemIn, which take a registry number.
+func TestEveryQueryGoesThroughTheRegistry(t *testing.T) {
+	_, self, _, _ := runtime.Caller(0)
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(self), "keychain.m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		code.WriteString(line + "\n")
+	}
+	src := code.String()
+	for call, inside := range map[string]string{
+		"SecItemCopyMatching(":   "static OSStatus kwCopyMatchingIn(",
+		"SecItemDelete(":         "static OSStatus kwDeleteItemIn(",
+		"SecKeychainItemDelete(": "static OSStatus kwDeleteRefsIn(",
+	} {
+		if n := strings.Count(src, call); n != 1 {
+			t.Errorf("keychain.m calls %s %d times, want once (through the registry)", call, n)
+			continue
+		}
+		fn := strings.LastIndex(src, inside) // the definition, after any prototype
+		at := strings.Index(src, call)
+		if fn < 0 || at < fn || strings.Contains(src[fn+len(inside):at], "\nstatic ") {
+			t.Errorf("%s is not inside %s", call, inside)
+		}
+	}
+	// The service's delete by reference leaves the process switch alone,
+	// and the CLI's switches it off: each passes its own withoutUI.
+	for fn, want := range map[string]string{
+		"int kw_item_delete_by_ref_no_switch(": "kwDeleteByRefInDefault(service, account, 0)",
+		"int kw_item_delete_by_ref(":           "kwDeleteByRefInDefault(service, account, 1)",
+	} {
+		at := strings.Index(src, fn)
+		if at < 0 {
+			t.Errorf("keychain.m has no %s", fn)
+			continue
+		}
+		body := src[at:]
+		body = body[:strings.Index(body, "\n}\n")]
+		if !strings.Contains(body, want) {
+			t.Errorf("%s...) does not call %s:\n%s", fn, want, body)
+		}
+	}
+}
+
+// errSecInteractionNotAllowed is what a keychain that would have had to ask
+// answers the presence query with: indeterminate, never "absent", which
+// doctor would report as a lost key.
+func TestPresenceFromStatus(t *testing.T) {
+	for status, want := range map[int32]MEKPresence{
+		errSecSuccess:               MEKPresent,
+		errSecItemNotFound:          MEKAbsent,
+		errSecInteractionNotAllowed: MEKIndeterminate,
+		-25293:                      MEKIndeterminate,
+	} {
+		if got := presenceFromStatus(status); got != want {
+			t.Errorf("status %d: %v, want %v", status, got, want)
+		}
+	}
+}
+
+// InstallMEK over an item whose presence could not be checked: setMEK
+// deletes first, so going ahead could replace a different key. Refused.
+func TestInstallMEKWontWriteOverAnUncheckedItem(t *testing.T) {
+	w := testWrapper(noChallenge)
+	cleanupTestMEK(t, w)
+	first := randomMEK(t)
+	if err := w.InstallMEK(first); err != nil {
+		t.Fatal(err)
+	}
+	orig := mekPresence
+	mekPresence = func(*Wrapper) MEKPresence { return MEKIndeterminate }
+	t.Cleanup(func() { mekPresence = orig })
+	if err := w.InstallMEK(randomMEK(t)); err == nil {
+		t.Fatal("wrote over an item it could not check")
+	}
+	mekPresence = orig
+	if same, err := w.MatchesMEK(first); err != nil || !same {
+		t.Fatalf("the stored key changed: same=%v err=%v", same, err)
+	}
+}
+
+// CountOpens: the vault's own key opens its wrapped keys, another key opens
+// none, and a wrapped key under the wrong class does not count.
+func TestCountOpens(t *testing.T) {
+	w := testWrapper(noChallenge)
+	cleanupTestMEK(t, w)
+	if err := w.EnsureMEK(); err != nil {
+		t.Fatal(err)
+	}
+	var keys []WrappedKey
+	for _, class := range []string{"manual", "dotenv"} {
+		wrapped, err := w.WrapKeyLabeled(bytes.Repeat([]byte{9}, 32), "", class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, WrappedKey{Wrapped: wrapped, Class: class})
+	}
+	if n, err := testWrapper(noChallenge).CountOpens(keys); err != nil || n != 2 {
+		t.Fatalf("the key the DEKs were wrapped under opened %d, err %v; want 2", n, err)
+	}
+	if n, _ := testWrapper(noChallenge).CountOpens([]WrappedKey{{keys[0].Wrapped, "dotenv"}}); n != 0 {
+		t.Error("a wrapped key opened under the wrong class")
+	}
+	other := &Wrapper{service: "com.jitpass.vault.mek.TEST-ONLY", account: "other", challenge: noChallenge}
+	cleanupTestMEK(t, other)
+	if err := other.EnsureMEK(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := other.CountOpens(keys); err != nil || n != 0 {
+		t.Fatalf("a different key opened %d, err %v; want 0", n, err)
+	}
+	missing := &Wrapper{service: "com.jitpass.vault.mek.TEST-ONLY", account: "missing", challenge: noChallenge}
+	_, err := missing.CountOpens(keys)
+	var q *QuietReadError
+	if !errors.As(err, &q) || q.Status != errSecItemNotFound || q.MayBeLocked() || q.NotAllowed() {
+		t.Fatalf("no item: %v (%#v), want a QuietReadError with errSecItemNotFound that is neither a lock nor a refusal", err, q)
+	}
+	// Only -25293 is a locked keychain (measured); -25308 is a read this
+	// copy of jit isn't allowed to make without asking, which unlocking
+	// changes nothing about. Neither is the other.
+	for st, want := range map[int32][2]bool{
+		errSecAuthFailed:            {true, false},
+		errSecInteractionNotAllowed: {false, true},
+		errSecItemNotFound:          {false, false},
+		-34018:                      {false, false},
+	} {
+		e := &QuietReadError{Status: st}
+		if got := [2]bool{e.MayBeLocked(), e.NotAllowed()}; got != want {
+			t.Errorf("OSStatus=%d: MayBeLocked, NotAllowed = %v, want %v", st, got, want)
+		}
+	}
+}
+
+// Every comparison of key bytes in this package is constant-time. bytes.Equal
+// returns at the first differing byte; a key check must not.
+func TestKeyComparisonsAreConstantTime(t *testing.T) {
+	assertConstantTimeCompares(t, "rekey.go", "MatchesMEK", "InstallMEK", "PromoteStagedRekeyMEK")
+}
+
+// assertConstantTimeCompares fails if any named function in file calls
+// bytes.Equal, or never calls subtle.ConstantTimeCompare.
+func assertConstantTimeCompares(t *testing.T, file string, funcs ...string) {
+	t.Helper()
+	// Beside this test file, not the working directory: scripts/se-test.sh
+	// runs the test binary from the repository root.
+	_, self, _, _ := runtime.Caller(0)
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(self), file), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		name := fn.Name.Name
+		want := false
+		for _, n := range funcs {
+			want = want || n == name
+		}
+		if !want {
+			continue
+		}
+		seen[name] = true
+		calls := map[string]int{}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+					if pkg, ok := sel.X.(*ast.Ident); ok {
+						calls[pkg.Name+"."+sel.Sel.Name]++
+					}
+				}
+			}
+			return true
+		})
+		if calls["bytes.Equal"] > 0 {
+			t.Errorf("%s compares with bytes.Equal", name)
+		}
+		if calls["subtle.ConstantTimeCompare"] == 0 {
+			t.Errorf("%s never calls subtle.ConstantTimeCompare", name)
+		}
+	}
+	for _, n := range funcs {
+		if !seen[n] {
+			t.Errorf("%s not found in %s", n, file)
+		}
+	}
+}
+
+// TestMain turns keychain interaction off for a hardware run
+// (scripts/se-test.sh sets JIT_SE_TEST=1) before any test starts, so no
+// test in it can raise a keychain dialog on the Mac running it.
+func TestMain(m *testing.M) {
+	if os.Getenv("JIT_SE_TEST") == "1" {
+		DisallowKeychainUITesting()
+	}
+	os.Exit(m.Run())
+}

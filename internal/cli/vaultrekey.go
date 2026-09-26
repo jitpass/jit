@@ -23,6 +23,7 @@ import (
 var (
 	vaultRekeyYes     bool
 	vaultRekeyWrapper string
+	vaultRekeyForce   bool
 )
 
 // rekeyMarkerPath is the in-progress marker `jit vault rekey` holds for
@@ -210,5 +211,11 @@ func init() {
 	// in the field would only be refused.
 	vaultRekeyCmd.Flags().StringVar(&vaultRekeyWrapper, "wrapper", "", `move the vault key: "secure-enclave" or "keychain"`)
 	_ = vaultRekeyCmd.Flags().MarkHidden("wrapper")
+	// With --wrapper secure-enclave on a vault already in the enclave:
+	// delete the keychain item under the vault key's name even when it is
+	// not this vault's key, or can't be read (removeKeychainCopy). Hidden
+	// with --wrapper, which it only goes with.
+	vaultRekeyCmd.Flags().BoolVar(&vaultRekeyForce, "force", false, "with --wrapper secure-enclave: also delete a keychain key that isn't this vault's")
+	_ = vaultRekeyCmd.Flags().MarkHidden("force")
 	vaultCmd.AddCommand(vaultRekeyCmd)
 }

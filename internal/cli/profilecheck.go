@@ -206,6 +206,16 @@ const (
 	// envelope is intact, so nothing else notices. A hard problem: those
 	// secrets cannot be read.
 	kindVaultRestore checkKind = "vault_restore"
+	// kindVaultKeyCopy: the vault's key is in the Secure Enclave, and the
+	// login keychain still holds an item under the vault key's name, usually
+	// the copy a move into the enclave could not delete. Nothing fails: this
+	// jit never reads it (keystore.Open follows the sealed file). A hard
+	// problem all the same, and `jit status` shows it red to match: any
+	// program running as the user, and an older jit, can read it, and the
+	// user chose the enclave so none could. `jit vault rekey --wrapper
+	// secure-enclave` removes it when it is the same key, and names
+	// --force when it is not or can't be read.
+	kindVaultKeyCopy checkKind = "vault_key_copy"
 	// kindLegacyEnvelope: secrets are still stored in the pre-AAD envelope
 	// (v1), whose payload is sealed with no additional authenticated data
 	// and so is bound to nothing — two v1 payloads can be exchanged and both
@@ -352,7 +362,7 @@ var allCheckKinds = []checkKind{
 	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
 	kindMountStale, kindMountMoved, kindMountUnregistered,
-	kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindLegacyEnvelope,
+	kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindVaultKeyCopy, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
