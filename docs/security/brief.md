@@ -58,9 +58,13 @@ account safe.
   with a per-secret data key, wrapped by a single master key. Ciphertext is
   bound to the secret's vault path and metadata, so a swapped or renamed file
   fails to decrypt rather than resolving as the wrong secret.
-- **Master key.** Held in the macOS login Keychain, released only after a
-  Touch ID or device-passcode challenge. See the caveat below about what kind
-  of guarantee that is today.
+- **Master key.** Held in the macOS login Keychain by default, released
+  only after a Touch ID or device-passcode challenge; see the caveat below
+  about what kind of guarantee that is. Opt-in since 2.3.0 (JitPass's
+  Settings › Protection, or `jit vault rekey --wrapper secure-enclave`): the
+  key is sealed to a Secure Enclave key instead, which only JitPass's signed
+  helper can use, after a Touch ID or password check the enclave enforces.
+  See [The vault key in the Secure Enclave](../vault/secure-enclave.md).
 - **In use.** Secrets reach a tool one of three ways, all avoiding a plaintext
   file: environment injection followed by `execve` (jit's own image is
   replaced), a native credential helper the tool already calls, or a live
@@ -100,15 +104,20 @@ session, not the scope. A cloned repo's config, or a script that slips a
 
 ## Deliberate limits (stated plainly)
 
-- **Local-auth-bound, not hardware-enforced (today).** The Touch ID gate is an
-  application-level LocalAuthentication challenge, not an OS-enforced Keychain
-  ACL or a Secure Enclave binding, because a real ACL needs a
-  provisioning-profile-authorized entitlement that macOS will only honor
-  inside an `.app` bundle, and a bare CLI binary has nowhere to carry it, signed
-  or not (see `spike/secure-enclave/FINDINGS.md`). A determined attacker with
-  local code execution could read the plain Keychain item directly while the
-  vault is locked, and could ask the service while it is unlocked. This is the
-  accepted Phase 1 boundary.
+- **In the keychain (the default), local-auth-bound, not hardware-enforced.**
+  There the Touch ID gate is an application-level LocalAuthentication
+  challenge, and the key is a plain login-keychain item: an OS-enforced
+  access control needs a provisioning-profile-authorized entitlement that
+  macOS will only honor inside an `.app` bundle, and a bare CLI binary has
+  nowhere to carry it, signed or not (`spike/secure-enclave-mek/FINDINGS.md`).
+  A determined attacker with local code execution could read that item
+  directly while the vault is locked, and could ask the service while it is
+  unlocked. Moving the key into the Secure Enclave closes the first: the
+  sealed key opens only through JitPass's signed helper, after the enclave's
+  own Touch ID or password check. It does not close the second: while the
+  vault is unlocked, the service holds the key in memory for the session,
+  wherever it rests. The Secure Enclave is opt-in, and needs the `jit` inside
+  JitPass.app; a tarball or `go install` build keeps the keychain.
 - **A process you give a secret to can do anything with it.** Delivery is the
   end of jit's control; that is why the decision point is the caller-naming
   prompt, before delivery.

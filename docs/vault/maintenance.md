@@ -31,6 +31,11 @@ verified before it's written, re-running `jit vault rekey` finishes an
 interrupted rotation, and other vault commands refuse to write while one is
 in progress.
 
+`jit vault rekey --wrapper secure-enclave` and `--wrapper keychain` do
+something else: they move the master key between your login keychain and
+your Mac's Secure Enclave without changing it. See
+[The vault key in the Secure Enclave](./secure-enclave.md).
+
 ## `jit vault duplicates` - find groups that hold the same secrets
 
 Answers "which of these look-alike groups can I safely delete?" - the

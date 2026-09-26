@@ -104,7 +104,10 @@ ID. Until then the job runs as it was. A stopped job is changed from its
 
 Approve with `--ask never` (or *Never, until you remove it* on the sheet)
 and the job runs with no Touch ID, even with the vault locked, using a key of
-its own in your keychain. Removing the job deletes that key.
+its own. That key is kept where the vault's key is: your keychain, or, if you
+moved the vault key into the [Secure Enclave](../vault/secure-enclave.md),
+the Secure Enclave, where it opens without Touch ID and only JitPass can use
+it. Removing the job deletes that key.
 
 ## What this does not protect
 
