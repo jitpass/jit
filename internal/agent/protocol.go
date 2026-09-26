@@ -627,6 +627,20 @@ type JobStatus struct {
 	LastCaller   string       `json:"last_caller,omitempty"`
 	LastRefusal  string       `json:"last_refusal,omitempty"`
 	LastHidden   int          `json:"last_hidden,omitempty"`
+	// Stopped says the job won't run until it is approved again: it was
+	// stopped, or a check that stops it (a changed file, a rotated secret)
+	// already fails. Always present, so a client never infers it from
+	// State or LastRefusal's words.
+	Stopped bool `json:"stopped"`
+	// Outcome is where the job stands, in SessionEvent.JobOutcome's words:
+	// JobOutcomeStop when Stopped; else JobOutcomePersistingSkip once a
+	// streak of skipped runs has been told; else JobOutcomeSkip while one
+	// is on; empty for a job that runs.
+	Outcome string `json:"outcome,omitempty"`
+	// Skips is how many runs in a row were skipped (JobOutcomeSkip), and
+	// SkippingSinceUnix when the first of them was; zero once a run runs.
+	Skips             int   `json:"skips,omitempty"`
+	SkippingSinceUnix int64 `json:"skipping_since_unix,omitempty"`
 }
 
 // JobPreview is what approving a job WOULD do, from the same checks
@@ -844,7 +858,31 @@ type SessionEvent struct {
 	// rendering the pending request can show that job's command, folder and
 	// secrets from job_list (design/agent-jobs.md, step 4). Empty otherwise.
 	Job string `json:"job,omitempty"`
+	// JobOutcome, on a job_run event whose run did not happen, says what
+	// that means for the job, so a client decides from this and never from
+	// Cause's words: JobOutcomeStop, JobOutcomeStillStopped, JobOutcomeSkip
+	// or JobOutcomePersistingSkip. Empty on every other event.
+	JobOutcome string `json:"job_outcome,omitempty"`
 }
+
+// The job outcomes (SessionEvent.JobOutcome, JobStatus.Outcome).
+const (
+	// JobOutcomeStop: this run stopped the job. It won't run until it is
+	// approved again. The one to announce.
+	JobOutcomeStop = "stop"
+	// JobOutcomeStillStopped: a run of a job already stopped was refused.
+	// Nothing new: the stop was announced when it happened.
+	JobOutcomeStillStopped = "still-stopped"
+	// JobOutcomeSkip: this run didn't happen for a cause outside the job
+	// (its key couldn't be used right now). NOT a stop: the next run tries
+	// again. Not worth an announcement on its own.
+	JobOutcomeSkip = "skip"
+	// JobOutcomePersistingSkip: a skip that has gone on (jobSkipsToTell in a
+	// row, or jobSkipTimeToTell since the first), recorded once per streak.
+	// Still not a stop, but worth announcing: the owner should learn the
+	// job hasn't been running.
+	JobOutcomePersistingSkip = "persisting-skip"
+)
 
 // MountRevealStatus is one currently-served mount's state — deliberately
 // plain strings/bools/ints, not a type from internal/mount, since this

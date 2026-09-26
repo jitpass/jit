@@ -103,6 +103,17 @@ type Job struct {
 	LastRefusal   string `json:"last_refusal,omitempty"`
 	LastHiddenSum int    `json:"last_hidden,omitempty"`
 
+	// SkipsInARow counts the runs in a row that were skipped for a cause
+	// outside the job (its key couldn't be used right now), which is NOT a
+	// stop: each next run tries again. SkippingSince is when the first of
+	// them was, and SkipTold says the owner has been told this streak goes
+	// on (internal/agent's "persisting-skip" event), so they are told once
+	// per streak. A run that runs, a stop, and a new approval end the
+	// streak.
+	SkipsInARow       int   `json:"skips_in_a_row,omitempty"`
+	SkippingSinceUnix int64 `json:"skipping_since_unix,omitempty"`
+	SkipTold          bool  `json:"skip_told,omitempty"`
+
 	// raw is the object this job was read from, if it was: its fields this
 	// build does not know are written back with it (store.go). A job
 	// approved again is a new Job, and starts without one.
