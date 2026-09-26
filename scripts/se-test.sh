@@ -22,6 +22,10 @@
 #   SIGN_IDENTITY  codesign identity (default: the team's Apple Development one)
 #   TEAM_ID        default CZC6BH93GJ
 #   PKG            the package whose tests to run (default ./internal/secureenclave)
+#   IDENTIFIER     code identifier to sign with (default: the bundle ID). The
+#                  shipped helper is signed `-i jit` (S3f); IDENTIFIER=jit
+#                  signs the same way, which a test reading a keychain item an
+#                  older jit made needs to read it with no dialog
 #
 # Needs a Mac listed in the development profile. CI cannot run this until the
 # profile is a CI secret (design/secure-enclave-plan.md, B1); until then it is
@@ -87,7 +91,9 @@ cat > "$work/test.entitlements" <<ENT
 <key>keychain-access-groups</key><array><string>$GROUP</string></array>
 </dict></plist>
 ENT
-codesign --force --options runtime --timestamp=none --entitlements "$work/test.entitlements" --sign "$SIGN_IDENTITY" "$app"
+idflag=()
+[[ -n "${IDENTIFIER:-}" ]] && idflag=(-i "$IDENTIFIER")
+codesign --force --options runtime --timestamp=none ${idflag[@]+"${idflag[@]}"} --entitlements "$work/test.entitlements" --sign "$SIGN_IDENTITY" "$app"
 codesign --verify --strict "$app"
 
 JIT_SE_TEST=1 "$app/Contents/MacOS/secureenclave.test" -test.v -test.count=1 "$@"

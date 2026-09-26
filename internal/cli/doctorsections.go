@@ -459,6 +459,23 @@ func gatherVaultIntegrityFindingsWith(root string, v *vault.Vault, lost lostKeyC
 		})
 	}
 
+	// A key under the vault key's name in the keychain of an enclave vault:
+	// usually the copy a move could not delete. The same check `jit status`
+	// reports as keychain_copy_left, from the keychain item's metadata only,
+	// so it cannot prompt, and so it can't say whether the item is the same
+	// key; the wording says only what is known. The one command resolves
+	// every case: the same key is removed, and a different or unreadable
+	// one is refused with the --force form explained (removeKeychainCopy).
+	// Reported whatever the vault holds: an empty vault's key is still the
+	// key its next secret gets.
+	if keychainCopyLeft(root, openKeyStore(root).Kind()) {
+		out = append(out, checkFinding{
+			Kind:   kindVaultKeyCopy,
+			Detail: "the vault key is in the Secure Enclave, but a key is still in your keychain under the vault key's name, where any program running as you can read it.",
+			Action: "`jit vault rekey --wrapper secure-enclave` to remove it",
+		})
+	}
+
 	// An empty vault with no key is a machine that hasn't run `jit vault
 	// init`, which is a state, not a fault — and `jit status` already says
 	// "no secrets yet". Only a vault with something IN it can be orphaned

@@ -1025,7 +1025,8 @@ var vaultInitCmd = &cobra.Command{
 			lockAgent()
 			defer lockAgent()
 		}
-		if err := store.Init(); err != nil {
+		res, err := store.Init()
+		if err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		// Pin this machine's envelope-recipient identifier now, at init,
@@ -1034,6 +1035,14 @@ var vaultInitCmd = &cobra.Command{
 		// secret ever depends on it.
 		if _, err := vault.EnsureDeviceID(root); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
+		}
+		if res == keystore.InitRecovered {
+			// Said, never done silently: the vault now opens from a key
+			// that was left in the keychain (keystore's enclaveStore.Init).
+			fmt.Fprintln(cmd.OutOrStdout(), "This Mac's Secure Enclave no longer has the vault key.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Your keychain still had it, and it opens every secret.")
+			fmt.Fprintln(cmd.OutOrStdout(), "The vault key is in your keychain now; nothing needs restoring.")
+			return nil
 		}
 		fmt.Fprint(cmd.OutOrStdout(), hlCmds(fmt.Sprintf("Vault initialized at %s.\nRun `jit vault set <path>` to add a secret, or `jit migrate .` to move existing secrets in.\n", root)))
 		return nil
@@ -2572,7 +2581,7 @@ var vaultDeleteCmd = &cobra.Command{
 		// taken the sealed key file an enclave vault would look like a
 		// keychain one, leaving its enclave key behind.
 		ks := openKeyStore(root)
-		keyWhere := "in the macOS keychain"
+		keyWhere := keyInKeychain
 		if ks.Kind() == keystore.KindSecureEnclave {
 			keyWhere = "in this Mac's Secure Enclave"
 		}
@@ -2599,12 +2608,21 @@ var vaultDeleteCmd = &cobra.Command{
 			return fmt.Errorf("jit vault delete: removing the undo index: %w", err)
 		}
 		// Best-effort on purpose: with every encrypted file already gone
-		// above, a keychain entry that couldn't be removed (or was already
-		// gone) protects nothing — warn rather than leave the command
-		// half-failed over the least consequential step.
-		if err := ks.Delete(); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: couldn't remove the vault's key %s (it may already be gone): %v\n", keyWhere, err)
-		} else {
+		// above, a key that couldn't be removed protects nothing, so the
+		// command warns rather than fail half-way. Each warning names the
+		// key that stayed (keystore's ErrEnclaveKeyKept and
+		// ErrKeychainCopyKept), because one of them is not harmless: a
+		// keychain item under the vault key's name is what the next `jit
+		// vault init` reuses as the new vault's key (kw_ensure_mek keeps an
+		// item it finds). The delete already took the reference fallback
+		// (an older jit's item, S3g), so the warning names the item to
+		// delete by hand and says why (design/secure-enclave.md, "A key
+		// left in the keychain").
+		keyErr := ks.Delete()
+		for _, w := range keyDeleteWarnings(keyErr, keyWhere) {
+			fmt.Fprintln(cmd.ErrOrStderr(), hlCmds(w))
+		}
+		if keyErr == nil || (ks.Kind() == keystore.KindSecureEnclave && !errors.Is(keyErr, keystore.ErrEnclaveKeyKept)) {
 			removed = append(removed, "the vault's key "+keyWhere)
 		}
 		if locked := lockAgentAfterMEKDeletion(root, cmd.ErrOrStderr()); locked != "" {
@@ -2616,6 +2634,53 @@ var vaultDeleteCmd = &cobra.Command{
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("The vault is gone. Run `jit vault init` to start fresh."))
 		return nil
 	},
+}
+
+// keyDeleteWarnings turns a Store.Delete error into one warning per key
+// that stayed, each naming that key. A keychain item that stayed (an
+// enclave vault's copy, or a keychain vault's own key) is named with the
+// way to remove it, because the next `jit vault init` reuses it.
+func keyDeleteWarnings(err error, keyWhere string) []string {
+	if err == nil {
+		return nil
+	}
+	parts := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts = joined.Unwrap()
+	}
+	var out []string
+	for _, p := range parts {
+		switch {
+		case errors.Is(p, keystore.ErrKeychainCopyKept):
+			out = append(out, keychainKeptWarning("the old copy of the vault key", causeOf(p, keystore.ErrKeychainCopyKept)))
+		case errors.Is(p, keystore.ErrEnclaveKeyKept):
+			out = append(out, "warning: "+p.Error())
+		case keyWhere == keyInKeychain:
+			out = append(out, keychainKeptWarning("the vault key", p))
+		default:
+			out = append(out, fmt.Sprintf("warning: couldn't delete the vault's key %s: %v", keyWhere, p))
+		}
+	}
+	return out
+}
+
+// keyInKeychain is how `jit vault delete` names a keychain vault's key.
+const keyInKeychain = "in the macOS keychain"
+
+// keychainKeptWarning is `jit vault delete`'s warning for a keychain item
+// under the vault key's name that would not delete: it names the item and
+// says what keeping it means.
+func keychainKeptWarning(what string, err any) string {
+	return fmt.Sprintf("warning: couldn't delete %s from your keychain\n"+
+		"(%v).\n"+
+		"Delete %q in Keychain Access,\n"+
+		"or a new vault made with `jit vault init` reuses it.", what, err, keystore.KeychainItemName)
+}
+
+// causeOf is err's message without its sentinel's: the keychain's own
+// error, from the "<sentinel>: <cause>" keystore's Delete builds.
+func causeOf(err, sentinel error) string {
+	return strings.TrimPrefix(err.Error(), sentinel.Error()+": ")
 }
 
 // lockAgentAfterMEKDeletion locks a reachable agent's cached session right

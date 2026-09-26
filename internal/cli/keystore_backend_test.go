@@ -23,6 +23,10 @@ type recordingStore struct {
 	kind     keystore.Kind
 	deleted  *[]keystore.Kind
 	presence keystore.Presence // zero value Indeterminate; see Presence
+
+	deleteErr error               // what Delete answers
+	inits     *int                // counts Init calls, when set
+	initRes   keystore.InitResult // what Init answers
 }
 
 func (s recordingStore) Kind() keystore.Kind { return s.kind }
@@ -34,8 +38,16 @@ func (s recordingStore) Presence() keystore.Presence {
 }
 func (recordingStore) NewFetcher() keystore.Fetcher { panic("no key in a test") }
 func (recordingStore) NewWrapper() keystore.Wrapper { panic("no key in a test") }
-func (recordingStore) Init() error                  { return nil }
-func (s recordingStore) Delete() error              { *s.deleted = append(*s.deleted, s.kind); return nil }
+func (s recordingStore) Init() (keystore.InitResult, error) {
+	if s.inits != nil {
+		*s.inits++
+	}
+	return s.initRes, nil
+}
+func (s recordingStore) Delete() error {
+	*s.deleted = append(*s.deleted, s.kind)
+	return s.deleteErr
+}
 
 // stubKeyStores makes openKeyStore decide the way keystore.Open does (a
 // sealed key file means the Secure Enclave) and returns the kinds whose

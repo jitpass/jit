@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,10 +18,11 @@ import (
 	"github.com/jitpass/jit/internal/selfpath"
 )
 
-// This file is the launchd seam and its mechanics: writing the LaunchAgent
-// plist, reading values back out of it, (re)loading it, demanding a spawn,
-// and waiting for the result — plus the one place that parses `launchctl
-// print`. Two callers compose launchctl verbs remotely through the seam
+// This file is the launchd mechanics: writing the LaunchAgent plist, reading
+// values back out of it, (re)loading it, demanding a spawn, and waiting for
+// the result — plus the one place that parses `launchctl print`. Every
+// launchctl it runs goes through launchctlRun, the seam in launchctl.go that
+// a test binary cannot point at the real service. Two callers compose launchctl verbs remotely through the seam
 // rather than through a helper here: the self-retire kickstart (servicerun.go,
 // which must run inside the daemon) and uninstall's bootout (uninstall.go,
 // which tears down rather than manages). The plist path/existence probes live
@@ -427,14 +427,6 @@ func agentDomainTarget() string {
 
 func agentServiceTarget() string {
 	return agentDomainTarget() + "/" + agentPlistLabel
-}
-
-// launchctlRun runs launchctl with fixed, jit-controlled arguments and
-// returns its combined output. A package var (not a direct exec) purely so
-// tests can substitute a fake and drive install/restart's recovery logic
-// without spawning real launchd — the exec'd path was otherwise untestable.
-var launchctlRun = func(args ...string) ([]byte, error) {
-	return exec.Command("launchctl", args...).CombinedOutput() // #nosec G204 -- fixed subcommands with jit's own label/domain/plist path, never external input
 }
 
 // reloadAgentService (re)loads the service's launchd service from plistPath:

@@ -120,8 +120,84 @@ Enclave."*
 5. Only then delete the plain keychain item. Remove the marker.
 
 A crash anywhere before step 5 leaves the plain key in place and working.
+Step 5 is the one that may fail without blocking the vault: once the sealed
+file is in place the vault opens from the enclave, so a keychain copy that
+won't delete (an older jit's item refused the delete on real hardware,
+S3g in `spike/secure-enclave-mek/FINDINGS.md`) finishes the move anyway and
+is reported until removed. The move says an older jit elsewhere on this Mac
+can still read it: that copy is the key, readable, not a dead leftover. Its
+way out depends on a quiet read of the copy made right after: a locked
+keychain (-25293) is "unlock it, then `jit vault rekey --wrapper
+secure-enclave`"; a copy this jit isn't allowed to read (-25308) or can't
+use never names that command as the fix, since its removal would fail the
+same way. When the enclave opened in the same run, Keychain Access is
+named as the person's choice (this vault doesn't need the copy);
+otherwise the command, which opens the enclave first and then names it.
+
+**A key left in the keychain.** `jit vault delete` deletes the vault's key,
+and for an enclave vault the keychain copy too, through the reference
+fallback when an older jit made it (S3g). If a keychain item under the vault
+key's name still won't go, delete finishes and says so, naming the item:
+"couldn't delete the old copy of the vault key from your keychain (<err>).
+Delete "com.jitpass.vault.mek" in Keychain Access, or a new vault made with
+`jit vault init` reuses it." (for a keychain vault, "the vault key" rather
+than "the old copy"). The enclave key and the copy each get their own
+warning (`ErrEnclaveKeyKept`, `ErrKeychainCopyKept`).
+
+`jit vault init` on a keychain vault then does what it always has:
+`kw_ensure_mek` keeps an item it finds. That is a known weakness, chosen
+over the alternative. PR #170 first wrote a `keychain-key.leftover` marker
+and refused every use of the key until init had asked about it. A review
+found that worse: an older jit that ignored the marker could init and store
+secrets under the key, after which every command, the service's unlock and
+rekey were refused on a vault that worked, and the only way out deleted the
+key those secrets needed; `jit status`, `jit doctor` and the app could not
+see the marker; and a service session already unlocked walked past it. The
+weakness left is narrow and visible: it needs a delete that failed even
+through the fallback, which the warning names on the spot, and the reused
+key is one that was already on this Mac, readable by the same programs as
+before. A lockout of a working vault is neither.
+
+**Init over a lost enclave key.** `jit vault init` over a LOST enclave key
+measures an item it finds (`keystore.KeychainKeyOpens`: read with no
+challenge and no dialog, always, and tried against every live secret): if
+it opens every live secret, it is the vault's own key and the vault is
+restored from it, said in three lines, with `vault-key.sealed` set aside
+as `vault-key.sealed.recovered-<time>` and nothing pending. Anything else
+is refused with nothing changed, and one rule decides the wording: **jit
+advises removing a keychain item only when it has proven the item opens
+none of this vault's secrets** (read, every live secret tried, none
+untested, none opened, at least one secret). That case alone says "Remove
+"com.jitpass.vault.mek" in Keychain Access, then run `jit vault init`
+again". Otherwise:
+
+- a LOCKED login keychain (presence answers, the quiet read fails at once
+  with -25293, `QuietReadError.MayBeLocked`): "your keychain may be
+  locked … Unlock it, then run `jit vault init` again".
+- an item this copy of jit isn't allowed to read (-25308,
+  `QuietReadError.NotAllowed`; another signer's or another path's item):
+  not a lock, and every run of this jit fails the same way. It says so,
+  and leaves removing the item to the person, recovery file first: "If
+  your recovery file has your secrets, you can remove that key yourself in
+  Keychain Access (…), run `jit vault init` again, then import the file;
+  jit can't tell whether that key is still needed".
+- an item jit can't use (not a master key, another status), or a vault
+  with no secrets to try it on: the same person's-choice line.
+- secrets whose envelope couldn't be read (untested): "jit couldn't test N
+  secrets against the key in your keychain … Nothing changed; jit won't
+  use that key or remove it. Once jit can read them, run `jit vault init`
+  again".
+- a key that opens some of the secrets: the cost said plainly ("Removing
+  it loses those N unless your recovery file has them. jit won't use it or
+  remove it"), then the person's-choice line.
+
+Nothing in these refusals says "delete".
+
 The reverse, `--wrapper keychain`, writes the plain item back, verifies it,
-then deletes the sealed file and the enclave key. **The reverse ships
+then deletes the sealed file and the enclave key. An item already under
+the vault key's name that it can't read quietly
+(`keychainwrap.ErrExistingKeyUnreadable`) is never written over: the move
+stops with nothing changed, worded by the cause as above. **The reverse ships
 tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK
 itself stays today's `vault rekey`; under the enclave, staging a new MEK is
 sealing it, which S1b shows needs no prompt.
@@ -135,6 +211,7 @@ sealing it, which S1b shows needs no prompt.
 | A marker jit can't read, or a change it doesn't recognise (a move to a target only a newer jit knows) | nothing new | `rekey_unknown` | none: "update jit, then finish it with the newer jit", or make the file readable |
 | Secrets still sealed to a lost enclave key | `vault.restore_pending`: `true` | `vault_restore` | `jit vault import <file>` |
 | The lost-key record can't be checked | `vault.restore_pending`: `true`, `vault.restore_check_error`: why | `vault_restore`, detail "couldn't check the vault for secrets sealed to a lost key: …" | `jit vault import --finish` |
+| The key is in the enclave and a key is still in the keychain under its name (usually a copy a move could not delete; S3g) | `vault.keychain_copy_left`: `true` (the keychain item's metadata, no prompt); the status row is red, like doctor's | `vault_key_copy`, a problem | `jit vault rekey --wrapper secure-enclave` (one enclave dialog; deletes the item when it is the same key; a different key is refused, naming `--force`; an unreadable one is refused, worded by the cause: a locked keychain (-25293) is "unlock it and run this again", and an item this copy of jit isn't allowed to read (-25308) or can't use names Keychain Access as the person's choice (the enclave opened, so this vault doesn't need it), never `--force`, whose measure would fail the same way. `--force` needs a typed yes to a question that names the risk, so it refuses `--yes` and a stdin that isn't a terminal, and it first measures the item, which it always reads: one that opens any of this vault's secrets is refused, and so is one it couldn't read or test against every live secret (an unreadable envelope: "jit couldn't test N secrets against that key; it was left alone"); only one read, tried on every secret, and opening none is deleted) |
 
 A rotation resumes only over a marker it can prove is a rotation's (the
 `started …` line `jit vault rekey` writes). Resuming over a move this jit

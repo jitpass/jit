@@ -103,15 +103,33 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 
 // Delete destroys the key. Idempotent: a key already gone is success,
 // since the state the caller wants is "no key".
+//
+// The long-running service calls this (a revoke, an expiry, the unused-key
+// cleanup, a move of grant keys). A key another jit made at another path
+// (a switch between the tarball or cask and the app: S3g, the creator's
+// PATH decides) answers SecItemDelete with errSecInvalidOwnerEdit, and
+// without a fallback a revoked grant's key would stay and the cleanup
+// would fail on it at every start. So it takes the reference fallback, in
+// its service form (serviceRefFallback): never the CLI form, which
+// switches keychain UI off for the whole process (kwWithoutUI), under every
+// other request in flight. The lookup still refuses UI per call, and the
+// delete by reference needs none on these items (keychain.m,
+// kwDeleteRefsIn; TestHardwareGrantKeyDeleteAnOldJitsItem*). It is not
+// tried at all on a LOCKED default keychain (never measured with
+// interaction on): the error says "your keychain is locked", which the
+// revoke or remove passes on in its key note, and the start-up cleanup
+// tries the key again the next time the service starts.
 func (g GrantKeys) Delete(id string) error {
 	w, err := g.wrapper(id)
 	if err != nil {
 		return err
 	}
-	if w.MEKPresence() == MEKAbsent {
+	ops := newItemOps(w)
+	if ops.presence() == MEKAbsent {
 		return nil
 	}
-	return w.deleteMEK()
+	_, err = deleteItem(ops, deleteOpts{fallback: serviceRefFallback, verb: "delete failed"})
+	return err
 }
 
 // List returns every grant id with a keychain key, from metadata only: it

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/secureenclave"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -24,6 +25,20 @@ var _ agent.ClosableFetcher = Fetcher(nil)
 // reach the production keychain item, and keychainwrap's TEST-ONLY rule says
 // no test may (its package comment has the incident). Construction is safe:
 // keychainwrap.New touches nothing until used.
+
+// TestMain disarms deleteKeychainCopy for the whole package before any test
+// runs: enclaveStore.Delete calls it, and the real one deletes the
+// production vault key item. A test that wants it counts calls through
+// withFakeEnclave.
+func TestMain(m *testing.M) {
+	deleteKeychainCopy = func() error { panic("a keystore test reached the production keychain item") }
+	// Init over a lost key checks the production keychain for a leftover
+	// key: no item there, unless a test says otherwise (withLeftover).
+	leftoverPresence = func() Presence { return Absent }
+	leftoverOpens = func(string) (KeyMeasure, error) { panic("a keystore test reached the production keychain item") }
+	newKeychainKey = func() KeychainKey { panic("a keystore test reached the production keychain item") }
+	os.Exit(m.Run())
+}
 
 func TestOpenWithoutASealedFileIsTheKeychain(t *testing.T) {
 	if k := Open(t.TempDir()).Kind(); k != KindKeychain {
@@ -68,6 +83,9 @@ type fakeEnclave struct {
 	deleted  *int
 }
 
+// kcCopyDeletes counts deleteKeychainCopy calls under withFakeEnclave.
+var kcCopyDeletes int
+
 func (f fakeEnclave) Presence() secureenclave.Presence { return f.presence }
 func (f fakeEnclave) Delete() error                    { *f.deleted++; return nil }
 
@@ -76,7 +94,10 @@ func withFakeEnclave(t *testing.T, p secureenclave.Presence) *int {
 	deleted := new(int)
 	orig := newEnclaveWrapper
 	newEnclaveWrapper = func(string) enclaveWrapper { return fakeEnclave{presence: p, deleted: deleted} }
-	t.Cleanup(func() { newEnclaveWrapper = orig })
+	origCopy := deleteKeychainCopy
+	kcCopyDeletes = 0
+	deleteKeychainCopy = func() error { kcCopyDeletes++; return nil }
+	t.Cleanup(func() { newEnclaveWrapper, deleteKeychainCopy = orig, origCopy })
 	return deleted
 }
 
@@ -99,8 +120,8 @@ func TestEnclavePresenceMapping(t *testing.T) {
 // open none of the existing secrets, so a lost key must say so.
 func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	withFakeEnclave(t, secureenclave.Present)
-	if err := (enclaveStore{}).Init(); err != nil {
-		t.Fatalf("Init over a present key: %v", err)
+	if res, err := (enclaveStore{}).Init(); err != nil || res != InitReady {
+		t.Fatalf("Init over a present key: %v, %v", res, err)
 	}
 	// A lost key: the sealed file is set aside (kept, it names the old
 	// key) and a keychain key is made, so a recovery file can be imported.
@@ -113,8 +134,8 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	origInit := initKeychain
 	initKeychain = func() error { made++; return nil }
 	t.Cleanup(func() { initKeychain = origInit })
-	if err := (enclaveStore{root: root}).Init(); err != nil {
-		t.Fatalf("Init over a lost key: %v", err)
+	if res, err := (enclaveStore{root: root}).Init(); err != nil || res != InitNewKey {
+		t.Fatalf("Init over a lost key: %v, %v", res, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, LostSealedFile)); err != nil {
 		t.Errorf("the lost sealed file was not kept aside: %v", err)
@@ -123,7 +144,7 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 		t.Errorf("after Init: backend %q, keychain keys made %d; want keychain and 1", k, made)
 	}
 	withFakeEnclave(t, secureenclave.Unavailable)
-	if err := (enclaveStore{}).Init(); !errors.Is(err, secureenclave.ErrUnavailable) {
+	if _, err := (enclaveStore{}).Init(); !errors.Is(err, secureenclave.ErrUnavailable) {
 		t.Fatalf("Init unreachable: %v, want ErrUnavailable", err)
 	}
 }
@@ -145,7 +166,7 @@ func TestEnclaveInitOverALostKeyRecordsWhatItCannotOpen(t *testing.T) {
 	initKeychain = func() error { return nil }
 	t.Cleanup(func() { initKeychain = origInit })
 
-	if err := (enclaveStore{root: root}).Init(); err != nil {
+	if _, err := (enclaveStore{root: root}).Init(); err != nil {
 		t.Fatalf("Init over a lost key: %v", err)
 	}
 	sealed, known, err := vault.SealedToLostKey(root)
@@ -169,10 +190,27 @@ func TestEnclaveDeleteDeletesTheEnclaveKey(t *testing.T) {
 	}
 }
 
+// A keychain copy a move left behind is the same key; deleting the vault
+// must take it too, or the next `jit vault init` keeps it (kw_ensure_mek
+// reuses an item it finds) and the "new" vault runs on the old key.
+func TestEnclaveDeleteAlsoDeletesAKeychainCopy(t *testing.T) {
+	withFakeEnclave(t, secureenclave.Present)
+	if err := (enclaveStore{}).Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if kcCopyDeletes != 1 {
+		t.Fatalf("keychain copy deletes = %d, want 1", kcCopyDeletes)
+	}
+}
+
 // Fresh per call is load-bearing: a wrapper caches the MEK for its whole
 // life, so handing out one shared wrapper would let every later unlock or
 // command skip its challenge.
 func TestFetchersAndWrappersAreFreshEachTime(t *testing.T) {
+	// The real constructor: building a keychainwrap.Wrapper touches no item.
+	orig := newKeychainKey
+	newKeychainKey = func() KeychainKey { return keychainwrap.New() }
+	t.Cleanup(func() { newKeychainKey = orig })
 	s := Open(t.TempDir())
 	if s.NewFetcher() == s.NewFetcher() {
 		t.Fatal("NewFetcher returned the same fetcher twice")

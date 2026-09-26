@@ -728,3 +728,70 @@ func TestImportFinishRefusesWhileTheRecordListsSecrets(t *testing.T) {
 		t.Error("--finish accepted a file")
 	}
 }
+
+// A keychain copy a move could not delete: status says keychain_copy_left
+// with an amber row, doctor a vault_key_copy finding whose one fix is the
+// command that removes it. Both from the same no-prompt check.
+func TestKeychainCopyIsReported(t *testing.T) {
+	stubKeychain(t, keystore.Present)
+	w := newMoveWorld(t)
+	w.startInKeychain()
+	w.failDelete = errOwnerEdit
+	if err := w.mover().toEnclave(); err != nil {
+		t.Fatal(err)
+	}
+	orig := keychainCopyPresence
+	keychainCopyPresence = func() keystore.Presence { return keystore.Present }
+	t.Cleanup(func() { keychainCopyPresence = orig })
+	v := &vault.Vault{Root: w.root, RecipientID: "test"}
+
+	vs, err := gatherVaultStatus(v, w.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := vaultJSON(t, vs)
+	if decoded["keychain_copy_left"] != true || decoded["key_store"] != "secure-enclave" {
+		t.Errorf("status JSON = %v, want key_store secure-enclave and keychain_copy_left true", decoded)
+	}
+	if _, ok := decoded["move_unfinished"]; ok {
+		t.Error("the finished move is still reported as unfinished")
+	}
+	var buf bytes.Buffer
+	printStatusKeyRows(&buf, vs)
+	if out := strings.Join(strings.Fields(buf.String()), " "); !strings.Contains(out, "a key is still in your keychain under the vault key's name") || !strings.Contains(out, "jit vault rekey --wrapper secure-enclave") {
+		t.Errorf("status text does not report the copy:\n%s", out)
+	}
+	// The same severity as doctor's finding (a problem, below): red.
+	if !strings.Contains(buf.String(), glyphRisk) || strings.Contains(buf.String(), glyphWarn) {
+		t.Errorf("status shows the copy as advisory, doctor as a problem:\n%s", buf.String())
+	}
+
+	findings := withFixes(gatherVaultIntegrityFindings(w.root, v))
+	if len(findings) != 1 || findings[0].Kind != kindVaultKeyCopy {
+		t.Fatalf("want one vault_key_copy finding, got %+v", findings)
+	}
+	f := findings[0]
+	if want := "the vault key is in the Secure Enclave, but a key is still in your keychain under the vault key's name, where any program running as you can read it."; f.Detail != want {
+		t.Errorf("detail = %q, want %q", f.Detail, want)
+	}
+	wantFix := []doctorFix{{
+		Command:  "jit vault rekey --wrapper secure-enclave",
+		Argv:     []string{"vault", "rekey", "--wrapper", "secure-enclave"},
+		Presence: true,
+	}}
+	if !reflect.DeepEqual(f.Fixes, wantFix) {
+		t.Errorf("fixes = %+v, want %+v", f.Fixes, wantFix)
+	}
+	if f.Kind.warning() {
+		t.Error("a readable copy of the enclave's key is a problem, not advisory")
+	}
+
+	// Gone: both go quiet.
+	keychainCopyPresence = func() keystore.Presence { return keystore.Absent }
+	if vs, _ := gatherVaultStatus(v, w.root); vs.KeychainCopyLeft {
+		t.Error("status still reports a copy the keychain no longer holds")
+	}
+	if got := gatherVaultIntegrityFindings(w.root, v); len(got) != 0 {
+		t.Errorf("doctor still reports: %+v", got)
+	}
+}
