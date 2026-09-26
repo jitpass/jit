@@ -280,13 +280,17 @@ func upgradeFinishCommand(kept, exePath string) string {
 // A jit serviceNeedsApp refuses (on an enclave vault, any jit outside
 // JitPass.app) leaves the service where it is and prints no "Done": its
 // promise of a Touch ID next time would be false, and its advice, `jit
-// service restart`, is a command this jit refuses too. When the service
-// already runs the app's jit, that is where it belongs, and the upgrade
-// ends quietly.
+// service restart`, is a command this jit refuses too. When it was refused
+// only for running outside the app (needsAppJitError) and the service
+// already runs the app's jit, signature checked (serviceRunsAppJit), that
+// is where the service belongs, and the upgrade ends quietly. Any other
+// refusal (a signature this jit couldn't read, a vault it couldn't find) is
+// printed, whatever the service runs.
 func upgradeMoveService(out io.Writer, latest string) {
 	cleared, refused := serviceNeedsApp("service restart")
 	if refused != nil {
-		if serviceRunsAppJit(findAppJit()) {
+		var needsApp needsAppJitError
+		if errors.As(refused, &needsApp) && serviceRunsAppJit() {
 			fmt.Fprintf(out, "Upgraded this jit to %s. The service keeps running JitPass's jit.\n", latest)
 			return
 		}

@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,8 +16,8 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/selfpath"
-	"github.com/jitpass/jit/internal/vault"
 )
 
 // This file is the launchd mechanics: writing the LaunchAgent plist, reading
@@ -195,15 +194,17 @@ func agentPlistNeedsRepoint(data []byte) bool {
 // success. command is what to run from the app instead ("service
 // restart"), for the refusal to name.
 //
-// Whether this is an enclave vault is the sealed file's lstat, the test
-// keystore.Open makes (an lstat that fails for any reason but "not there"
-// counts as one). Whether this jit can reach the enclave is a property of
-// the binary, its signature's entitlements (secureenclave.Entitled), never
-// a keychain query: a lookup can fail while the screen is locked or in a
-// session with no UI, and refusing then locked out the app's own jit. So an
-// entitled jit always goes on, a keychain vault always goes on (for one
-// lstat), and only an unentitled jit on an enclave vault is refused; every
-// refusal names its cause.
+// Whether this is an enclave vault is the key store's own answer
+// (openKeyStore(root).Kind(): the sealed file's lstat, and an lstat that
+// fails for any reason but "not there" counts as one). Whether this jit can
+// reach the enclave is a property of the binary, its signature's
+// entitlements (secureenclave.Entitled), never a keychain query: a lookup
+// can fail while the screen is locked or in a session with no UI, and
+// refusing then locked out the app's own jit. So an entitled jit always
+// goes on, a keychain vault always goes on, and only an unentitled jit on
+// an enclave vault is refused; every refusal names its cause. The app's
+// jit the refusal names is looked for only when the refusal is read
+// (appJitLookup).
 //
 // It runs once per command: the command passes its serviceCleared to
 // installAgentService, which cannot run without one.
@@ -212,8 +213,7 @@ func serviceNeedsApp(command string) (serviceCleared, error) {
 	if err != nil {
 		return serviceCleared{}, serviceRefusal{fmt.Errorf("couldn't find the vault to check where its key is: %w", err)}
 	}
-	_, lerr := os.Lstat(filepath.Join(root, vault.SealedKeyFile))
-	if errors.Is(lerr, fs.ErrNotExist) {
+	if openKeyStore(root).Kind() != keystore.KindSecureEnclave {
 		return serviceCleared{ok: true}, nil
 	}
 	entitled, eerr := thisJitEntitled()
@@ -223,11 +223,8 @@ func serviceNeedsApp(command string) (serviceCleared, error) {
 			"so the service was left as it was:\n%w", eerr)}
 	case entitled:
 		return serviceCleared{ok: true}, nil
-	case lerr != nil:
-		return serviceCleared{}, serviceRefusal{fmt.Errorf("couldn't tell whether this vault's key is\n"+
-			"in the Secure Enclave, so the service was left as it was:\n%w", lerr)}
 	}
-	return serviceCleared{}, serviceRefusal{needsAppJitError{sealed: true, command: command, jit: findAppJit()}}
+	return serviceCleared{}, serviceRefusal{needsAppJitError{sealed: true, command: command, app: &appJitLookup{}}}
 }
 
 // serviceCleared is serviceNeedsApp's yes, which installAgentService

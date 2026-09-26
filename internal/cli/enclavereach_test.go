@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,16 +33,17 @@ import (
 // testAppJit is the app's jit the refusals name (findAppJit, stubbed).
 const testAppJit = "/Users/tester/Applications/JitPass.app/Contents/MacOS/jit"
 
-// reachStore is a key store that answers Kind and Presence as told and
-// counts presence prompts, so a refusal that came after a Touch ID shows up
-// as a count, never as a dialog.
+// reachStore is a key store that answers Kind as told. It counts presence
+// prompts, so a refusal that came after a Touch ID shows up as a count,
+// never as a dialog, and presence lookups, so a check that asked the
+// keychain shows up too: the service check must not (it answers
+// Indeterminate, what a locked screen gives, if one ever does).
 type reachStore struct {
 	recordingStore
-	p     keystore.Presence
-	asked *int
+	r *reach
 }
 
-func (s reachStore) Presence() keystore.Presence { return s.p }
+func (s reachStore) Presence() keystore.Presence { s.r.lookups++; return keystore.Indeterminate }
 
 type countingPresence struct {
 	*fakeKeyWrapper
@@ -51,48 +53,35 @@ type countingPresence struct {
 func (p countingPresence) RequireUserPresence(string) error { *p.asked++; return nil }
 
 func (s reachStore) NewWrapper() keystore.Wrapper {
-	return countingPresence{newFakeKeyWrapper(), s.asked}
+	return countingPresence{newFakeKeyWrapper(), &s.r.asked}
 }
 
-// reach is one test's world: what the signature says, how often it was
-// asked, and how many presence prompts ran.
+// reach is one test's world: what the signature says and how often it was
+// read, how many presence prompts and lookups ran, and how many times the
+// app's jit was looked for.
 type reach struct {
 	entitled bool
 	err      error
 	checks   int
 	asked    int
+	lookups  int
+	finds    int
 }
 
-// stubReach makes the vault an enclave vault (a sealed file, and every key
-// store this package opens answering kind SecureEnclave with presence p)
-// or a keychain one, and makes this binary's signature answer entitled or
-// err. Presence answers Indeterminate unless told otherwise: what the
-// keychain lookup gives while the screen is locked, which the check must
-// not depend on.
-func stubReach(t *testing.T, kind keystore.Kind, p keystore.Presence, entitled bool, err error) *reach {
+// stubReach makes every key store this package opens answer kind (the
+// store decides, as keystore.Open does in production: no sealed file is
+// written, so a check that looked at the disk instead would see a keychain
+// vault), makes this binary's signature answer entitled or err, and names
+// testAppJit as the app's jit, counting the searches.
+func stubReach(t *testing.T, kind keystore.Kind, entitled bool, err error) *reach {
 	t.Helper()
 	r := &reach{entitled: entitled, err: err}
-	root, rerr := vaultRootDir()
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	sealed := filepath.Join(root, vault.SealedKeyFile)
-	if kind == keystore.KindSecureEnclave {
-		if err := os.MkdirAll(root, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(sealed, []byte("{}"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		_ = os.Remove(sealed)
-	}
 	origStore, origEnt, origApp := openKeyStore, thisJitEntitled, findAppJit
 	openKeyStore = func(string) keystore.Store {
-		return reachStore{recordingStore{kind: kind, deleted: &[]keystore.Kind{}}, p, &r.asked}
+		return reachStore{recordingStore{kind: kind, deleted: &[]keystore.Kind{}}, r}
 	}
 	thisJitEntitled = func() (bool, error) { r.checks++; return r.entitled, r.err }
-	findAppJit = func() string { return testAppJit }
+	findAppJit = func() string { r.finds++; return testAppJit }
 	t.Cleanup(func() { openKeyStore, thisJitEntitled, findAppJit = origStore, origEnt, origApp })
 	return r
 }
@@ -167,7 +156,7 @@ func TestServiceRefusesAJitThatCantReachTheEnclave(t *testing.T) {
 			// A secret, so consent off's Touch ID goes through the stub
 			// store (a count), never keychainwrap.Challenge (a dialog).
 			seedFixtureVault(t, "fixture/API_KEY")
-			r := stubReach(t, keystore.KindSecureEnclave, keystore.Unavailable, false, nil)
+			r := stubReach(t, keystore.KindSecureEnclave, false, nil)
 			calls := recordLaunchctl(t)
 			plist, before := plantAppPlist(t)
 			if tc.self {
@@ -186,8 +175,11 @@ func TestServiceRefusesAJitThatCantReachTheEnclave(t *testing.T) {
 			if err == nil || err.Error() != want {
 				t.Fatalf("got %v\nwant %s\n%s", err, want, out)
 			}
-			if r.checks != 1 {
-				t.Errorf("the signature was read %d times, want once per command", r.checks)
+			if r.checks != 1 || r.finds != 1 {
+				t.Errorf("the signature was read %d times and the app's jit looked for %d, want once each per command", r.checks, r.finds)
+			}
+			if r.lookups != 0 {
+				t.Errorf("the check asked the keychain %d times", r.lookups)
 			}
 			assertShortLines(t, strings.ReplaceAll(err.Error(), testAppJit+" "+tc.command, ""))
 			if after, _ := os.ReadFile(plist); !bytes.Equal(after, before) {
@@ -203,63 +195,62 @@ func TestServiceRefusesAJitThatCantReachTheEnclave(t *testing.T) {
 	}
 }
 
-// The controls, and the finding behind them: the check reads the binary's
-// signature, never the keychain. An entitled jit (the app's) goes on
-// whatever a keychain lookup would say, locked screen (Indeterminate)
-// included, and even when the sealed file can't be checked; a keychain
-// vault goes on without reading the signature at all. Refused: an
-// unentitled jit on a vault whose sealed file it can't check, and a
-// signature that can't be read, each naming its cause.
+// The controls, and the findings behind them: the check reads the binary's
+// signature, never the keychain (no presence lookup, in any case), and
+// takes the vault's kind from the key store (openKeyStore(root).Kind()),
+// not from its own look at the disk. An entitled jit (the app's) goes on;
+// a keychain vault goes on without reading the signature at all, a sealed
+// file on disk or not. Refused: an unentitled jit on an enclave vault, and
+// a signature that can't be read, each naming its cause. Where the check
+// lets the command through, restart repoints the login item at this binary:
+// the change the refusal exists to stop.
 func TestServiceCheckDecidesFromTheSignature(t *testing.T) {
 	unreadable := errors.New("SecTaskCreateFromSelf failed")
 	for _, tc := range []struct {
-		name     string
-		kind     keystore.Kind
-		p        keystore.Presence
-		entitled bool
-		entErr   error
-		lstatErr bool // the sealed file can't be checked (ENOTDIR)
-		checks   int
-		refuse   string
+		name         string
+		kind         keystore.Kind
+		entitled     bool
+		entErr       error
+		sealedOnDisk bool // a sealed file the store's answer overrides
+		checks       int
+		finds        int
+		refuse       string
 	}{
-		{"entitled, screen locked", keystore.KindSecureEnclave, keystore.Indeterminate, true, nil, false, 1, ""},
-		{"entitled, key there", keystore.KindSecureEnclave, keystore.Present, true, nil, false, 1, ""},
-		{"entitled, sealed file uncheckable", keystore.KindSecureEnclave, keystore.Indeterminate, true, nil, true, 1, ""},
-		{"keychain vault, unentitled", keystore.KindKeychain, keystore.Present, false, nil, false, 0, ""},
-		{"keychain vault, unreadable signature", keystore.KindKeychain, keystore.Present, false, unreadable, false, 0, ""},
-		{"unentitled, sealed file uncheckable", keystore.KindSecureEnclave, keystore.Indeterminate, false, nil, true, 1,
-			"jit service restart: couldn't tell whether this vault's key is\nin the Secure Enclave, so the service was left as it was:\nlstat "},
-		{"unreadable signature", keystore.KindSecureEnclave, keystore.Present, false, unreadable, false, 1,
+		{"entitled", keystore.KindSecureEnclave, true, nil, false, 1, 0, ""},
+		{"entitled, sealed file on disk", keystore.KindSecureEnclave, true, nil, true, 1, 0, ""},
+		{"keychain vault, unentitled", keystore.KindKeychain, false, nil, false, 0, 0, ""},
+		{"keychain vault, unentitled, a sealed file on disk", keystore.KindKeychain, false, nil, true, 0, 0, ""},
+		{"keychain vault, unreadable signature", keystore.KindKeychain, false, unreadable, false, 0, 0, ""},
+		{"enclave vault, unentitled, no sealed file on disk", keystore.KindSecureEnclave, false, nil, false, 1, 1,
+			"jit service restart: " + needsAppWords("service restart")},
+		{"unreadable signature", keystore.KindSecureEnclave, false, unreadable, false, 1, 0,
 			"jit service restart: couldn't read this jit's own signature,\nso the service was left as it was:\nSecTaskCreateFromSelf failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			withFixtureHome(t)
-			r := stubReach(t, tc.kind, tc.p, tc.entitled, tc.entErr)
-			if tc.lstatErr {
-				// The vault root a regular file: lstat of the sealed file
-				// under it fails ENOTDIR, which is not "not there".
+			r := stubReach(t, tc.kind, tc.entitled, tc.entErr)
+			if tc.sealedOnDisk {
 				root, _ := vaultRootDir()
-				if err := os.RemoveAll(root); err != nil {
+				if err := os.MkdirAll(root, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(root, nil, 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(root, vault.SealedKeyFile), []byte("{}"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
 			calls := recordLaunchctl(t)
 			plist, before := plantAppPlist(t)
 			out, err := runRoot(t, "", "service", "restart")
-			if r.checks != tc.checks {
-				t.Errorf("the signature was read %d times, want %d", r.checks, tc.checks)
+			if r.checks != tc.checks || r.finds != tc.finds {
+				t.Errorf("the signature was read %d times and the app's jit looked for %d, want %d and %d", r.checks, r.finds, tc.checks, tc.finds)
+			}
+			if r.lookups != 0 {
+				t.Errorf("the check asked the keychain %d times", r.lookups)
 			}
 			if tc.refuse != "" {
-				if err == nil || !strings.HasPrefix(err.Error(), tc.refuse) {
-					t.Fatalf("got %v, want a refusal starting %q", err, tc.refuse)
+				if err == nil || err.Error() != tc.refuse {
+					t.Fatalf("got %v\nwant %s", err, tc.refuse)
 				}
-				if errors.As(err, &needsAppJitError{}) {
-					t.Errorf("a refusal with its own cause was told as the app's: %v", err)
-				}
-				assertShortLines(t, strings.SplitN(err.Error(), "\n", 3)[0]+"\n"+strings.SplitN(err.Error(), "\n", 3)[1])
 				if after, _ := os.ReadFile(plist); !bytes.Equal(after, before) || len(*calls) != 0 {
 					t.Fatalf("a refusal changed the login item or ran launchctl: %v", *calls)
 				}
@@ -271,6 +262,11 @@ func TestServiceCheckDecidesFromTheSignature(t *testing.T) {
 			}
 			if !ranVerb(*calls, "bootstrap") {
 				t.Fatalf("never reached launchctl (err %v): %v", err, *calls)
+			}
+			// The test binary is not the plist's program, so restart
+			// repointed it: the change the refusal exists to stop.
+			if after, _ := os.ReadFile(plist); bytes.Equal(after, before) {
+				t.Error("restart did not repoint the login item")
 			}
 		})
 	}
@@ -309,10 +305,14 @@ func TestInstallAgentServiceNeedsAClearance(t *testing.T) {
 func TestEnsureAgentInstalledLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 	t.Run("no login item", func(t *testing.T) {
 		withFixtureHome(t)
-		stubReach(t, keystore.KindSecureEnclave, keystore.Unavailable, false, nil)
+		r := stubReach(t, keystore.KindSecureEnclave, false, nil)
 		calls := recordLaunchctl(t)
 		if did, _ := ensureAgentInstalled(); did {
 			t.Fatal("installed the service")
+		}
+		// Nobody reads this refusal, so nothing looks for the app's jit.
+		if r.finds != 0 {
+			t.Errorf("looked for the app's jit %d times on the silent path", r.finds)
 		}
 		plist, _ := agentPlistPath()
 		if _, err := os.Stat(plist); !os.IsNotExist(err) || len(*calls) != 0 {
@@ -321,7 +321,12 @@ func TestEnsureAgentInstalledLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 	})
 	t.Run("orphaned login item", func(t *testing.T) {
 		withFixtureHome(t)
-		stubReach(t, keystore.KindSecureEnclave, keystore.Unavailable, false, nil)
+		r := stubReach(t, keystore.KindSecureEnclave, false, nil)
+		t.Cleanup(func() {
+			if r.finds != 0 {
+				t.Errorf("looked for the app's jit %d times on the silent path", r.finds)
+			}
+		})
 		calls := recordLaunchctl(t)
 		path, err := agentPlistPath()
 		if err != nil {
@@ -343,7 +348,7 @@ func TestEnsureAgentInstalledLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 	})
 	t.Run("control: the app's jit installs", func(t *testing.T) {
 		withFixtureHome(t)
-		stubReach(t, keystore.KindSecureEnclave, keystore.Indeterminate, true, nil)
+		stubReach(t, keystore.KindSecureEnclave, true, nil)
 		calls := recordLaunchctl(t)
 		if did, _ := ensureAgentInstalled(); !did || !ranVerb(*calls, "bootstrap") {
 			t.Fatalf("the app's jit didn't install the service: %v", *calls)
@@ -375,9 +380,12 @@ func fakeAppBundle(t *testing.T, dir string) (link, helper string) {
 // `jit upgrade`'s service step, from a jit serviceNeedsApp refuses: the
 // binary is upgraded, the service is left as it was, and the output never
 // says "Done", promises a Touch ID or advises `jit service restart` (which
-// this jit refuses too). When the login item already runs the app's jit
-// (symlinks resolved on both sides), it ends quietly: the service is right.
-// The control: a keychain vault gets the old ending.
+// this jit refuses too). It ends quietly only when this jit was refused for
+// running outside the app AND the login item runs the app's jit, its
+// signature checked (serviceRunsAppJit): a program inside a JitPass bundle
+// that isn't signed as the app's jit gets the refusal, and so does any
+// other refusal, whatever the login item runs. The control: a keychain
+// vault gets the old ending.
 func TestUpgradeLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 	withFixtureHome(t)
 	calls := recordLaunchctl(t)
@@ -385,6 +393,16 @@ func TestUpgradeLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	link, helper := fakeAppBundle(t, t.TempDir())
+	verified := map[string]bool{}
+	origVerify := verifyAppJit
+	verifyAppJit = func(p string) error {
+		if verified[p] {
+			return nil
+		}
+		return errors.New("not signed as the app's jit")
+	}
+	t.Cleanup(func() { verifyAppJit = origVerify })
 	noDone := func(t *testing.T, out string) {
 		t.Helper()
 		for _, bad := range []string{"Done", "Touch ID", "Run jit service restart", "Restarting service"} {
@@ -394,18 +412,24 @@ func TestUpgradeLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 		}
 		assertShortLines(t, strings.ReplaceAll(out, testAppJit+" service restart", ""))
 	}
+	refusedWords := "Upgraded this jit to v9.9.9.\nThe service was not moved onto it:\n" +
+		strings.ReplaceAll(needsAppWords("service restart"), "`", "") + "\n"
 
-	// The login item runs another jit (a repoint), or already this one (the
-	// plain reload an in-place upgrade does): both are left alone.
-	stubReach(t, keystore.KindSecureEnclave, keystore.Unavailable, false, nil)
-	for _, program := range []string{filepath.Join(t.TempDir(), "jit"), self} {
+	// The login item runs another jit (a repoint), already this one (the
+	// plain reload an in-place upgrade does), or a program inside a
+	// JitPass bundle that is not signed as the app's jit: all are left
+	// alone, and the refusal is printed, naming the app's jit once.
+	r := stubReach(t, keystore.KindSecureEnclave, false, nil)
+	for _, program := range []string{filepath.Join(t.TempDir(), "jit"), self, helper, link} {
+		r.finds = 0
 		plist, before := plantPlist(t, program)
 		var out bytes.Buffer
 		upgradeMoveService(&out, "v9.9.9")
-		want := "Upgraded this jit to v9.9.9.\nThe service was not moved onto it:\n" +
-			strings.ReplaceAll(needsAppWords("service restart"), "`", "") + "\n"
-		if out.String() != want {
-			t.Fatalf("login item running %s, output:\n%s\nwant:\n%s", program, out.String(), want)
+		if out.String() != refusedWords {
+			t.Fatalf("login item running %s, output:\n%s\nwant:\n%s", program, out.String(), refusedWords)
+		}
+		if r.finds != 1 {
+			t.Errorf("login item running %s: looked for the app's jit %d times, want once", program, r.finds)
 		}
 		noDone(t, out.String())
 		if after, _ := os.ReadFile(plist); !bytes.Equal(after, before) || len(*calls) != 0 {
@@ -413,17 +437,20 @@ func TestUpgradeLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 		}
 	}
 
-	// The login item runs the app's jit: through the Contents/MacOS link,
-	// with the app's jit found as the helper itself, and the other way
-	// round. Nothing to put right.
-	link, helper := fakeAppBundle(t, t.TempDir())
-	for _, pair := range [][2]string{{link, helper}, {helper, link}} {
-		plist, before := plantPlist(t, pair[0])
-		findAppJit = func() string { return pair[1] }
+	// The login item runs the app's jit, signature checked, through the
+	// Contents/MacOS link or the helper itself: nothing to put right, and
+	// no search for the app's jit (the refusal is never shown).
+	verified[link], verified[helper] = true, true
+	for _, program := range []string{link, helper} {
+		r.finds = 0
+		plist, before := plantPlist(t, program)
 		var out bytes.Buffer
 		upgradeMoveService(&out, "v9.9.9")
 		if want := "Upgraded this jit to v9.9.9. The service keeps running JitPass's jit.\n"; out.String() != want {
-			t.Fatalf("login item running %s, app's jit %s:\n%s\nwant:\n%s", pair[0], pair[1], out.String(), want)
+			t.Fatalf("login item running %s:\n%s\nwant:\n%s", program, out.String(), want)
+		}
+		if r.finds != 0 {
+			t.Errorf("looked for the app's jit %d times for a refusal never shown", r.finds)
 		}
 		noDone(t, out.String())
 		if after, _ := os.ReadFile(plist); !bytes.Equal(after, before) || len(*calls) != 0 {
@@ -431,18 +458,19 @@ func TestUpgradeLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 		}
 	}
 
-	// Any refusal, not only the app one, takes the same path, cause named.
-	stubReach(t, keystore.KindSecureEnclave, keystore.Present, false, errors.New("SecTaskCreateFromSelf failed"))
-	plantPlist(t, self)
+	// Any other refusal is printed, cause named, even with the login item
+	// on the app's jit: only "outside the app" is put right by the app.
+	stubReach(t, keystore.KindSecureEnclave, false, errors.New("SecTaskCreateFromSelf failed"))
+	plantPlist(t, link)
 	var out bytes.Buffer
 	upgradeMoveService(&out, "v9.9.9")
 	if !strings.HasPrefix(out.String(), "Upgraded this jit to v9.9.9.\nThe service was not moved onto it:\ncouldn't read this jit's own signature,") ||
 		!strings.Contains(out.String(), "SecTaskCreateFromSelf failed") {
-		t.Fatalf("an unreadable signature:\n%s", out.String())
+		t.Fatalf("an unreadable signature, the login item on the app's jit:\n%s", out.String())
 	}
 	noDone(t, out.String())
 
-	stubReach(t, keystore.KindKeychain, keystore.Present, false, nil)
+	stubReach(t, keystore.KindKeychain, false, nil)
 	out.Reset()
 	upgradeMoveService(&out, "v9.9.9")
 	if !strings.Contains(out.String(), "Done. Upgraded to v9.9.9.") || !ranVerb(*calls, "bootstrap") {
@@ -454,66 +482,184 @@ func TestUpgradeLeavesAnEnclaveVaultsServiceAlone(t *testing.T) {
 // the service restart is left off where this jit would refuse it.
 func TestUpgradeFinishNeverNamesARefusedCommand(t *testing.T) {
 	withFixtureHome(t)
-	stubReach(t, keystore.KindSecureEnclave, keystore.Unavailable, false, nil)
+	stubReach(t, keystore.KindSecureEnclave, false, nil)
 	if got := upgradeFinishCommand("/tmp/jit-v9", "/usr/local/bin/jit"); got != "sudo mv -f /tmp/jit-v9 /usr/local/bin/jit" {
 		t.Errorf("enclave vault, unentitled: %q", got)
 	}
-	stubReach(t, keystore.KindKeychain, keystore.Present, false, nil)
+	stubReach(t, keystore.KindKeychain, false, nil)
 	if got := upgradeFinishCommand("/tmp/jit-v9", "/usr/local/bin/jit"); got != "sudo mv -f /tmp/jit-v9 /usr/local/bin/jit && jit service restart" {
 		t.Errorf("keychain vault: %q", got)
 	}
 }
 
-// Where the refusals find the app's jit: the login item's program when it
-// is inside a JitPass bundle, else the app LaunchServices knows by bundle
-// ID, else /Applications or ~/Applications, else no path at all.
+// Where the refusals find the app's jit, and that only a jit whose
+// signature says it is the app's is ever named: the login item's program
+// when it is inside a JitPass bundle, then /Applications, then
+// ~/Applications, then Spotlight's index, last, skipping another volume, a
+// Trash and build folders; else no path at all. Each is checked with
+// verifyAppJit, faked here (TestAppJitRequirementOnRealSignatures checks
+// the real one).
 func TestAppJitSelection(t *testing.T) {
 	withFixtureHome(t)
-	origByID, origDirs := appBundlesByID, appBundleDirs
-	t.Cleanup(func() { appBundlesByID, appBundleDirs = origByID, origDirs })
+	origByID, origDirs, origVerify := appBundlesByID, appBundleDirs, verifyAppJit
+	t.Cleanup(func() { appBundlesByID, appBundleDirs, verifyAppJit = origByID, origDirs, origVerify })
 	var asked []string
 	spotlight := []string{}
 	appBundlesByID = func(id string) []string { asked = append(asked, id); return spotlight }
 	dirs := []string{}
 	appBundleDirs = func() []string { return dirs }
-
-	helperDir := t.TempDir()
-	_, helper := fakeAppBundle(t, helperDir)
-	plantPlist(t, helper)
-	if got := appJitPath(); got != helper {
-		t.Fatalf("login item inside JitPass.app: %q, want %q", got, helper)
+	verified := map[string]bool{}
+	var checked []string
+	verifyAppJit = func(p string) error {
+		checked = append(checked, p)
+		if verified[p] {
+			return nil
+		}
+		return errors.New("not signed as the app's jit")
+	}
+	bundle := func() (dir, link, helper string) {
+		dir = t.TempDir()
+		link, helper = fakeAppBundle(t, dir)
+		return filepath.Join(dir, "JitPass.app"), link, helper
 	}
 
-	plantPlist(t, filepath.Join(t.TempDir(), "jit")) // a tarball jit's login item
+	// 1. The login item's program, verified.
+	_, _, helper := bundle()
+	plantPlist(t, helper)
+	verified[helper] = true
+	if got := appJitPath(); got != helper || len(asked) != 0 {
+		t.Fatalf("login item inside JitPass.app, verified: %q (Spotlight asked %v), want %q", got, asked, helper)
+	}
+	// Not verified: never named, whatever its path says.
+	verified[helper] = false
 	if got := appJitPath(); got != "" {
-		t.Fatalf("nothing else found: %q, want none", got)
+		t.Fatalf("an unverified program inside a JitPass bundle was named: %q", got)
+	}
+
+	// 2. /Applications before ~/Applications, each verified.
+	asked = nil
+	apps, appsLink, _ := bundle()
+	home, homeLink, _ := bundle()
+	dirs = []string{apps, home}
+	verified[appsLink], verified[homeLink] = true, true
+	if got := appJitPath(); got != appsLink {
+		t.Fatalf("/Applications first: %q, want %q", got, appsLink)
+	}
+	verified[appsLink] = false
+	if got := appJitPath(); got != homeLink {
+		t.Fatalf("~/Applications next: %q, want %q", got, homeLink)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("Spotlight was asked (%v) before the folders ran out", asked)
+	}
+
+	// 3. Spotlight last: never another volume, a Trash or a build folder,
+	// even verified; the first verified copy elsewhere.
+	verified[homeLink] = false
+	var skipped []string
+	for _, dir := range []string{".Trash", filepath.Join("DerivedData", "JitPass-x", "Build"), filepath.Join(".build", "release")} {
+		parent := filepath.Join(t.TempDir(), dir)
+		link, _ := fakeAppBundle(t, parent) // real, and verified: only the place rules it out
+		verified[link] = true
+		skipped = append(skipped, filepath.Join(parent, "JitPass.app"))
+	}
+	for _, app := range append([]string{"/Volumes/JitPass/JitPass.app", "/Volumes/Backup/Users/x/.Trashes/JitPass.app"}, skipped...) {
+		if !notTheInstalledApp(app) {
+			t.Errorf("%s was taken for the installed app", app)
+		}
+	}
+	for _, app := range []string{"/Applications/JitPass.app", "/Users/x/Apps/JitPass.app", "/Users/x/Volumes/JitPass.app"} {
+		if notTheInstalledApp(app) {
+			t.Errorf("%s was ruled out", app)
+		}
+	}
+	other, otherLink, _ := bundle()
+	indexed, indexedLink, _ := bundle()
+	verified[indexedLink] = true
+	spotlight = append(append([]string{}, skipped...), other, indexed)
+	checked = nil
+	if got := appJitPath(); got != indexedLink {
+		t.Fatalf("Spotlight: %q, want the first verified copy outside the skipped places, %q", got, indexedLink)
 	}
 	if len(asked) == 0 || asked[len(asked)-1] != "com.jitpass.app" {
-		t.Fatalf("LaunchServices asked for %v, want com.jitpass.app", asked)
+		t.Fatalf("Spotlight asked for %v, want com.jitpass.app", asked)
 	}
-
-	indexed := t.TempDir()
-	link, _ := fakeAppBundle(t, indexed)
-	spotlight = []string{filepath.Join(t.TempDir(), "JitPass.app"), filepath.Join(indexed, "JitPass.app")}
-	if got := appJitPath(); got != link {
-		t.Fatalf("by bundle ID: %q, want the first app with a jit, %q", got, link)
+	for _, p := range checked {
+		for _, app := range skipped {
+			if p == bundleJit(app) {
+				t.Errorf("checked %s, a copy Spotlight answers that is not the installed app", p)
+			}
+		}
 	}
+	_ = otherLink
 
-	spotlight = nil
-	home := t.TempDir()
-	homeLink, _ := fakeAppBundle(t, home)
-	dirs = []string{filepath.Join(t.TempDir(), "JitPass.app"), filepath.Join(home, "JitPass.app")}
-	if got := appJitPath(); got != homeLink {
-		t.Fatalf("fallback: %q, want %q", got, homeLink)
+	// 4. Nothing verifies: no path.
+	spotlight = skipped
+	if got := appJitPath(); got != "" {
+		t.Fatalf("nothing verified: %q, want none", got)
 	}
-
-	// No path: the refusal names the app without one.
 	e := needsAppJitError{sealed: true, command: "service restart"}
 	want := "this vault's key is in the Secure Enclave,\nand only the jit inside JitPass.app can reach it; use that jit to run:\nservice restart"
 	if e.Error() != want {
 		t.Fatalf("no path:\n%s\nwant:\n%s", e.Error(), want)
 	}
 	assertShortLines(t, e.Error())
+}
+
+// The command a refusal names pastes as it reads: a path with a space is
+// quoted. And the search behind it runs once, however often the refusal is
+// read, and not at all when it isn't.
+func TestNeedsAppJitQuotesThePathAndSearchesOnce(t *testing.T) {
+	finds := 0
+	orig := findAppJit
+	findAppJit = func() string { finds++; return "/Users/a b/Applications/JitPass.app/Contents/MacOS/jit" }
+	t.Cleanup(func() { findAppJit = orig })
+	e := needsAppJitError{sealed: true, command: "service restart", app: &appJitLookup{}}
+	if finds != 0 {
+		t.Fatalf("searched %d times before the refusal was read", finds)
+	}
+	want := "this vault's key is in the Secure Enclave,\nand only the jit inside JitPass.app can reach it; run it from there:\n" +
+		"`'/Users/a b/Applications/JitPass.app/Contents/MacOS/jit' service restart`"
+	for i := 0; i < 2; i++ {
+		if got := e.Error(); got != want {
+			t.Fatalf("read %d:\n%s\nwant:\n%s", i+1, got, want)
+		}
+	}
+	if finds != 1 {
+		t.Fatalf("searched %d times for two reads, want once", finds)
+	}
+}
+
+// The real check, on real signatures (read only: no keychain query, nothing
+// run). /bin/ls is Apple's, under another identifier: refused. Where
+// JitPass.app is installed (a developer's Mac; never CI), its helper and
+// the Contents/MacOS/jit link to it pass, and fail against a keychain group
+// the helper doesn't carry, so the entitlement clause is live.
+func TestAppJitRequirementOnRealSignatures(t *testing.T) {
+	if err := codesignAppJit("/bin/ls"); err == nil {
+		t.Fatal("/bin/ls passed as the jit inside JitPass.app")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := codesignAppJit(self); err == nil {
+		t.Fatal("this test binary passed as the jit inside JitPass.app")
+	}
+	const helper = "/Applications/JitPass.app/Contents/Helpers/JitPassAgent.app/Contents/MacOS/jit"
+	if os.Getenv("CI") != "" || !isFile(helper) {
+		t.Skip("JitPass.app is not installed here; the positive half needs it")
+	}
+	for _, p := range []string{helper, "/Applications/JitPass.app/Contents/MacOS/jit"} {
+		if err := codesignAppJit(p); err != nil {
+			t.Errorf("the installed app's jit failed: %v", err)
+		}
+	}
+	// #nosec G204 -- a fixed system binary, the installed app's own path
+	out, err := exec.Command("/usr/bin/codesign", "--verify", "--strict", "-R", appJitRequirement(secureenclave.TeamID+".com.jitpass.other"), helper).CombinedOutput()
+	if err == nil {
+		t.Errorf("the helper passed a requirement naming a group it doesn't carry:\n%s", out)
+	}
 }
 
 // `jit vault rekey --wrapper` from a jit that can't reach the enclave is

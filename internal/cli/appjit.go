@@ -7,10 +7,12 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jitpass/jit/internal/secureenclave"
@@ -42,27 +44,81 @@ const appBundleID = "com.jitpass.app"
 // findAppJit is appJitPath, a var so a test names the app's jit.
 var findAppJit = appJitPath
 
+// appJitLookup is one command's search for the app's jit, for a refusal to
+// name: made when the refusal is built, run only when its text is
+// (needsAppJitError.Error), and at most once. A refusal nobody reads (the
+// silent first-use install's, ensureAgentInstalled) never searches, and
+// one read twice searches once.
+type appJitLookup struct {
+	once sync.Once
+	path string
+}
+
+// jit is the app's jit (findAppJit), "" when none was found or l is nil.
+func (l *appJitLookup) jit() string {
+	if l == nil {
+		return ""
+	}
+	l.once.Do(func() { l.path = findAppJit() })
+	return l.path
+}
+
 // appJitPath finds the jit inside JitPass.app, the one copy that can reach
-// the Secure Enclave, for a refusal to name. In order: the login item's
-// program, when it is inside a JitPass bundle (it is the jit the service
-// runs); the app wherever LaunchServices' index knows it (appBundlesByID);
-// then /Applications and ~/Applications. "" when none has a jit, and the
-// refusal then says "the jit inside JitPass.app" without a path.
+// the Secure Enclave, for a refusal to name. A path is only ever named once
+// its signature says it IS that jit (verifyAppJit): a login item's program,
+// a folder or Spotlight's index can each point anywhere, and the refusal
+// tells the user to run what it names. In order:
+//
+//  1. the login item's program, when it is inside a JitPass*.app bundle
+//     (the jit the service runs);
+//  2. /Applications/JitPass.app, then ~/Applications/JitPass.app;
+//  3. Spotlight's answer for the app's bundle ID, last, and never a copy
+//     on another volume, in a Trash, or in a build folder (DerivedData,
+//     .build): those are not the installed app.
+//
+// "" when none verifies: the refusal then says "the jit inside
+// JitPass.app" without a path.
 func appJitPath() string {
-	if p, ok := plistProgram(); ok && inJitPassBundle(p) && isFile(p) {
+	tried := map[string]bool{}
+	verified := func(jit string) bool {
+		if tried[jit] {
+			return false
+		}
+		tried[jit] = true
+		return isFile(jit) && verifyAppJit(jit) == nil
+	}
+	if p, ok := plistProgram(); ok && inJitPassBundle(p) && verified(p) {
 		return p
 	}
-	for _, app := range appBundlesByID(appBundleID) {
-		if jit := bundleJit(app); jit != "" {
+	for _, app := range appBundleDirs() {
+		if jit := bundleJit(app); verified(jit) {
 			return jit
 		}
 	}
-	for _, app := range appBundleDirs() {
-		if jit := bundleJit(app); jit != "" {
+	for _, app := range appBundlesByID(appBundleID) {
+		if notTheInstalledApp(app) {
+			continue
+		}
+		if jit := bundleJit(app); verified(jit) {
 			return jit
 		}
 	}
 	return ""
+}
+
+// notTheInstalledApp reports whether a bundle Spotlight found is somewhere
+// the installed app never is: another volume (a mounted disk image, a
+// backup), a Trash, or a build folder.
+func notTheInstalledApp(app string) bool {
+	if strings.HasPrefix(app, "/Volumes/") {
+		return true
+	}
+	for _, dir := range []string{"/.Trash/", "/.Trashes/", "/DerivedData/", "/.build/"} {
+		if strings.Contains(app, dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // appBundlesByID lists the bundles with a bundle ID, from Spotlight's index
@@ -78,17 +134,15 @@ var appBundlesByID = func(id string) []string {
 	}
 	var apps []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		// A copy in the Trash still has an index entry.
-		if line != "" && !strings.Contains(line, "/.Trash/") {
+		if line != "" {
 			apps = append(apps, line)
 		}
 	}
 	return apps
 }
 
-// appBundleDirs is where JitPass.app is installed when Spotlight doesn't
-// say: /Applications, then ~/Applications. A var so a test points it at
-// its own directories.
+// appBundleDirs is where JitPass.app is installed: /Applications, then
+// ~/Applications. A var so a test points it at its own directories.
 var appBundleDirs = func() []string {
 	dirs := []string{"/Applications/JitPass.app"}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -98,13 +152,9 @@ var appBundleDirs = func() []string {
 }
 
 // bundleJit is the jit in an app bundle's Contents/MacOS (in JitPass.app, a
-// symlink to its helper's main executable), "" when there is none.
+// symlink to its helper's main executable).
 func bundleJit(app string) string {
-	jit := filepath.Join(app, "Contents", "MacOS", "jit")
-	if !isFile(jit) {
-		return ""
-	}
-	return jit
+	return filepath.Join(app, "Contents", "MacOS", "jit")
 }
 
 // isFile reports whether path (symlinks followed) is a regular file.
@@ -125,6 +175,42 @@ func inJitPassBundle(path string) bool {
 	return false
 }
 
+// verifyAppJit is codesignAppJit, a var so a test decides which paths are
+// the app's jit.
+var verifyAppJit = codesignAppJit
+
+// appJitRequirement is the code requirement only the jit inside JitPass.app
+// meets: Apple-anchored and signed by the team, code identifier jit (the
+// helper is signed `-i jit`, spike S3f), and carrying the keychain access
+// group that lets it reach the Secure Enclave (group). The entitlement
+// clause matches an array that contains the group. Measured 2026-09-26
+// against /Applications/JitPass.app: its helper passes, and so does the
+// Contents/MacOS/jit link to it; /bin/ls (another identifier and team),
+// and the helper against another group, fail
+// (TestAppJitRequirementOnRealSignatures).
+func appJitRequirement(group string) string {
+	return fmt.Sprintf("=anchor apple generic and identifier \"jit\" and certificate leaf[subject.OU] = %q and entitlement[\"keychain-access-groups\"] = %q",
+		secureenclave.TeamID, group)
+}
+
+// codesignAppJit checks path is the jit inside JitPass.app by its
+// signature (appJitRequirement): codesign validates the signature against
+// the code on disk and the requirement against the signature. No keychain
+// query, nothing run.
+func codesignAppJit(path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// #nosec G204 -- a fixed system binary; the path is only ever an argument
+	out, err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", "-R", appJitRequirement(secureenclave.AccessGroup), path).CombinedOutput()
+	if err != nil {
+		if detail := strings.TrimSpace(string(out)); detail != "" {
+			return fmt.Errorf("%s is not the jit inside JitPass.app: %s", path, detail)
+		}
+		return fmt.Errorf("%s is not the jit inside JitPass.app: %w", path, err)
+	}
+	return nil
+}
+
 // plistProgram is the program the installed login item runs.
 func plistProgram() (string, bool) {
 	path, err := agentPlistPath()
@@ -138,21 +224,12 @@ func plistProgram() (string, bool) {
 	return plistProgramPath(data)
 }
 
-// serviceRunsAppJit reports whether the login item already runs appJit:
-// the plist's program and appJit resolve, symlinks followed on both, to the
-// same file. Then a refused `jit upgrade` has nothing to put right.
-func serviceRunsAppJit(appJit string) bool {
-	if appJit == "" {
-		return false
-	}
+// serviceRunsAppJit reports whether the login item already runs the jit
+// inside JitPass.app: its program is inside a JitPass bundle AND passes
+// that jit's signature check (verifyAppJit), so a plist naming some other
+// binary at such a path does not count. Then a `jit upgrade` refused only
+// for running outside the app has nothing to put right.
+func serviceRunsAppJit() bool {
 	program, ok := plistProgram()
-	if !ok {
-		return false
-	}
-	a, err := filepath.EvalSymlinks(program)
-	if err != nil {
-		return false
-	}
-	b, err := filepath.EvalSymlinks(appJit)
-	return err == nil && a == b
+	return ok && inJitPassBundle(program) && isFile(program) && verifyAppJit(program) == nil
 }

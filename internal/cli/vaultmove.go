@@ -721,12 +721,14 @@ func recoveryFileCurrent(root string) error {
 // needsAppJitError refuses a command this copy of jit can't do because it
 // can't reach the Secure Enclave (it isn't entitled: a jit outside
 // JitPass.app). sealed says the vault's key is already there; command is
-// what to run from the app instead; jit is the app's jit (findAppJit), ""
-// when it wasn't found, and then the refusal names no path.
+// what to run from the app instead; app finds the app's jit, only when this
+// text is read and at most once (appJitLookup). With none found, or no
+// app, the refusal names no path. The path is shell-quoted where it needs
+// to be, so the command pastes as it reads.
 type needsAppJitError struct {
 	sealed  bool
 	command string
-	jit     string
+	app     *appJitLookup
 }
 
 func (e needsAppJitError) Error() string {
@@ -735,10 +737,11 @@ func (e needsAppJitError) Error() string {
 		head = "this vault's key is in the Secure Enclave,\n" +
 			"and only the jit inside JitPass.app can reach it; "
 	}
-	if e.jit == "" {
+	jit := e.app.jit()
+	if jit == "" {
 		return head + "use that jit to run:\n" + e.command
 	}
-	return head + "run it from there:\n`" + e.jit + " " + e.command + "`"
+	return head + "run it from there:\n`" + shellQuoteArg(jit) + " " + e.command + "`"
 }
 
 // checkReach is the move's first check, before the marker, the
@@ -761,7 +764,7 @@ func (m *keyMover) checkReach(target string) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, secureenclave.ErrUnavailable):
-		return needsAppJitError{sealed: sealed, command: "vault rekey --wrapper " + target, jit: findAppJit()}
+		return needsAppJitError{sealed: sealed, command: "vault rekey --wrapper " + target, app: &appJitLookup{}}
 	default:
 		return fmt.Errorf("couldn't check whether this copy of jit can reach\n"+
 			"the Secure Enclave (%v). Nothing changed", err)
