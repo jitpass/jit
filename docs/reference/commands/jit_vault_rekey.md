@@ -24,7 +24,8 @@ jit vault rekey [flags]
 ### Options
 
 ```
-  -y, --yes   skip the confirmation prompt
+      --wrapper string   move the vault key: "secure-enclave" or "keychain"
+  -y, --yes              skip the confirmation prompt
 ```
 
 ### Options inherited from parent commands

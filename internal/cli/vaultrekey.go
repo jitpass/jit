@@ -206,15 +206,14 @@ func lockAgent() {
 
 func init() {
 	vaultRekeyCmd.Flags().BoolVarP(&vaultRekeyYes, "yes", "y", false, "skip the confirmation prompt")
-	// Hidden until JitPass ships the signed helper bundle that can reach the
-	// enclave (design/secure-enclave-plan.md, A2): before that, every jit
-	// in the field would only be refused.
+	// Shown since v2.3.0, the release whose JitPass carries the signed helper
+	// bundle that can reach the enclave (design/secure-enclave-plan.md, A2).
+	// A jit outside JitPass.app is refused with a sentence that says so.
 	vaultRekeyCmd.Flags().StringVar(&vaultRekeyWrapper, "wrapper", "", `move the vault key: "secure-enclave" or "keychain"`)
-	_ = vaultRekeyCmd.Flags().MarkHidden("wrapper")
 	// With --wrapper secure-enclave on a vault already in the enclave:
 	// delete the keychain item under the vault key's name even when it is
-	// not this vault's key, or can't be read (removeKeychainCopy). Hidden
-	// with --wrapper, which it only goes with.
+	// not this vault's key, or can't be read (removeKeychainCopy). Stays
+	// hidden: doctor never offers it, and it deletes a key on a typed yes.
 	vaultRekeyCmd.Flags().BoolVar(&vaultRekeyForce, "force", false, "with --wrapper secure-enclave: also delete a keychain key that isn't this vault's")
 	_ = vaultRekeyCmd.Flags().MarkHidden("force")
 	vaultCmd.AddCommand(vaultRekeyCmd)
