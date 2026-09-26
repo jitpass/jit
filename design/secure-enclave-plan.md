@@ -17,7 +17,7 @@
 | B5 docs | merged, #167; the user page `docs/vault/secure-enclave.md`, #173 |
 | A1 helper bundle, A2 entitlement and profile | merged, jit-app #52, #53 |
 | A4 app UI | merged, jit-app #56: the Vault key row in Settings › Protection, not frame A's Vault card |
-| Rotating an enclave vault's MEK | planned, in progress (B4's note below) |
+| Rotating an enclave vault's MEK | not in v2.3.0 (plain `vault rekey` refuses, naming a later version); planned for 2.4, `design/secure-enclave-rotation.md`, #174. v2.3.0 reads both key slots, so a vault 2.4 rotated still opens |
 
 **Plan, 2026-09-25.** Companion to `secure-enclave.md` (the design,
 the readiness table and the spike results). This page is the order of work:
@@ -198,8 +198,11 @@ reverse is written and tested first.
   enclave key.
 - The MEK does not change, so there is no `RewrapAll`: no envelope, grant
   or job is touched. Rotating the MEK stays plain `vault rekey`, which on
-  the enclave will stage by sealing (S1b: no prompt). That half is
-  planned, in progress.
+  the enclave will stage by sealing (S1b: no prompt). That half is not
+  in v2.3.0, which refuses it and names a later version; it is planned
+  for 2.4 (`design/secure-enclave-rotation.md`, #174). v2.3.0 reads both
+  key slots, so a vault 2.4 rotated still opens. Until then the way to
+  rotate is move back, `vault rekey`, a new export, move in.
 - D3's export check before the forward move.
 - Tests: crash injection after every step, each leaving a vault that opens;
   a fixture vault's every envelope opens after each direction; resume from
