@@ -12,7 +12,7 @@ never holds a key, so nothing in its process, its sandbox or its
 conversation can leak one.
 
 It is for the moment an AI tool asks to run something like
-`list_guest_users.py`, which needs a Notion API key, and you want the result
+`export_pages.py`, which needs a Notion API key, and you want the result
 without giving the tool the key.
 
 ## 1. Approve a job
@@ -27,8 +27,8 @@ command. Press **Approve with Touch ID**.
 **In a terminal**, from the job's folder:
 
 ```sh
-cd ~/Security-Ops/custom_scripts/notion
-jit job allow notion-guests -- .venv/bin/python list_guest_users.py
+cd ~/code/scripts/notion
+jit job allow notion-export -- .venv/bin/python export_pages.py
 ```
 
 Either way you see the whole job first: the command, the folder, each
@@ -37,13 +37,13 @@ see all of that without approving anything.
 
 Every value is hidden in the output unless you mark it shown. Mark a value
 shown only when it is configuration the script prints, never a key: the
-notion script prints every user's email, so its `INTERNAL_DOMAINS` is shown
-(`--show INTERNAL_DOMAINS`).
+notion script prints the workspace name in every line, so its
+`NOTION_WORKSPACE` is shown (`--show NOTION_WORKSPACE`).
 
 ## 2. Let your AI tool reach it
 
 **Claude Code, Codex, Gemini CLI and other terminal agents** need nothing:
-they run `jit job run notion-guests` in the terminal. A sandboxed one needs
+they run `jit job run notion-export` in the terminal. A sandboxed one needs
 the service's socket allowed ([Calling jit from a sandbox](./sandboxed-callers.md)).
 
 **Claude Desktop (Cowork) and Cursor** reach jobs through `jit mcp`, a small

@@ -172,7 +172,7 @@ var mountRelocateCmd = &cobra.Command{
 		"re-pointed: a registration that still resolves is left alone, so this\n" +
 		"can never steal a live mount from another project.\n\n" +
 		"No secret is read, so no Touch ID is needed.",
-	Example:      "  jit mount relocate ~/work/hibob",
+	Example:      "  jit mount relocate ~/work/billing",
 	Args:         requireArgs(1, 1, "the project directory (see `jit doctor`)"),
 	SilenceUsage: true,
 	RunE:         func(cmd *cobra.Command, args []string) error { return runMountRepair(cmd, args[0], true) },
@@ -190,7 +190,7 @@ var mountRegisterCmd = &cobra.Command{
 		"the mounts it has, and each named file must already be there — this\n" +
 		"creates nothing.\n\n" +
 		"No secret is read, so no Touch ID is needed.",
-	Example:      "  jit mount register ~/Security-Ops/custom_scripts/hibob2",
+	Example:      "  jit mount register ~/code/billing",
 	Args:         requireArgs(1, 1, "the project directory (see `jit doctor`)"),
 	SilenceUsage: true,
 	RunE:         func(cmd *cobra.Command, args []string) error { return runMountRepair(cmd, args[0], false) },

@@ -21,11 +21,11 @@ jit job
 ### Examples
 
 ```
-  cd ~/Security-Ops/custom_scripts/notion
-  jit job allow notion-guests -- .venv/bin/python list_guest_users.py
-  jit job run notion-guests
+  cd ~/code/scripts/notion
+  jit job allow notion-export -- .venv/bin/python export_pages.py
+  jit job run notion-export
   jit job list
-  jit job remove notion-guests
+  jit job remove notion-export
 ```
 
 ### Options inherited from parent commands

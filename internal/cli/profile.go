@@ -78,9 +78,9 @@ var profileAttachCmd = &cobra.Command{
 		"needed.\n\n" +
 		"--dry-run shows the list and stops. With --format json it prints\n" +
 		"config and profiles (name, status, owners, adds).",
-	Example: "  jit profile attach ~/Security-Ops/.mcp.json\n" +
-		"  jit profile attach ~/Security-Ops/.mcp.json mcp-okta\n" +
-		"  jit profile attach --dry-run --format json ~/Security-Ops/.mcp.json",
+	Example: "  jit profile attach ~/code/myapp/.mcp.json\n" +
+		"  jit profile attach ~/code/myapp/.mcp.json mcp-github\n" +
+		"  jit profile attach --dry-run --format json ~/code/myapp/.mcp.json",
 	Args:              requireArgs(1, -1, "an MCP config file (see `jit doctor`)"),
 	ValidArgsFunction: completeProfileAttachArgs,
 	SilenceUsage:      true,
