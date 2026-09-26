@@ -613,8 +613,10 @@ only. Nothing is stored in plaintext, and nothing syncs anywhere.
 **Or in the Secure Enclave.** Move the master key into your Mac's Secure
 Enclave, the chip that holds keys and never lets them out. Then the key cannot
 be copied off this Mac, and no other program running as you can read it.
-Opening it takes Touch ID or your password, enforced by the Secure Enclave. It is opt-in and off by default; your secrets, grants and AI jobs stay as
-they are, and nothing is re-encrypted.
+Opening it takes Touch ID or your password, enforced by the Secure Enclave. It is opt-in and off by default: in JitPass, open Settings › Protection and
+choose **Move to Secure Enclave…** on the Vault key row. It saves a recovery
+file first, and **Move Back to Keychain…** is in the same row's ··· menu. Your
+secrets, grants and AI jobs stay as they are, and nothing is re-encrypted.
 
 <details>
 <summary><b>Prefer the terminal?</b> Moving the key, and its limits</summary>
