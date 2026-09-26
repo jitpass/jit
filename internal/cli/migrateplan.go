@@ -442,6 +442,11 @@ func splitMCPByScope(home string, mcpConfigs []string) (scoped, fixed []string) 
 	fixedPaths := map[string]bool{}
 	for _, p := range audit.FixedMCPConfigPaths(home) {
 		fixedPaths[p] = true
+		// A backup `jit mcp install` saved beside a fixed config belongs
+		// with it, not with the project files.
+		for _, b := range audit.MCPConfigBackups(p) {
+			fixedPaths[b] = true
+		}
 	}
 	for _, path := range mcpConfigs {
 		if fixedPaths[path] {
