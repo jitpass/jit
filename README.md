@@ -354,10 +354,11 @@ jit guard history             # keep typed tokens out of your zsh history file
 
 </details>
 
-**Your shell history stays clean too.** `jit guard history` adds a small zsh
-hook: a command you type with a token in it still works, and up-arrow still
-finds it, but it is never written to your history file, so it can't end up in
-a backup or a dotfiles repo. The hook fails open: if anything goes wrong, the
+**Your shell history stays clean too.** Turn on **Keep typed credentials out
+of zsh history** in Settings › Protection, or run `jit guard history`. A
+command you type with a token in it still works, and up-arrow still finds it,
+but it is never written to your history file, so it can't end up in a backup
+or a dotfiles repo. The hook fails open: if anything goes wrong, the
 line is saved as normal and your shell never waits on it.
 
 **Supported:** `.env` files, shell exports, AWS and Terraform, kubeconfig,
@@ -566,8 +567,8 @@ A session ends after 5 minutes without use, and never lasts longer than
 8 hours. When the app is not running, the second question is a Touch ID
 prompt that names the program.
 
-Only want the vault lock? Turn the second question off in Settings, or with
-`jit service consent off`. Starting something that needs several secrets at
+Only want the vault lock? Turn off **Ask before each tool's first credential
+use** in Settings › Protection, or run `jit service consent off`. Starting something that needs several secrets at
 once? `jit run --trust -- terraform apply` approves that whole run in one
 gesture. Details: [per-process consent](./docs/service/consent.md).
 
