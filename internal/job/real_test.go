@@ -144,8 +144,20 @@ func measure(t *testing.T, dir string, p Program) Fingerprint {
 		}
 	}
 	stored, _ := json.MarshalIndent(fp, "", "  ")
-	t.Logf("%s: %d library files (%d native), %.1f MB, %d places recorded empty; first %v, cached %v; %d KB in jobs.json",
-		p.Exe, files, native, float64(size)/1e6, absent, cold.Round(time.Millisecond), warm.Round(time.Millisecond), len(stored)>>10)
+	m := LibManifests(filepath.Join(t.TempDir(), "job-libraries"))
+	if err := m.Save(fp); err != nil {
+		t.Fatal(err)
+	}
+	var kept int64
+	if entries, err := os.ReadDir(string(m)); err == nil {
+		for _, e := range entries {
+			if info, err := e.Info(); err == nil {
+				kept += info.Size()
+			}
+		}
+	}
+	t.Logf("%s: %d library files (%d native), %.1f MB, %d places recorded empty; first %v, cached %v; %.1f KB in jobs.json (%d library roots), %d KB of manifests beside it",
+		p.Exe, files, native, float64(size)/1e6, absent, cold.Round(time.Millisecond), warm.Round(time.Millisecond), float64(len(stored))/1024, len(fp.LibRoots), kept>>10)
 	if files+len(fp.Files) > MaxFiles || size > MaxBytes {
 		t.Errorf("past the per-job limits: %d files, %d bytes", files+len(fp.Files), size)
 	}

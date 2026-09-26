@@ -128,10 +128,10 @@ func TestJobApprovedBeforeLibrariesStopsUntilApprovedAgain(t *testing.T) {
 	}
 	for _, j := range file["jobs"].([]any) {
 		fp := j.(map[string]any)["fingerprint"].(map[string]any)
-		if fp["libs"] == nil {
-			t.Fatal("jobs.json holds no libs; the test would prove nothing")
+		if fp["lib_roots"] == nil {
+			t.Fatal("jobs.json holds no library roots; the test would prove nothing")
 		}
-		delete(fp, "libs")
+		delete(fp, "lib_roots")
 		delete(fp, "libs_v")
 	}
 	data, err = json.Marshal(file)
@@ -153,5 +153,147 @@ func TestJobApprovedBeforeLibrariesStopsUntilApprovedAgain(t *testing.T) {
 	}
 	if _, err := r.c.JobRun("notion-guests"); err != nil {
 		t.Fatalf("approved again, it should run: %v", err)
+	}
+}
+
+// libDir is the rig's library manifests' folder, beside its jobs.json.
+func (r *jobRig) libDir() string {
+	return job.LibManifestDir(filepath.Dir(r.storeAt))
+}
+
+// installationOf is the installation folder pythonSpec made, from its
+// stdlib file.
+func installationOf(enc string) string {
+	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(enc))))
+}
+
+// After a restart the job comes back from jobs.json, which holds one hash
+// per library root: the stop still names the file, from the manifest.
+func TestLibraryStopNamesTheFileAfterARestart(t *testing.T) {
+	r := newJobRig(t)
+	spec, enc := r.pythonSpec(t)
+	spec.Ask = string(job.AskNever)
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(r.storeAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"libs"`) || strings.Contains(string(data), enc) {
+		t.Fatalf("jobs.json holds the per-file list:\n%s", data)
+	}
+	if info, err := os.Stat(r.libDir()); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("no private manifests folder: %v", err)
+	}
+	if _, err := r.s.SetJobStore(r.storeAt); err != nil { // the service restarts
+		t.Fatal(err)
+	}
+	writeAll(t, enc, "import os; os.system('send $NOTION_API_KEY')\n", 0o600)
+	_, err = r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), enc+" changed") {
+		t.Fatalf("a run after the stdlib changed: %v, want a stop naming %s", err, enc)
+	}
+	if r.runs() != 0 {
+		t.Fatalf("the runner ran %d times", r.runs())
+	}
+}
+
+// With the manifests gone, the job stops all the same and names the folder.
+func TestLibraryStopNamesTheFolderWhenItsListIsGone(t *testing.T) {
+	r := newJobRig(t)
+	spec, enc := r.pythonSpec(t)
+	spec.Ask = string(job.AskNever)
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatalf("an unchanged run: %v", err)
+	}
+	if err := os.RemoveAll(r.libDir()); err != nil {
+		t.Fatal(err)
+	}
+	writeAll(t, enc, "import os; os.system('send $NOTION_API_KEY')\n", 0o600)
+	_, err := r.c.JobRun("notion-guests")
+	base := installationOf(enc)
+	if err == nil || !strings.Contains(err.Error(), "a file in "+base+" changed") || !strings.Contains(err.Error(), "can't say which") {
+		t.Fatalf("a run after the stdlib changed with no manifest: %v, want a stop naming %s", err, base)
+	}
+	if r.runs() != 1 {
+		t.Fatalf("the runner ran %d times, want only the unchanged run", r.runs())
+	}
+}
+
+// A job approved by the build that stored every library file (libs_v 1)
+// stops with the older-jit sentence until approved again.
+func TestJobApprovedWithPerFileLibrariesStopsUntilApprovedAgain(t *testing.T) {
+	r := newJobRig(t)
+	spec, enc := r.pythonSpec(t)
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(r.storeAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file map[string]any
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range file["jobs"].([]any) {
+		fp := j.(map[string]any)["fingerprint"].(map[string]any)
+		delete(fp, "lib_roots")
+		fp["libs"] = map[string]string{enc: "sha256:" + strings.Repeat("0", 64)}
+		fp["libs_v"] = 1
+	}
+	if data, err = json.Marshal(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.storeAt, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.s.SetJobStore(r.storeAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "approved by an older jit") {
+		t.Fatalf("a per-file approval ran: %v", err)
+	}
+	spec.Replace = true
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatalf("approved again, it should run: %v", err)
+	}
+}
+
+// Jobs on one Python share its manifest; it goes with the last of them.
+func TestLibraryManifestsGoWithTheirJobs(t *testing.T) {
+	r := newJobRig(t)
+	spec, _ := r.pythonSpec(t)
+	for _, name := range []string{"notion-guests", "notion-pages"} {
+		if _, err := r.c.JobAllow(name, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifests := func() int {
+		entries, _ := os.ReadDir(r.libDir())
+		return len(entries)
+	}
+	n := manifests()
+	if n == 0 {
+		t.Fatal("approval kept no manifest")
+	}
+	if _, err := r.c.JobRemove("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if manifests() != n {
+		t.Fatalf("removing one job of two took %d manifests of %d", n-manifests(), n)
+	}
+	if _, err := r.c.JobRemove("notion-pages"); err != nil {
+		t.Fatal(err)
+	}
+	if got := manifests(); got != 0 {
+		t.Fatalf("%d manifests outlived every job", got)
 	}
 }

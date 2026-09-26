@@ -92,6 +92,9 @@ type libCollector struct {
 	b       *budget
 	entries map[string]string
 	stamps  map[string]string
+	// meta is each hashed file's mode and size, and each symlink's mode,
+	// for the root listings (libroots.go).
+	meta map[string]libMeta
 	// walked are the roots walked so far, resolved.
 	walked []string
 	// execDir is the folder of the process's main executable, for
@@ -105,10 +108,10 @@ type libCollector struct {
 
 // collectLibs fingerprints what the program described by rt loads from
 // outside realDir. folderMachOs are the Mach-O files the folder walk hashed.
-func collectLibs(realDir string, outs []string, p Program, rt runtimeInfo, folderMachOs []string, b *budget) (map[string]string, map[string]string, error) {
+func collectLibs(realDir string, outs []string, p Program, rt runtimeInfo, folderMachOs []string, b *budget) (libSet, error) {
 	c := &libCollector{
 		realDir: realDir, outs: outs, b: b,
-		entries: map[string]string{}, stamps: map[string]string{},
+		entries: map[string]string{}, stamps: map[string]string{}, meta: map[string]libMeta{},
 		machoSeen: map[string]map[string]bool{},
 	}
 	mainExe, err := filepath.EvalSymlinks(rt.interp)
@@ -178,7 +181,7 @@ func collectLibs(realDir string, outs []string, p Program, rt runtimeInfo, folde
 		roots = roots[1:]
 		more, werr := c.walkRoot(r)
 		if werr != nil {
-			return nil, nil, werr
+			return libSet{}, werr
 		}
 		roots = append(roots, more...)
 	}
@@ -188,13 +191,13 @@ func collectLibs(realDir string, outs []string, p Program, rt runtimeInfo, folde
 			continue
 		}
 		if err := c.recordPath(n, nil); err != nil {
-			return nil, nil, err
+			return libSet{}, err
 		}
 	}
 	if err := c.closure(); err != nil {
-		return nil, nil, err
+		return libSet{}, err
 	}
-	return c.entries, c.stamps, nil
+	return libSet{entries: c.entries, stamps: c.stamps, meta: c.meta, walked: c.walked}, nil
 }
 
 // covered reports whether p is fingerprinted by the folder walk or a walk
@@ -257,6 +260,7 @@ func (c *libCollector) walkRoot(root string) ([]string, error) {
 			c.entries[path] = "link:" + target
 			if li, lerr := os.Lstat(path); lerr == nil {
 				c.stamps[path] = ctimeStamp(li)
+				c.meta[path] = libMeta{mode: li.Mode()}
 			}
 			resolved, rerr := filepath.EvalSymlinks(path)
 			if rerr != nil || inside(resolved, root) || c.covered(resolved) {
@@ -321,6 +325,7 @@ func (c *libCollector) take(key, file string, h fileHash, rpaths []string) error
 	}
 	c.entries[key] = "sha256:" + h.sum
 	c.stamps[key] = h.stamp
+	c.meta[key] = libMeta{mode: h.mode, size: h.n}
 	if h.macho {
 		c.queueMachO(file, rpaths)
 	}
@@ -701,6 +706,7 @@ type fileHash struct {
 	sum   string
 	n     int64
 	stamp string
+	mode  fs.FileMode
 	macho bool
 }
 
@@ -777,7 +783,7 @@ func cachedLibHash(path string, info os.FileInfo) (fileHash, bool) {
 	if !ok || hit.key != key {
 		return fileHash{}, false
 	}
-	return fileHash{sum: hit.sum, n: key.size, stamp: ctimeStamp(info), macho: hit.macho}, true
+	return fileHash{sum: hit.sum, n: key.size, stamp: ctimeStamp(info), mode: info.Mode(), macho: hit.macho}, true
 }
 
 func statKeyOf(info os.FileInfo) (statKey, bool) {
@@ -825,5 +831,5 @@ func hashLibFile(path string) (fileHash, error) {
 			}
 		}
 	}
-	return fileHash{sum: sum, n: n, stamp: stamp, macho: isMachO}, nil
+	return fileHash{sum: sum, n: n, stamp: stamp, mode: info.Mode(), macho: isMachO}, nil
 }

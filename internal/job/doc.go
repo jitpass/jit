@@ -30,6 +30,11 @@
 //     never by running the interpreter, which would run the code being
 //     checked before the human approved anything. A program jit cannot
 //     cover this way (a launcher like uv run, ruby) may not run unasked.
+//   - libroots.go: how that is stored. jobs.json holds one hash per library
+//     root (an installation, a dylib), and decides from it alone; the list
+//     of each root's files lives in a manifest beside jobs.json, only to
+//     name the file a stop is about, and is used only when it hashes to
+//     what jobs.json holds.
 //   - policy.go: commands refused at approval because they hand the values
 //     straight back (`python -c`, `env`, `cat`). A guard against the obvious
 //     mistake, never the boundary: the boundary is the human reading the

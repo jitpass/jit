@@ -132,6 +132,13 @@ says never to give a sandbox write access to; the job list lives there for
 the same reason. It is never inside a project, so nothing in a folder an
 agent can write defines what a job is (fact 6).
 
+Beside it, `job-libraries/` keeps one manifest per library folder a job's
+program loads (a Python's installation, say): the list of its files and
+their hashes, mode 0600 in a 0700 folder, written atomically. `jobs.json`
+holds one hash per such folder, and whether a job may run is decided from
+that hash alone; a manifest only lets a stop name the file that changed
+(see "Stored per library root" below).
+
 A `never` job's key is a grant key: 32 random bytes in the keychain as
 `com.jitpass.grant.key` / `job:<name>`, the DEKs re-wrapped under it at
 approval, reusing `standing.go`'s ledger, seal and rotation handling. An
@@ -558,9 +565,9 @@ dropped a `.pth` into site-packages had a never job run its code with the
 secrets, while this page promised the code that runs is the code approved.
 Decided with Meni: fix before shipping.
 
-**What is fingerprinted now** (`internal/job/interp.go`, `libs.go`), into a
-second map of the fingerprint, `Libs`, keyed by absolute path, with
-change-time stamps like the folder's:
+**What is fingerprinted now** (`internal/job/interp.go`, `libs.go`), with
+content hashes and change-time stamps like the folder's (stored one hash
+per library root: see "Stored per library root" below):
 
 - **Python**: the installation's whole prefix (every file under the folder
   holding `lib/python3.X/os.py`, CPython's own landmark): the stdlib,
@@ -651,16 +658,56 @@ here):
 The cached figure for a job includes its own folder, which is read every
 time. The cache lives in the service while it runs, so after the first
 check only files that changed are read again; a run checks three times.
-The cost on disk: each Python job adds about 740 KB to `jobs.json` (the
-hash and change-time of every library file, measured on the notion job),
-and the file is rewritten after every run. A compact encoding is possible
-if that ever matters.
 
-**A job approved before this** has no `Libs` (`libs_v` 0). If its program
-loads anything from outside the folder now, it stops with "approved by an
-older jit … approve it again" (`Unchecked`) rather than a list of two
-thousand added files; a `/bin/sh` job, which loads nothing jit records,
-keeps running.
+**Stored per library root** (`internal/job/libroots.go`, decided before
+shipping). The first version stored the hash and change-time of every
+library file in `jobs.json`, keyed by absolute path: about 700 KB per
+Python job (740 KB on the notion job), in a file rewritten after every run.
+Now `jobs.json` holds one entry per library ROOT (`lib_roots`): each folder
+walked whole (the installation prefix, a venv outside the folder, a folder
+a `.pth` adds or a symlink points at) and each place recorded on its own (a
+dylib, a `pyvenv.cfg` that is not there, where a symlink resolves). An
+entry is two hashes: one over the root's listing (every entry's path
+relative to the root, mode, size and content hash, or link target, or
+`absent`, sorted by path and length-prefixed so no path can forge a line
+break), and one over the same paths' change-times (the `Rewritten` rule),
+plus the file count. The protection is the same: any change to any
+fingerprinted library file changes its root's hash, which stops the job.
+
+To name the file, the service keeps each walked root's listing in a
+manifest under `job-libraries/`, named by the root's two hashes (jobs on
+one Python share one), written before the job that names it is saved and
+deleted when no job names it. A manifest is used only after a hash
+differs, and only when its own listing hashes to the hash `jobs.json`
+holds, so it cannot make a changed library look unchanged, nor blame a
+file that did not change. A manifest that is missing, damaged, planted or
+replaced by a named pipe costs only the name: the job stops all the same
+and the stop names the folder ("a file in … changed since you approved it,
+and jit can't say which: its list of the files there is missing or
+damaged"). And if the listings ever named nothing while the hashes differ,
+the root is named: a mismatch always stops the job, unless the root held
+nothing then and holds nothing now (a place still empty). A place recorded
+on its own needs no manifest: its root is the file.
+
+The speed is the stat-keyed cache's, as before; grouping the entries and
+hashing each root's listing adds a few milliseconds. Measured on this Mac
+(2026-09-26, `JIT_REAL_INTERPRETERS=1`, a job folder with a venv made from
+uv's CPython 3.14.7, three runs):
+
+| | Per-file (`libs_v` 1) | Per root (`libs_v` 2) |
+|---|---|---|
+| The job's fingerprint in `jobs.json` | 682 KB | 3.8 KB (5 library roots) |
+| Manifests beside it (shared per installation) | none | 346 KB |
+| First check | 123-124 ms | 126-129 ms |
+| Cached check | 45 ms | 46-48 ms |
+
+**A job approved before this** cannot be compared: one approved before
+libraries were fingerprinted has no roots (`libs_v` 0), and one approved by
+the per-file build (`libs_v` 1, never released) holds a map this build no
+longer reads. If its program loads anything from outside the folder now,
+it stops with "approved by an older jit … approve it again" (`Unchecked`)
+rather than a list of two thousand added files; a `/bin/sh` job, which
+loads nothing jit records, keeps running.
 
 Tests (each run against the code without its safeguard): an edited stdlib
 file, a `.pth` dropped into site-packages, an edited module in a venv
@@ -670,7 +717,17 @@ re-pointed installation, new library bytecode, a rewritten dylib (direct,
 transitive, and one a venv's compiled module links), a dylib planted at an
 earlier `@rpath`, a missing weak dylib appearing, a package planted where
 Node searches, the per-job limits, a same-size rewrite with its time put
-back through the cache, the refusals, and the old-approval stop.
+back through the cache, the refusals, and the old-approval stop. For the
+per-root storage: a stop read back from `jobs.json` names an edited,
+planted, deleted or swapped-back stdlib file from its manifest, also after
+a service restart; with the manifest gone it stops and names the folder; a
+manifest rewritten to match the edited library, one blaming another file,
+one that is not JSON and a named pipe in its place all leave the stop
+naming the folder; a damaged manifest never stops an unchanged job; a
+Python job's `jobs.json` entry stays under 8 KB and does not grow with its
+installation (2,000 more library files add 3 bytes); a per-file approval
+stops as older; and manifests are private, shared and pruned with the last
+job that names them.
 
 ## Open decisions
 

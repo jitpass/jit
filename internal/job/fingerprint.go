@@ -29,27 +29,37 @@ type Fingerprint struct {
 	// Exe is the entry for the resolved executable, which usually lives
 	// outside the folder (a venv's python links to uv's interpreter).
 	Exe string `json:"exe"`
-	// Stamps holds each hashed file's change-time, keyed like Files. Only
-	// the kernel sets a change-time, and on APFS it moves on every write and
-	// on a rename away and back (measured 2026-09-25), even when the content
-	// ends up identical and the modification time is reset. So a file
-	// swapped for a moment and put back, which a content hash cannot see,
-	// still shows here. A fingerprint from before stamps existed has none,
-	// and is compared by content alone.
+	// Stamps holds each hashed file's change-time, keyed like Files, and
+	// the executable's under ExePath (a library's are in its root's hash,
+	// LibRoot.Stamps). Only the kernel sets a change-time, and on APFS it
+	// moves on every write and on a rename away and back (measured
+	// 2026-09-25), even when the content ends up identical and the
+	// modification time is reset. So a file swapped for a moment and put
+	// back, which a content hash cannot see, still shows here. A fingerprint
+	// from before stamps existed has none, and is compared by content alone.
 	Stamps map[string]string `json:"stamps,omitempty"`
-	// Libs is what the job's program loads from outside the folder (libs.go,
-	// interp.go): its interpreter's installation, a venv outside the folder,
-	// folders a .pth file adds, the native libraries every fingerprinted
-	// Mach-O links, and places the interpreter looks that held nothing
-	// (AbsentEntry). Keyed by absolute path, valued like Files; a value ending
-	// " @ <path>" also says where a named path resolved. Stamps holds their
-	// change-times under the same keys.
-	Libs map[string]string `json:"libs,omitempty"`
-	// LibsV is 1 on a fingerprint that took Libs, even an empty one. A
-	// fingerprint from a jit before it (0) cannot say what the program loaded,
-	// so a job approved then stops once its program loads anything from
-	// outside the folder (Unchecked).
+	// LibRoots is what the job's program loads from outside the folder
+	// (libs.go, interp.go), one entry per library root (libroots.go): an
+	// installation prefix, a venv outside the folder, a folder a .pth file
+	// adds, each native library and each place the interpreter looks. One
+	// hash per root over the listing of every file in it, so a Python job
+	// stores a handful of entries here rather than two thousand.
+	LibRoots map[string]LibRoot `json:"lib_roots,omitempty"`
+	// LibsV is libsVersion on a fingerprint that took LibRoots, even an
+	// empty one. A fingerprint from a jit before it cannot be compared: 0
+	// said nothing of what the program loaded, and 1 kept a per-file map
+	// this build no longer reads. A job approved with either stops once its
+	// program loads anything from outside the folder (Unchecked).
 	LibsV int `json:"libs_v,omitempty"`
+
+	// Libs is every entry LibRoots summarises, keyed by absolute path and
+	// valued like Files (AbsentEntry for a place that held nothing; a value
+	// ending " @ <path>" also says where a named path resolved). Compute
+	// fills it; jobs.json never holds it. The per-file lists live in
+	// LibManifests, outside jobs.json, only to NAME what changed.
+	Libs map[string]string `json:"-"`
+	// libLines is Libs grouped by root, as each root's listing.
+	libLines map[string][]libLine
 }
 
 // Limits bound a fingerprint. Guesses sized well above the one folder
@@ -368,14 +378,12 @@ func Compute(dir string, p Program, outputs, extra []string) (Fingerprint, error
 	}
 	fp.Exe = "sha256:" + h.sum
 	fp.Stamps[ExePath] = h.stamp
-	libs, stamps, err := collectLibs(realDir, skipAbs, p, classify(realDir, p), machos, b)
+	set, err := collectLibs(realDir, skipAbs, p, classify(realDir, p), machos, b)
 	if err != nil {
 		return Fingerprint{}, err
 	}
-	fp.Libs, fp.LibsV = libs, 1
-	for k, v := range stamps {
-		fp.Stamps[k] = v
-	}
+	fp.Libs, fp.LibsV = set.entries, libsVersion
+	fp.LibRoots, fp.libLines = set.group()
 	fp.Root = fp.rootHash()
 	return fp, nil
 }
@@ -399,7 +407,7 @@ func hashFileStamp(path string) (fileHash, error) {
 	if err != nil {
 		return fileHash{}, err
 	}
-	return fileHash{sum: sum, n: n, stamp: ctimeStamp(info), macho: isMachO}, nil
+	return fileHash{sum: sum, n: n, stamp: ctimeStamp(info), mode: info.Mode(), macho: isMachO}, nil
 }
 
 func (fp Fingerprint) rootHash() string {
@@ -413,13 +421,14 @@ func (fp Fingerprint) rootHash() string {
 		fmt.Fprintf(h, "%s\x00%s\n", k, fp.Files[k])
 	}
 	fmt.Fprintf(h, "\x00exe\x00%s\n", fp.Exe)
-	libs := make([]string, 0, len(fp.Libs))
-	for k := range fp.Libs {
-		libs = append(libs, k)
+	roots := make([]string, 0, len(fp.LibRoots))
+	for k := range fp.LibRoots {
+		roots = append(roots, k)
 	}
-	sort.Strings(libs)
-	for _, k := range libs {
-		fmt.Fprintf(h, "\x00lib\x00%s\x00%s\n", k, fp.Libs[k])
+	sort.Strings(roots)
+	for _, k := range roots {
+		r := fp.LibRoots[k]
+		fmt.Fprintf(h, "\x00lib\x00%d:%s\x00%s\x00%t\n", len(k), k, r.Sum, r.Dir)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -435,9 +444,16 @@ const (
 	// or replaced and put back since (its change-time moved). The swap a
 	// content hash cannot see.
 	Rewritten ChangeKind = "rewritten"
-	// Unchecked: the approval predates Libs, so nothing says what the program
-	// loaded from outside the folder then. Only approving again can.
+	// Unchecked: the approval predates LibRoots, so nothing this build reads
+	// says what the program loaded from outside the folder then. Only
+	// approving again can.
 	Unchecked ChangeKind = "not fingerprinted when you approved it"
+	// FolderChanged and FolderRewritten are a library folder whose hash no
+	// longer matches approval, when jit's list of the files it held
+	// (LibManifests) is missing or does not match that hash: the job stops
+	// all the same, and the stop names the folder.
+	FolderChanged   ChangeKind = "has a file that changed"
+	FolderRewritten ChangeKind = "has a file that was written to"
 )
 
 // Change is one difference, for the sentence that names it.
@@ -471,6 +487,10 @@ func (c Change) Sentence() string {
 		return c.Path + " was written to since you approved it: its content matches, but something rewrote it or swapped it and put it back"
 	case Unchecked:
 		return "this job was approved by an older jit, which did not fingerprint what its program loads from outside the folder (the interpreter's own libraries); approve it again"
+	case FolderChanged:
+		return "a file in " + c.Path + " changed since you approved it, and jit can't say which: its list of the files there is missing or damaged"
+	case FolderRewritten:
+		return "a file in " + c.Path + " was written to since you approved it (its content matches), and jit can't say which: its list of the files there is missing or damaged"
 	default:
 		return fmt.Sprintf("%s %s since you approved it", c.Path, c.Kind)
 	}
@@ -499,8 +519,19 @@ func StopHint(changes []Change) string {
 }
 
 // Diff lists what now differs from approved, sorted by path, executable
-// first. Empty means the job may run.
+// first. Empty means the job may run. now must come from Compute. A library
+// change is named from approved's own file lists when it has them (a
+// fingerprint Compute returned); one read back from jobs.json has none, and
+// LibManifests.Diff names the file from the manifests instead.
 func Diff(approved, now Fingerprint) []Change {
+	return LibManifests("").Diff(approved, now)
+}
+
+// Diff is the package's Diff, naming a changed library file from the
+// manifests in m when approved carries no file lists of its own. Whether
+// a library root changed is decided by its hash in approved alone,
+// recomputed from disk into now: a manifest only names the file.
+func (m LibManifests) Diff(approved, now Fingerprint) []Change {
 	var out []Change
 	if approved.Exe != now.Exe {
 		out = append(out, Change{Path: ExePath, Kind: Changed})
@@ -509,10 +540,12 @@ func Diff(approved, now Fingerprint) []Change {
 		out = append(out, Change{Path: ExePath, Kind: Rewritten})
 	}
 	rest := diffEntries(approved, now, approved.Files, now.Files)
-	if approved.LibsV == 0 && len(now.Libs) > 0 {
-		rest = append(rest, Change{Path: LibsPath, Kind: Unchecked})
+	if approved.LibsV < libsVersion {
+		if len(now.LibRoots) > 0 {
+			rest = append(rest, Change{Path: LibsPath, Kind: Unchecked})
+		}
 	} else {
-		rest = append(rest, diffEntries(approved, now, approved.Libs, now.Libs)...)
+		rest = append(rest, m.diffLibs(approved, now)...)
 	}
 	sort.Slice(rest, func(a, b int) bool { return rest[a].Path < rest[b].Path })
 	return append(out, rest...)

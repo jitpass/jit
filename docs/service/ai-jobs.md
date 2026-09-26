@@ -80,7 +80,9 @@ The app's agent then has three tools: `list_jobs`, `run_job` and
   standard library, the profile file, even a file swapped and put back,
   **the job stops** and says which file. It stays stopped until you look and
   approve it again (**Review…** in AI Jobs, or `jit job allow NAME --replace
-  -- …`).
+  -- …`). For a library outside the folder, jit keeps the list of its files
+  beside the job list; if that list is missing, the job stops all the same
+  and names the library's folder instead of the file.
 - The tool gets the exit code and the output. Every secret value, and its
   common encodings, is hidden. With `--output DIR` (terminal only), files the
   job wrote there are listed by path.
