@@ -53,6 +53,11 @@ type moveWorld struct {
 	// counts every kcPresent call.
 	presence      []keystore.Presence
 	presenceCalls int
+
+	// reach is what seReachable answers (nil: this jit reaches the
+	// enclave); reachCalls counts the checks.
+	reach      error
+	reachCalls int
 }
 
 func newMoveWorld(t *testing.T) *moveWorld {
@@ -193,6 +198,10 @@ func (w *moveWorld) mover() *keyMover {
 			}
 			w.enclaveKey = false
 			return nil
+		},
+		seReachable: func() error {
+			w.reachCalls++
+			return w.reach
 		},
 		lockAgent: func() {},
 	}
@@ -436,8 +445,14 @@ func TestVaultMoveRefusals(t *testing.T) {
 	withFixtureHome(t)
 	root := seedFixtureVault(t, "fixture/API_KEY")
 	stubKeyStores(t)
+	// The in-memory mover, reaching its enclave: the move's first check
+	// (checkReach) must never look the production key up from a test.
+	w := &moveWorld{t: t, root: root, mek: bytes.Repeat([]byte{3}, 32)}
+	w.startInKeychain()
+	origMover := runMover
+	runMover = func(string, io.Writer) *keyMover { return w.mover() }
 	vaultRekeyYes = true
-	t.Cleanup(func() { vaultRekeyYes = false; vaultRekeyWrapper = "" })
+	t.Cleanup(func() { runMover = origMover; vaultRekeyYes = false; vaultRekeyWrapper = "" })
 	run := func(args ...string) error {
 		vaultRekeyWrapper = ""
 		var buf bytes.Buffer

@@ -569,7 +569,7 @@ func (s *Server) removeJob(name string, c *caller) Response {
 			cause = "removed, its key deleted"
 		}
 	}
-	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause)
+	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause, "")
 	return Response{OK: true, KeyNote: keyNote}
 }
 
@@ -622,6 +622,18 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 			changes = changes[:maxJobChanges]
 		}
 		st.Changes = changes
+	}
+	st.Stopped = st.State != JobReady
+	switch {
+	case st.Stopped:
+		st.Outcome = JobOutcomeStop
+	case j.SkipTold:
+		st.Outcome = JobOutcomePersistingSkip
+	case j.SkipsInARow > 0:
+		st.Outcome = JobOutcomeSkip
+	}
+	if !st.Stopped {
+		st.Skips, st.SkippingSinceUnix = j.SkipsInARow, j.SkippingSinceUnix
 	}
 	return st
 }
@@ -695,7 +707,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	requester := jobRequester(c)
 
 	if j.Stopped != "" {
-		s.recordJobEvent(KindError, OpJobRun, c, &j, j.Name+": refused, stopped: "+j.Stopped)
+		s.recordJobEvent(KindError, OpJobRun, c, &j, j.Name+": refused, stopped: "+j.Stopped, JobOutcomeStillStopped)
 		return Response{OK: false, Error: fmt.Sprintf("job_run: %s: stopped because %s. It won't run until you approve it again", j.Name, j.Stopped)}
 	}
 	if changes := s.jobChanges(&j); len(changes) > 0 {
@@ -734,6 +746,9 @@ func (s *Server) runJob(name string, c *caller) Response {
 		// falls back to prompting, which would turn a job the human set to
 		// run while away into one that silently waits on a dialog.
 		if err := s.openJobKeys(&j, deks); err != nil {
+			if errors.As(err, &jobKeyUnready{}) {
+				return s.refuseJobRun(&j, c, requester, err.Error())
+			}
 			return s.refuseJob(&j, c, requester, err.Error())
 		}
 	default:
@@ -796,6 +811,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 		cur.LastCaller = requester
 		cur.LastRefusal = ""
 		cur.LastHiddenSum = hidden
+		endSkipStreak(cur)
 		_ = s.saveJobsLocked() // bookkeeping only; the run already happened
 	}
 	s.jobMu.Unlock()
@@ -803,7 +819,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	if j.Ask == job.AskNever {
 		how = "unasked"
 	}
-	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden))
+	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden), "")
 	return Response{OK: true, JobResult: &result}
 }
 
@@ -846,9 +862,17 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			wrap = sec.Wrap
 		}
 	}
+	// Only a key that can't be used right now (ErrGrantKeyNotNow) skips
+	// this one run; every other failure is an answer about the key, and
+	// stops the job, naming it.
 	key, err := s.loadGrantKey(j.KeyID, wrap)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrGrantKeyAbsent):
 		return fmt.Errorf("the job's key is gone")
+	case errors.Is(err, ErrGrantKeyNotNow):
+		return jobKeyUnready{"the job's key couldn't be loaded", err}
+	case err != nil:
+		return fmt.Errorf("the job's key couldn't be loaded (%v)", err)
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
@@ -860,8 +884,16 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			return fmt.Errorf("%s's sealed key is damaged", sec.Var)
 		}
 		dek, oerr := key.Open(sealed, sec.Class)
-		if oerr != nil {
+		switch {
+		case errors.Is(oerr, ErrGrantKeyWrongKey):
 			return fmt.Errorf("%s does not open under the job's key", sec.Var)
+		case errors.Is(oerr, ErrGrantKeyNotNow):
+			// A read that would have had to ask, an enclave locked or out
+			// of reach: nothing is known to be wrong with the job or its
+			// copy, so this one run is skipped, not the job stopped.
+			return jobKeyUnready{"the job's key couldn't open " + sec.Var, oerr}
+		case oerr != nil:
+			return fmt.Errorf("the job's key couldn't open %s (%v)", sec.Var, oerr)
 		}
 		deks[sec.DeviceDigest] = dek
 	}
@@ -876,21 +908,84 @@ func (s *Server) refuseJob(j *job.Job, c *caller, requester, why string) Respons
 		cur.LastRefusal = why
 		cur.LastCaller = requester
 		cur.Stopped = why
+		endSkipStreak(cur) // the stop is what the owner hears now
 		_ = s.saveJobsLocked()
 	}
 	s.jobMu.Unlock()
-	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why)
+	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why, JobOutcomeStop)
 	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. It won't run until you approve it again", j.Name, why)}
+}
+
+// jobKeyUnready is openJobKeys failing because the key can't be used right
+// now (ErrGrantKeyNotNow, on Load or Open), which proves nothing about the
+// job, its key or its copies. Not a stop: every other failure is.
+type jobKeyUnready struct {
+	what string
+	err  error
+}
+
+func (e jobKeyUnready) Error() string { return fmt.Sprintf("%s (%s)", e.what, e.err) }
+
+func (e jobKeyUnready) Unwrap() error { return e.err }
+
+// refuseJobRun is refuseJob for a cause outside the job: the run did not
+// happen and says why, but the job is NOT stopped, so the next run tries
+// again without a new approval. Its event says "didn't run", never
+// "refused", and its JobOutcome is JobOutcomeSkip: the app announces a
+// stop, and this is not one.
+//
+// A skip that goes on is: jobSkipsToTell skipped runs in a row, or
+// jobSkipTimeToTell since the first of them, whichever comes first, and the
+// event of the run that crosses the line is JobOutcomePersistingSkip,
+// saying how long: once per streak, so the owner learns the job hasn't
+// been running without being told at every attempt. The job still is not
+// stopped; the next run still tries.
+func (s *Server) refuseJobRun(j *job.Job, c *caller, requester, why string) Response {
+	now := time.Now()
+	outcome, cause := JobOutcomeSkip, j.Name+": didn't run, "+why
+	s.jobMu.Lock()
+	if cur, ok := s.jobs[j.Name]; ok && cur.ApprovedUnix == j.ApprovedUnix {
+		cur.LastRefusal = why
+		cur.LastCaller = requester
+		if cur.SkipsInARow == 0 {
+			cur.SkippingSinceUnix = now.Unix()
+		}
+		cur.SkipsInARow++
+		since := time.Unix(cur.SkippingSinceUnix, 0)
+		if !cur.SkipTold && (cur.SkipsInARow >= jobSkipsToTell || now.Sub(since) >= jobSkipTimeToTell) {
+			cur.SkipTold = true
+			outcome = JobOutcomePersistingSkip
+			cause = fmt.Sprintf("%s: didn't run %d times in a row since %s, %s", j.Name, cur.SkipsInARow, since.Format("Jan 2 15:04"), why)
+		}
+		_ = s.saveJobsLocked()
+	}
+	s.jobMu.Unlock()
+	s.recordJobEvent(KindError, OpJobRun, c, j, cause, outcome)
+	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. The job wasn't stopped; the next run tries again", j.Name, why)}
+}
+
+// When a streak of skipped runs is told (refuseJobRun): after this many in
+// a row, or this long after the first, whichever comes first.
+const (
+	jobSkipsToTell    = 3
+	jobSkipTimeToTell = 24 * time.Hour
+)
+
+// endSkipStreak clears j's streak of skipped runs: a run ran, or the job
+// stopped (the stop is then what the owner hears).
+func endSkipStreak(j *job.Job) {
+	j.SkipsInARow, j.SkippingSinceUnix, j.SkipTold = 0, 0, false
 }
 
 // recordJobEvent writes one job event to the ring and the durable trail,
 // never collapsed: a run is a discrete fact, and two runs a minute apart are
 // two runs. Labels are the job's vault paths, like a grant's.
-func (s *Server) recordJobEvent(kind, op string, c *caller, j *job.Job, cause string) {
+func (s *Server) recordJobEvent(kind, op string, c *caller, j *job.Job, cause, outcome string) {
 	e := unlockEvent(op, c)
 	e.Kind = kind
 	e.Cause = cause
 	e.Job = j.Name
+	e.JobOutcome = outcome
 	e.UnixTime = time.Now().Unix()
 	for _, sec := range j.Secrets {
 		if len(e.Labels) < maxUseLabels {

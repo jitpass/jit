@@ -35,6 +35,22 @@ const GrantWrap = "se-p256-v1"
 
 const grantTagPrefix = "com.jitpass.grant."
 
+// ErrNoGrantKey is Load's answer when the enclave was reached and holds no
+// key for the grant: the key is proven gone. Every other Load failure (an
+// enclave this jit can't reach, a lookup that failed) says nothing about
+// the key, and a caller must not treat it as gone.
+var ErrNoGrantKey = errors.New("no Secure Enclave key for this grant")
+
+// missingGrantKey is ErrNoGrantKey (errors.Is) in a sentence naming the
+// grant.
+type missingGrantKey string
+
+func (id missingGrantKey) Error() string {
+	return fmt.Sprintf("no Secure Enclave key for grant %s (was it revoked?)", string(id))
+}
+
+func (missingGrantKey) Is(target error) bool { return target == ErrNoGrantKey }
+
 // GrantKeys creates, loads and deletes grant keys in the enclave. The zero
 // value targets production tags; tests set tagPrefix through
 // NewTestingGrantKeys.
@@ -53,6 +69,38 @@ func NewTestingGrantKeys(prefix string) GrantKeys {
 		panic("secureenclave.NewTestingGrantKeys: prefix " + prefix + " is not a TEST-ONLY identifier")
 	}
 	return GrantKeys{tagPrefix: prefix}
+}
+
+// NewTestingGrantKeysLookup is NewTestingGrantKeys whose keys answer the
+// lookup (Load, Present) through present, and every Open with openErr,
+// instead of the enclave; nothing else about them works. It is for another
+// package's tests of what those answers become (internal/cli's grant key
+// adapters) from a plain `go test`, which cannot reach the enclave. It
+// panics without "TEST-ONLY" in prefix, as NewTestingGrantKeys does.
+func NewTestingGrantKeysLookup(prefix string, present func(tag string) (bool, error), openErr error) GrantKeys {
+	g := NewTestingGrantKeys(prefix)
+	g.newKey = func(tag string) enclave { return lookupOnly{tag: tag, lookup: present, openErr: openErr} }
+	return g
+}
+
+// lookupOnly is NewTestingGrantKeysLookup's key.
+type lookupOnly struct {
+	tag     string
+	lookup  func(tag string) (bool, error)
+	openErr error
+}
+
+var errLookupOnly = errors.New("grant key: a lookup-only test key can't be used")
+
+func (l lookupOnly) present() (bool, error)    { return l.lookup(l.tag) }
+func (lookupOnly) create() error               { return errLookupOnly }
+func (lookupOnly) remove() error               { return errLookupOnly }
+func (lookupOnly) seal([]byte) ([]byte, error) { return nil, errLookupOnly }
+func (l lookupOnly) open([]byte, string) ([]byte, error) {
+	if l.openErr != nil {
+		return nil, l.openErr
+	}
+	return nil, errLookupOnly
 }
 
 func (g GrantKeys) tag(id string) (string, error) {
@@ -109,7 +157,7 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 		return nil, fmt.Errorf("grant key: %w", err)
 	}
 	if !present {
-		return nil, fmt.Errorf("no Secure Enclave key for grant %s (was it revoked?)", id)
+		return nil, missingGrantKey(id)
 	}
 	return &GrantKey{k: k}, nil
 }
@@ -167,7 +215,12 @@ func (gk *GrantKey) Seal(dek []byte, class string) ([]byte, error) {
 }
 
 // Open unseals with the enclave (no dialog: this key has no presence flag)
-// and returns the DEK only if the sealed class is exactly class.
+// and returns the DEK only if the sealed class is exactly class. Bytes that
+// don't open, or open to another class, are ErrWrongKey; an enclave that
+// can't be used right now is the enclave's own error (ErrLocked,
+// ErrUnavailable: NotNow), which says nothing about the bytes. Everything
+// else (a damaged ephemeral key's CryptoTokenKit -3, a lookup's -50) is
+// the bridge's error as it came, and not NotNow.
 func (gk *GrantKey) Open(wrapped []byte, class string) ([]byte, error) {
 	framed, err := gk.k.open(wrapped, "")
 	if err != nil {
@@ -175,14 +228,14 @@ func (gk *GrantKey) Open(wrapped []byte, class string) ([]byte, error) {
 	}
 	defer wipe(framed)
 	if len(framed) < 2 {
-		return nil, errors.New("grant key: sealed copy is damaged")
+		return nil, fmt.Errorf("grant key: sealed copy is damaged: %w", ErrWrongKey)
 	}
 	n := int(binary.BigEndian.Uint16(framed))
 	if len(framed) < 2+n {
-		return nil, errors.New("grant key: sealed copy is damaged")
+		return nil, fmt.Errorf("grant key: sealed copy is damaged: %w", ErrWrongKey)
 	}
 	if string(framed[2:2+n]) != class {
-		return nil, errors.New("grant key: unwrap failed (wrong class)")
+		return nil, fmt.Errorf("grant key: unwrap failed (wrong class): %w", ErrWrongKey)
 	}
 	dek := make([]byte, len(framed)-2-n)
 	copy(dek, framed[2+n:])

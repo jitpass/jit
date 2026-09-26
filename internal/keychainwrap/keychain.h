@@ -5,7 +5,7 @@ typedef struct {
     int success;
     char *error_message;
     // status is the failing call's OSStatus where the caller decides on it
-    // (kw_fetch_mek sets it); 0 otherwise.
+    // (kw_fetch_mek and kw_fetch_quiet_no_switch set it); 0 otherwise.
     int status;
 } KWResult;
 
@@ -26,6 +26,13 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize);
 // errSecInteractionNotAllowed instead (kSecUseAuthenticationUIFail, and the
 // process's keychain interaction off for the call).
 KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **key, int *key_len, int quiet);
+
+// kw_fetch_quiet_no_switch is kw_fetch_mek's quiet read without the
+// process-wide interaction switch, for the service's grant and job keys: the
+// query alone carries kSecUseAuthenticationUIFail, and a locked default
+// keychain (or one whose lock state can't be read) is not read at all and
+// answers errSecInteractionNotAllowed (keychain.m has why).
+KWResult kw_fetch_quiet_no_switch(const char *service, const char *account, unsigned char **key, int *key_len);
 
 // kw_mek_present checks whether the MEK item exists WITHOUT reading its
 // bytes and without any dialog (kSecUseAuthenticationUIFail), and returns

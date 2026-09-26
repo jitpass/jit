@@ -38,13 +38,22 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 
 // se_open decrypts with the private key. For a presence key this is where
 // the dialog appears, reading "<app> is trying to <reason>." *out is
-// malloc'd.
+// malloc'd. On failure *decrypting says which step failed: 0 finding the
+// key (a lookup: its status is about reaching the key, never the bytes), 1
+// SecKeyCreateDecryptedData (its status may be about the bytes).
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                 const char *reason, unsigned char **out, int *out_len);
+                 const char *reason, unsigned char **out, int *out_len, int *decrypting);
 
 // se_list_tags returns the tag of every enclave key in group whose tag
 // starts with prefix, from attributes only (never uses a key, never
 // prompts). *tags is a malloc'd array of *count malloc'd strings.
 SEResult se_list_tags(const char *group, const char *prefix, char ***tags, int *count);
+
+// se_entitlements reads this process's OWN code-signing entitlements
+// (SecTaskCreateFromSelf): *has_group is 1 when keychain-access-groups
+// names group, and *app_id is the application identifier (malloc'd, NULL
+// when there is none). It is no keychain query: it never prompts, and it
+// answers the same whether the Mac is locked or not.
+SEResult se_entitlements(const char *group, int *has_group, char **app_id);
 
 #endif

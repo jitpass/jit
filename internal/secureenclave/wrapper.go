@@ -29,6 +29,9 @@ const (
 	// a TEST-ONLY tag through newWrapper.
 	prodTag = "com.jitpass.vault.kek"
 
+	// TeamID is the Apple team that signs JitPass.app.
+	TeamID = "CZC6BH93GJ"
+
 	// slotBSuffix makes slot B's tag from slot A's: com.jitpass.vault.kek.b.
 	// A rotation (a later jit) seals the new MEK to the slot the file does
 	// not name, then deletes the other; the next goes back to A with a fresh
@@ -39,7 +42,7 @@ const (
 	// the vault, not a bundle ID, so moving the service between bundles never
 	// orphans a key (design/secure-enclave.md). The provisioning profile
 	// authorizes CZC6BH93GJ.* (checked 2026-09-25).
-	AccessGroup = "CZC6BH93GJ.com.jitpass.vault"
+	AccessGroup = TeamID + ".com.jitpass.vault"
 
 	mekSize = 32 // AES-256, the same MEK keychainwrap holds
 )

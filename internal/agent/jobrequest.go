@@ -96,7 +96,7 @@ func (s *Server) requestJob(req Request, c *caller) Response {
 	e.Cause = why
 	e.UnixTime = p.UnixTime
 	s.publishBrokers(*e)
-	s.recordJobEvent(KindUse, OpJobRequest, c, &job.Job{Name: p.Name}, fmt.Sprintf("proposed %s (%s) to the user", p.Name, jobLabel(spec.Dir, spec.Argv)))
+	s.recordJobEvent(KindUse, OpJobRequest, c, &job.Job{Name: p.Name}, fmt.Sprintf("proposed %s (%s) to the user", p.Name, jobLabel(spec.Dir, spec.Argv)), "")
 	return Response{OK: true, Proposals: []JobProposal{p}}
 }
 

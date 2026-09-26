@@ -134,8 +134,10 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
 //     vault key's move, rotation, `jit vault delete`, `jit uninstall
 //     --purge`). The service's grant and job key deletes take the reference
 //     delete without it (kw_item_delete_by_ref_no_switch, from
-//     GrantKeys.Delete, and never on a locked default keychain), so the
-//     long-running service never switches keychain UI off for the whole
+//     GrantKeys.Delete, and never on a locked default keychain), and their
+//     reads take the quiet query without it (kw_fetch_quiet_no_switch, from
+//     GrantKey's Seal and Open, and never on a locked default keychain), so
+//     the long-running service never switches keychain UI off for the whole
 //     process while other requests run.
 //   - Overlapping and nested uses share one save and one restore: a mutex
 //     and a depth count. The first to enter saves the value and switches it
@@ -445,6 +447,48 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
             } else {
                 r.error_message = dupNSString([NSString stringWithFormat:@"reading the master key from the keychain failed, OSStatus=%d", (int)status]);
             }
+            return r;
+        }
+        NSData *data = (__bridge_transfer NSData *)result;
+        *key_len = (int)data.length;
+        unsigned char *buf = malloc(*key_len);
+        memcpy(buf, data.bytes, *key_len);
+        *key = buf;
+        r.success = 1;
+    }
+    return r;
+}
+
+// kw_fetch_quiet_no_switch is kw_fetch_mek's quiet read WITHOUT the
+// process-wide interaction switch (kwWithoutUI): the service's grant and job
+// key reads (keychainwrap's GrantKey), where flipping that switch would
+// reach every other request in flight, the vault key's own read included.
+// The query is the same registry entry, KW_Q_FETCH_QUIET, which carries
+// kSecUseAuthenticationUIFail. Like the service's reference delete, it reads
+// only after kw_default_keychain_lock_state says the default keychain is
+// UNLOCKED: a read on a locked keychain with interaction on was never
+// measured, and might ask to unlock. On a locked one, or one whose state
+// can't be read, it does not read at all and answers
+// errSecInteractionNotAllowed: the read would have had to ask. The message
+// names the status; the caller decides from it (keychainwrap.QuietReadError).
+KWResult kw_fetch_quiet_no_switch(const char *service, const char *account, unsigned char **key, int *key_len) {
+    KWResult r = {0, NULL};
+    @autoreleasepool {
+        int lock = kw_default_keychain_lock_state();
+        if (lock != 1) {
+            r.status = (int)errSecInteractionNotAllowed;
+            r.error_message = dupNSString(lock == 0
+                ? [NSString stringWithFormat:@"the keychain is locked, and reading the key would have had to ask to unlock it, OSStatus=%d", r.status]
+                : [NSString stringWithFormat:@"couldn't tell whether the keychain is locked (OSStatus=%d), so the key was not read, OSStatus=%d", lock, r.status]);
+            return r;
+        }
+        CFTypeRef result = NULL;
+        OSStatus status = kwCopyMatching(KW_Q_FETCH_QUIET, [NSString stringWithUTF8String:service],
+                                         [NSString stringWithUTF8String:account], NULL, &result);
+        if (status != errSecSuccess || !result) {
+            if (result) CFRelease(result);
+            r.status = status != errSecSuccess ? (int)status : (int)errSecItemNotFound;
+            r.error_message = dupNSString([NSString stringWithFormat:@"reading the key in the keychain without asking failed, OSStatus=%d", r.status]);
             return r;
         }
         NSData *data = (__bridge_transfer NSData *)result;

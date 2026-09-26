@@ -467,6 +467,239 @@ func TestNeverJobWithItsKeyGoneRefusesWithoutPrompting(t *testing.T) {
 	}
 }
 
+// A key gone is a stop that stands until the job is approved again: the
+// second run is refused as stopped, still without a prompt.
+func TestNeverJobWithItsKeyGoneStaysStopped(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.keys.Delete(r.stored(t).KeyID)
+	if _, err := r.c.JobRun("notion-guests"); err == nil {
+		t.Fatal("ran with its key gone")
+	}
+	if got := r.stored(t).Stopped; got != "the job's key is gone" {
+		t.Fatalf("stopped = %q, want the key-gone stop", got)
+	}
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), "stopped because the job's key is gone") {
+		t.Fatalf("second run: %v", err)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("a stopped job prompted or ran")
+	}
+}
+
+// notNow marks cause as the stores mark a key that can't be used right now
+// (cli's markLoad and markedKey).
+func notNow(cause string) error { return fmt.Errorf("%w: %s", ErrGrantKeyNotNow, cause) }
+
+// A key that is there but can't be used right now (an enclave this copy of
+// jit can't reach: ErrGrantKeyNotNow) proves nothing about the key. The run
+// is refused, naming the real cause, without a prompt, and the job is NOT
+// stopped: once the key loads again, the next run runs with no new
+// approval. It used to be stopped for good as "the job's key is gone".
+func TestNeverJobWhoseKeyWontLoadIsNotStopped(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	cause := notNow("grant key: this copy of jit can't use the Secure Enclave; use the jit inside JitPass.app")
+	r.keys.mu.Lock()
+	r.keys.loadErr = cause
+	r.keys.mu.Unlock()
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil {
+		t.Fatal("ran with a key that couldn't be loaded")
+	}
+	const want = "agent: job_run: notion-guests: the job's key couldn't be loaded (the key can't be used right now: grant key: this copy of jit can't use the Secure Enclave; use the jit inside JitPass.app). The job wasn't stopped; the next run tries again"
+	if err.Error() != want {
+		t.Fatalf("refusal:\n got %q\nwant %q", err, want)
+	}
+	if strings.Contains(err.Error(), "gone") || strings.Contains(err.Error(), "approve it again") {
+		t.Fatalf("a key that wouldn't load was called gone, or a stop: %v", err)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("a run whose key wouldn't load prompted or ran")
+	}
+	j := r.stored(t)
+	if j.Stopped != "" {
+		t.Fatalf("stopped = %q; a key that wouldn't load must not stop the job", j.Stopped)
+	}
+	if !strings.Contains(j.LastRefusal, "couldn't be loaded") {
+		t.Errorf("last refusal = %q, want the real cause recorded", j.LastRefusal)
+	}
+	r.keys.mu.Lock()
+	r.keys.loadErr = nil
+	r.keys.mu.Unlock()
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatalf("the next run, with the key loading again: %v", err)
+	}
+	if r.runs() != 1 || r.prompts() != before {
+		t.Fatalf("runs %d, prompts %d: want one unasked run", r.runs(), r.prompts()-before)
+	}
+}
+
+// A non-sticky refusal must not read as a stop. The app notifies "<job>
+// stopped running" for any job_run error whose cause contains "refused"
+// (jit-app noteJobStop), so its event says "didn't run" instead, and still
+// names the cause.
+func TestNeverJobRunRefusalIsNotAnnouncedAsAStop(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	r.keys.mu.Lock()
+	r.keys.loadErr = notNow("grant key: the Mac is locked")
+	r.keys.mu.Unlock()
+	if _, err := r.c.JobRun("notion-guests"); err == nil {
+		t.Fatal("ran with a key that couldn't be loaded")
+	}
+	const want = "notion-guests: didn't run, the job's key couldn't be loaded (the key can't be used right now: grant key: the Mac is locked)"
+	if c := lastCause(t, r.s); c != want {
+		t.Fatalf("event cause:\n got %q\nwant %q", c, want)
+	}
+	if strings.Contains(lastCause(t, r.s), "refused") {
+		t.Fatal("the app would announce this as a stop")
+	}
+}
+
+// A key that loads but can't be used right now (a locked keychain answers
+// Open's read with errSecInteractionNotAllowed) proves nothing about the
+// job's copies: the run is refused naming the cause, and the job is NOT
+// stopped. It used to be stopped for good as "does not open under the
+// job's key".
+func TestNeverJobWhoseKeyWontOpenNowIsNotStopped(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	r.keys.mu.Lock()
+	r.keys.openErr = notNow("grant key: reading the key in the keychain without asking failed, OSStatus=-25308")
+	r.keys.mu.Unlock()
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil {
+		t.Fatal("ran with a key that couldn't open")
+	}
+	const want = "agent: job_run: notion-guests: the job's key couldn't open NOTION_API_KEY (the key can't be used right now: grant key: reading the key in the keychain without asking failed, OSStatus=-25308). The job wasn't stopped; the next run tries again"
+	if err.Error() != want {
+		t.Fatalf("refusal:\n got %q\nwant %q", err, want)
+	}
+	if j := r.stored(t); j.Stopped != "" {
+		t.Fatalf("stopped = %q; a key that can't be used right now must not stop the job", j.Stopped)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("prompted or ran")
+	}
+	r.keys.mu.Lock()
+	r.keys.openErr = nil
+	r.keys.mu.Unlock()
+	if _, err := r.c.JobRun("notion-guests"); err != nil || r.runs() != 1 {
+		t.Fatalf("the next run, with the key opening again: %v (runs %d)", err, r.runs())
+	}
+}
+
+// A copy that doesn't open under the key (ErrGrantKeyWrongKey: tampered,
+// sealed for another key or class) is the sticky stop, as before.
+func TestNeverJobWhoseCopyDoesntOpenStaysStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		openErr error
+	}{
+		{"marked by the store", fmt.Errorf("%w: cipher: message authentication failed", ErrGrantKeyWrongKey)},
+		{"a real tag mismatch", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newJobRig(t)
+			if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+				t.Fatal(err)
+			}
+			if tc.openErr != nil {
+				r.keys.mu.Lock()
+				r.keys.openErr = tc.openErr
+				r.keys.mu.Unlock()
+			} else {
+				// Another key under the job's id: its copies fail GCM.
+				id := r.stored(t).KeyID
+				_ = r.keys.Delete(id)
+				if _, err := r.keys.Create(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := r.c.JobRun("notion-guests")
+			if err == nil || !strings.Contains(err.Error(), "NOTION_API_KEY does not open under the job's key. It won't run until you approve it again") {
+				t.Fatalf("run: %v", err)
+			}
+			if got := r.stored(t).Stopped; got != "NOTION_API_KEY does not open under the job's key" {
+				t.Fatalf("stopped = %q", got)
+			}
+			if c := lastCause(t, r.s); !strings.HasPrefix(c, "notion-guests: refused, ") {
+				t.Fatalf("a stop's event must still read as one: %q", c)
+			}
+		})
+	}
+}
+
+// The default is a stop. Any Load or Open failure a store did not mark as
+// "can't be used right now" is an answer about the key or the copy (a
+// malformed item, errSecAuthFailed, CryptoTokenKit's -3 for a damaged
+// ephemeral key, a lookup's -50), and stops the job for good, the real
+// cause in the reason, with no prompt: as it did before a skip existed.
+func TestNeverJobWhoseKeyFailsUnmarkedStops(t *testing.T) {
+	for _, tc := range []struct {
+		name, cause string
+		load        bool
+		stopped     string
+	}{
+		{"Load, a lookup's -50", "grant key: checking for the Secure Enclave key failed (OSStatus=-50)", true,
+			"the job's key couldn't be loaded (grant key: checking for the Secure Enclave key failed (OSStatus=-50))"},
+		{"Open, errSecAuthFailed", "grant key: reading the key in the keychain without asking failed, OSStatus=-25293", false,
+			"the job's key couldn't open NOTION_API_KEY (grant key: reading the key in the keychain without asking failed, OSStatus=-25293)"},
+		{"Open, a damaged ephemeral key", "opening with the Secure Enclave key: The operation couldn't be completed. (CryptoTokenKit error -3.)", false,
+			"the job's key couldn't open NOTION_API_KEY (opening with the Secure Enclave key: The operation couldn't be completed. (CryptoTokenKit error -3.))"},
+		{"Open, a malformed item", `grant key: the keychain item "x" is not a master key: 7 bytes, want 32`, false,
+			`the job's key couldn't open NOTION_API_KEY (grant key: the keychain item "x" is not a master key: 7 bytes, want 32)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newJobRig(t)
+			if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+				t.Fatal(err)
+			}
+			r.keys.mu.Lock()
+			if tc.load {
+				r.keys.loadErr = errors.New(tc.cause)
+			} else {
+				r.keys.openErr = errors.New(tc.cause)
+			}
+			r.keys.mu.Unlock()
+			before := r.prompts()
+			_, err := r.c.JobRun("notion-guests")
+			if want := "agent: job_run: notion-guests: " + tc.stopped + ". It won't run until you approve it again"; err == nil || err.Error() != want {
+				t.Fatalf("run:\n got %v\nwant %s", err, want)
+			}
+			if got := r.stored(t).Stopped; got != tc.stopped {
+				t.Fatalf("stopped = %q, want %q", got, tc.stopped)
+			}
+			if c := lastCause(t, r.s); c != "notion-guests: refused, "+tc.stopped {
+				t.Fatalf("a stop's event must read as one: %q", c)
+			}
+			if r.prompts() != before || r.runs() != 0 {
+				t.Fatal("prompted or ran")
+			}
+			// Sticky: the key working again changes nothing.
+			r.keys.mu.Lock()
+			r.keys.loadErr, r.keys.openErr = nil, nil
+			r.keys.mu.Unlock()
+			if _, err := r.c.JobRun("notion-guests"); err == nil || r.runs() != 0 {
+				t.Fatalf("a stopped job ran again without approval: %v", err)
+			}
+		})
+	}
+}
+
 // A job that could not be saved must not leave its key behind.
 func TestNeverJobThatCannotBeSavedLeavesNoKey(t *testing.T) {
 	r := newJobRig(t)

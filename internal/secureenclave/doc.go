@@ -46,11 +46,17 @@
 // real enclave only through scripts/se-test.sh, which wraps and signs them;
 // a plain `go test` exercises everything else against a fake enclave.
 //
+// Whether THIS process is such a jit is Entitled: its own signature's
+// keychain-access-groups and application identifier, read with no keychain
+// query, so the answer never depends on a locked screen or a lookup that
+// failed. A command that refuses a jit outside the app decides from it.
+//
 // # The CGo seam
 //
 // enclave.m is this package's whole C surface: find, create and delete one
 // key by tag in the data-protection keychain, seal to its public half (never
-// prompts, spike S1b), and open with it. Tests never touch the production
+// prompts, spike S1b), open with it, and read this process's own
+// entitlements (SecTaskCreateFromSelf). Tests never touch the production
 // tags.
 //
 // # Two slots

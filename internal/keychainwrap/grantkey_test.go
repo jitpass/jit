@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -159,6 +161,26 @@ func TestGrantKeyDeleteIsFinalAndIdempotent(t *testing.T) {
 	if strings.Contains(err.Error(), "jit vault init") {
 		t.Errorf("Load error = %q, sends the user at the vault for a grant's missing key", err)
 	}
+	if !errors.Is(err, ErrNoGrantKey) {
+		t.Errorf("Load after Delete = %v, want ErrNoGrantKey", err)
+	}
+}
+
+// Load's "gone" is proof, not a guess: only the keychain saying the item is
+// not there is ErrNoGrantKey (the agent stops a never-ask job for good on
+// it). A lookup only: this test makes no item.
+func TestGrantKeyLoadOfAMissingKeyIsNoGrantKey(t *testing.T) {
+	keys := testGrantKeys(t)
+	_, err := keys.Load("g-never-made")
+	if !errors.Is(err, ErrNoGrantKey) {
+		t.Fatalf("Load of a key never made = %v, want ErrNoGrantKey", err)
+	}
+	if want := "no key for grant g-never-made in the keychain (was it revoked?)"; err.Error() != want {
+		t.Errorf("the sentence changed: %q, want %q", err, want)
+	}
+	if _, err := keys.Load(""); err == nil || errors.Is(err, ErrNoGrantKey) {
+		t.Errorf("Load(\"\") = %v: must fail, and not as a key proven gone", err)
+	}
 }
 
 func TestGrantKeyRefusesAnEmptyID(t *testing.T) {
@@ -210,5 +232,143 @@ func TestGrantKeysList(t *testing.T) {
 	}
 	if len(ids) != 2 || !got["g-00000001"] || !got["j-00000002"] {
 		t.Fatalf("List = %v", ids)
+	}
+}
+
+// Open tells a copy that doesn't open under the key (ErrWrongKey) from a
+// keychain that won't hand the key over: only a read that would have had to
+// ask is ErrCantReadNow (the one refusal a never-ask job skips a run for);
+// errSecAuthFailed and anything else are the keychain's answers, cause
+// kept. The keychain's refusal is faked (GrantKey.read): the item itself is
+// real and TEST-ONLY, so Create, Load, Seal and the first Opens take the
+// production read (quietFetchNoSwitch).
+func TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead(t *testing.T) {
+	keys := testGrantKeys(t)
+	id := testGrantID(t, keys, "g-open")
+	key, err := keys.Create(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Close()
+	sealed, err := key.Seal(bytes.Repeat([]byte{0x07}, 32), "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dek, err := key.Open(sealed, "mcp"); err != nil || !bytes.Equal(dek, bytes.Repeat([]byte{0x07}, 32)) {
+		t.Fatalf("the production read: %v", err)
+	}
+	if _, err := key.Open(sealed, "aws"); !errors.Is(err, ErrWrongKey) || errors.Is(err, ErrCantReadNow) {
+		t.Errorf("another class: %v, want ErrWrongKey", err)
+	}
+	tampered := append([]byte(nil), sealed...)
+	tampered[len(tampered)-1] ^= 1
+	if _, err := key.Open(tampered, "mcp"); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("tampered: %v, want ErrWrongKey", err)
+	}
+
+	for status, cantRead := range map[int32]bool{
+		errSecInteractionNotAllowed: true,
+		errSecAuthFailed:            false, // the per-signature ACL's refusal (keychain.m); a lock looks the same
+		-25291:                      false, // errSecNotAvailable
+	} {
+		loaded, err := keys.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded.read = func() ([]byte, error) {
+			return nil, &QuietReadError{Status: status, Msg: fmt.Sprintf("reading failed, OSStatus=%d", status)}
+		}
+		_, err = loaded.Open(sealed, "mcp")
+		if errors.Is(err, ErrCantReadNow) != cantRead || errors.Is(err, ErrWrongKey) {
+			t.Errorf("OSStatus=%d: Open = %v; ErrCantReadNow should be %v, and never ErrWrongKey", status, err, cantRead)
+		}
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("OSStatus=%d", status)) {
+			t.Errorf("OSStatus=%d: the cause was lost: %v", status, err)
+		}
+	}
+}
+
+// A key whose item went after Load is the grant's own "no key", read
+// quietly: the service's read (quietFetchNoSwitch) of a missing item.
+func TestGrantKeyOpenOfAKeyGoneSinceLoad(t *testing.T) {
+	keys := testGrantKeys(t)
+	id := testGrantID(t, keys, "g-gone")
+	key, err := keys.Create(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := key.Seal(bytes.Repeat([]byte{0x07}, 32), "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := keys.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.Delete(id); err != nil {
+		t.Fatal(err)
+	}
+	_, err = loaded.Open(sealed, "mcp")
+	if !errors.Is(err, ErrNoGrantKey) || errors.Is(err, ErrCantReadNow) || errors.Is(err, ErrWrongKey) {
+		t.Fatalf("Open with the item gone = %v, want ErrNoGrantKey", err)
+	}
+}
+
+// The store other packages' tests use finds every key and reads it through
+// its read: Load never asks the keychain, and Open's answers are the
+// production Open's over what read gives.
+func TestGrantKeysReadingAnswersThroughOpen(t *testing.T) {
+	key := bytes.Repeat([]byte{0x05}, mekSize)
+	g := NewTestingGrantKeysReading("com.jitpass.grant.key.TEST-ONLY.reading", func() ([]byte, error) {
+		return append([]byte(nil), key...), nil
+	})
+	k, err := g.Load("never-made")
+	if err != nil {
+		t.Fatalf("Load = %v, want a key without the keychain", err)
+	}
+	sealed, err := seal(key, []byte("dek"), []byte("mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dek, err := k.Open(sealed, "mcp"); err != nil || string(dek) != "dek" {
+		t.Fatalf("Open = %q, %v", dek, err)
+	}
+	if _, err := k.Open(sealed, "aws"); !errors.Is(err, ErrWrongKey) {
+		t.Fatalf("Open of another class = %v, want ErrWrongKey", err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a service without TEST-ONLY was accepted")
+		}
+	}()
+	NewTestingGrantKeysReading(grantService, nil)
+}
+
+func TestNewTestingGrantKeysRefusesProductionNames(t *testing.T) {
+	for _, service := range []string{grantService, "com.jitpass.grant.key.other"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewTestingGrantKeys(%q) did not panic", service)
+				}
+			}()
+			NewTestingGrantKeys(service)
+		}()
+	}
+}
+
+// Only a quiet read that would have had to ask is ErrCantReadNow; its text
+// is the bridge's own sentence either way.
+func TestQuietReadErrorCantReadNowIsOnlyAReadThatWouldAsk(t *testing.T) {
+	for status, want := range map[int32]bool{
+		errSecInteractionNotAllowed: true,
+		errSecAuthFailed:            false,
+		errSecItemNotFound:          false,
+		-34018:                      false,
+	} {
+		e := &QuietReadError{Status: status, Msg: "the bridge's sentence"}
+		if errors.Is(e, ErrCantReadNow) != want || e.Error() != "the bridge's sentence" {
+			t.Errorf("OSStatus=%d: ErrCantReadNow %v (want %v), text %q", status, errors.Is(e, ErrCantReadNow), want, e)
+		}
 	}
 }
