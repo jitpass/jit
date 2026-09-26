@@ -114,9 +114,10 @@ var vaultRekeyCmd = &cobra.Command{
 			return fmt.Errorf("jit vault rekey: %w", rekeyMarkerRefusal(root))
 		}
 		// Rotation rewrites the keychain item; an enclave vault does not use
-		// one. Rotating an enclave vault's key is not built yet.
+		// one. Rotating an enclave vault's key comes later
+		// (design/secure-enclave-rotation.md); this jit only reads both slots.
 		if openKeyStore(root).Kind() == keystore.KindSecureEnclave {
-			return errors.New("jit vault rekey: this vault's key is in the Secure Enclave, and rotating it is not available yet")
+			return errors.New("jit vault rekey: this vault's key is in the Secure Enclave, and rotating it comes in a later version of jit")
 		}
 		resume := rekeyInProgress(root)
 		// Rekey rotates the keychain item's own bytes through staged items;

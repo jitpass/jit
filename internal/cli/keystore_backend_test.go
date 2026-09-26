@@ -165,8 +165,9 @@ func TestVaultRekeyRefusesAnEnclaveVault(t *testing.T) {
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{"vault", "rekey"})
 	err := rootCmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "Secure Enclave") {
-		t.Fatalf("jit vault rekey on an enclave vault: %v, want a refusal naming the Secure Enclave", err)
+	const want = "jit vault rekey: this vault's key is in the Secure Enclave, and rotating it comes in a later version of jit"
+	if err == nil || err.Error() != want {
+		t.Fatalf("jit vault rekey on an enclave vault: %v, want %q", err, want)
 	}
 }
 

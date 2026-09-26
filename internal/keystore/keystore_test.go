@@ -107,6 +107,7 @@ func TestEnclavePresenceMapping(t *testing.T) {
 		secureenclave.Absent:        Indeterminate, // the file vanished after Open: not proof of no key
 		secureenclave.KeyLost:       KeyLost,
 		secureenclave.Unavailable:   Unavailable,
+		secureenclave.NeedsNewerJit: NeedsNewerJit, // never KeyLost: the key may be fine
 		secureenclave.Indeterminate: Indeterminate,
 	} {
 		withFakeEnclave(t, in)
@@ -146,6 +147,33 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	withFakeEnclave(t, secureenclave.Unavailable)
 	if _, err := (enclaveStore{}).Init(); !errors.Is(err, secureenclave.ErrUnavailable) {
 		t.Fatalf("Init unreachable: %v, want ErrUnavailable", err)
+	}
+}
+
+// A vault sealed by a newer jit (a slot this jit does not know) is never
+// treated as a lost key: Init sets nothing aside, makes no keychain key, and
+// says to update jit.
+func TestEnclaveInitOverANewerJitsSealedFileRefuses(t *testing.T) {
+	root := t.TempDir()
+	sealed := filepath.Join(root, vault.SealedKeyFile)
+	if err := os.WriteFile(sealed, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withFakeEnclave(t, secureenclave.NeedsNewerJit)
+	origInit, origLeft := initKeychain, leftoverPresence
+	initKeychain = func() error { t.Error("Init made a keychain key"); return nil }
+	leftoverPresence = func() Presence { t.Error("Init looked for a leftover key"); return Absent }
+	t.Cleanup(func() { initKeychain, leftoverPresence = origInit, origLeft })
+
+	_, err := (enclaveStore{root: root}).Init()
+	if !errors.Is(err, secureenclave.ErrSealedByNewerJit) || err.Error() != "this vault's key was sealed by a newer jit; update jit" {
+		t.Fatalf("Init: %v, want the newer-jit refusal", err)
+	}
+	if _, err := os.Stat(sealed); err != nil {
+		t.Fatalf("the sealed file was moved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, LostSealedFile)); err == nil {
+		t.Fatal("the sealed file was set aside as a lost key")
 	}
 }
 
