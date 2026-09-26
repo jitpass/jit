@@ -56,5 +56,17 @@
 // enclave.m is this package's whole C surface: find, create and delete one
 // key by tag in the data-protection keychain, seal to its public half (never
 // prompts, spike S1b), open with it, and read this process's own
-// entitlements (SecTaskCreateFromSelf). Tests never touch prodTag.
+// entitlements (SecTaskCreateFromSelf). Tests never touch the production
+// tags.
+//
+// # Two slots
+//
+// The vault's key has two fixed tags, slot A (com.jitpass.vault.kek, every
+// enclave vault until a rotation) and slot B (com.jitpass.vault.kek.b), so
+// a rotation can make a new key and delete the old one
+// (design/secure-enclave-rotation.md, D1). The sealed file names its slot
+// in kek_tag; the Wrapper follows it to one of the two and no further. This
+// jit reads both and writes only slot A (a move into the enclave); rotation
+// itself comes later. A slot it does not know is a newer jit's, refused as
+// that (ErrSealedByNewerJit, Presence NeedsNewerJit), never as a lost key.
 package secureenclave

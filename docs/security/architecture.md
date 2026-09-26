@@ -21,9 +21,16 @@ quietly resolving as the wrong secret. Overwrites keep the outgoing value
 as an encrypted archived version ([`jit vault history` /
 `restore`](../vault/index.md#botched-a-rotation-history--restore), newest 5
 per secret; `rm` deletes them with the secret). The master key lives in the
-macOS login Keychain, gated by Touch ID / device passcode, and can be
-rotated in place with
-[`jit vault rekey`](../vault/maintenance.md#jit-vault-rekey---rotate-the-master-key). The vault never syncs
+macOS login Keychain by default, gated by Touch ID / device passcode, and can
+be rotated in place with
+[`jit vault rekey`](../vault/maintenance.md#jit-vault-rekey---rotate-the-master-key).
+As an opt-in, it can move into the Secure Enclave instead
+(`jit vault rekey --wrapper secure-enclave`, or JitPass's Settings ›
+Protection): it is then stored sealed to a Secure Enclave key that only
+JitPass's signed helper can use, after a Touch ID or password check the
+enclave enforces rather than jit, and it can't leave this Mac, so a current
+recovery file is required first
+([The vault key in the Secure Enclave](../vault/secure-enclave.md)). The vault never syncs
 anywhere; the only way secrets leave the machine is an explicit
 [passphrase-encrypted export](../vault/backup-restore.md) (Argon2id-derived
 key - machine-independent by design, protected only by the passphrase you
@@ -161,10 +168,13 @@ in storage rather than in scope. It is anchored to the app's executable
 path instead of a live pid, so it outlives a restart and a reboot, and it
 ends only on revoke. To serve with the vault locked it cannot rely on the
 session, so at creation it re-wraps the covered data keys under a key of
-its own: that key is a second keychain item with the same protection as the
-master key, and the wrapped copies sit in a ledger on disk. The exposure it
-adds is therefore bounded by what the master key already carries, and it
-opens strictly fewer secrets; revoking deletes the key, which makes the
+its own, kept where the master key is, and the wrapped copies sit in a
+ledger on disk. For a keychain vault that key is a second keychain item,
+stored as the master key is, with no challenge of its own. For a vault whose
+key is in the Secure Enclave it is an enclave key of its own that, unlike the
+master key's, opens with no Touch ID and works while the Mac is locked;
+only JitPass's signed helper can use it. Either way it opens strictly fewer
+secrets than the master key; revoking deletes the key, which makes the
 ledger's copies unrecoverable. The full argument, including what the
 executable-path anchor gives up against a pid, is in
 [Standing grants](../../design/standing-grants.md). The decision point is unchanged - a human on a disclosed
@@ -197,11 +207,18 @@ so a file swapped and put back also counts as changed). Every run re-checks
 the fingerprint and the secrets' rotation before the prompt, after it, and
 after the command exits; any difference stops the job, and the stop is
 sticky until the human reviews and approves it again. The Touch ID prompt
-names the job, the command and who asked, as the service resolved them.
+says what the service resolved, never the job's name, which any caller can
+choose: approving names the folder and the program it runs, the vault groups
+its secrets come from, how many may appear in the output, and whether it
+will ever ask again; each run of a job that asks names the folder and
+program, who asked, and how many secrets. The full command is shown before
+the prompt: printed by `jit job allow`, and on the app's sheet.
 
 A job that asks *never* runs with no prompt, even while the vault is
-locked, using a key of its own in the keychain that seals only that job's
-data keys; removing the job deletes the key. `jit mcp`, the stdio MCP
+locked, using a key of its own that seals only that job's data keys, kept
+where the master key is (the keychain, or the Secure Enclave with no
+presence check, as for a standing grant above); removing the job deletes
+the key. `jit mcp`, the stdio MCP
 server that Claude Desktop and Cursor start, is a plain socket client with
 no privilege of its own: it can list jobs, ask to run one, and propose a new
 one, which is only a suggestion the human approves or dismisses. It cannot

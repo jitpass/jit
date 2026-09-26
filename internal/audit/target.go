@@ -178,7 +178,7 @@ func scanTargetFile(cfg Config, path string) ([]Finding, []ScannerFailure) {
 		structured = true
 		findings = append(findings, classifyEnvFile(cfg, path, name)...)
 	}
-	if mcpConfigFileNames[name] {
+	if isMCPConfigScanName(name) {
 		structured = true
 		findings = append(findings, classifyMCPFile(cfg, path, name)...)
 	}

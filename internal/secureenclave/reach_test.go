@@ -23,8 +23,11 @@ func TestUnsignedBinaryCannotReachTheEnclave(t *testing.T) {
 		t.Skip("this binary is signed; the refusal is tested unsigned")
 	}
 	root := t.TempDir()
-	w := NewTesting(root, hardwareTag(t))
-	if err := os.WriteFile(filepath.Join(root, SealedFile), []byte("{}"), 0o600); err != nil {
+	tag := hardwareTag(t)
+	w := NewTesting(root, tag)
+	// A sealed file this jit reads (two-slot format, naming the test's own
+	// tag), so Presence gets as far as the lookup.
+	if err := writeSealed(filepath.Join(root, SealedFile), tag, []byte{1}); err != nil {
 		t.Fatal(err)
 	}
 	// A developer's Mac answers errSecMissingEntitlement. A CI runner is a

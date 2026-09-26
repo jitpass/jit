@@ -21,6 +21,13 @@ files under a dated name. It takes no file and needs no Touch ID.
 jit vault import <file> [flags]
 ```
 
+### Examples
+
+```
+  jit vault import ~/jit-recovery.json
+  jit vault import --finish    # after a lost key, once every recovery file is in
+```
+
 ### Options
 
 ```

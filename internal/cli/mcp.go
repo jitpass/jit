@@ -21,14 +21,16 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/atomicfile"
+	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/mcp"
-	"github.com/jitpass/jit/internal/vault"
 )
 
 // jit mcp — the MCP server that lets an AI app list and run AI jobs
 // (design/agent-jobs.md, step 3). The protocol lives in internal/mcp; this
 // file wires it to the service and manages the one entry an app's config
-// needs. Install touches only that entry, after a backup, and says so.
+// needs. Install touches only that entry's bytes (mcpconfigedit.go), after
+// a backup it keeps one of, and says so.
 
 var (
 	mcpClientName  string
@@ -67,9 +69,16 @@ var mcpInstallCmd = &cobra.Command{
 	Use:   "install [--client claude-desktop|cursor]",
 	Short: "Add jit's MCP server to Claude Desktop or Cursor",
 	Long: `Add one entry, "jit", to the app's MCP servers, so its agent can list
-and run your AI jobs: Claude Desktop (the default) or Cursor. The config
-file is backed up first, beside itself, and nothing else in it changes.
-The app reads it at start, so quit and reopen it afterwards.
+and run your AI jobs: Claude Desktop (the default) or Cursor. Nothing else
+in the file changes: the rest keeps its order, spacing and characters. A
+config that is a link to another file is edited there, and stays a link.
+
+First, a copy of the file as it was is saved beside it, named
+<file>.jit-backup-<date>-<time>. The copy holds whatever the file held,
+API keys included, so only you can read it, jit keeps only the latest
+one, and jit scan reports any key in it.
+
+The app reads its config at start, so quit and reopen it afterwards.
 
 Connecting approves nothing. Claude can only run jobs you approved with
 'jit job allow', and can only propose new ones for you to approve.`,
@@ -85,8 +94,10 @@ Connecting approves nothing. Claude can only run jobs you approved with
 var mcpUninstallCmd = &cobra.Command{
 	Use:   "uninstall [--client claude-desktop|cursor]",
 	Short: "Remove jit's MCP server from Claude Desktop or Cursor",
-	Long:  "Remove the \"jit\" entry from the app's MCP servers, after a backup. Your AI jobs stay; only this app's way in goes.",
-	Args:  cobra.NoArgs,
+	Long: `Remove the "jit" entry from the app's MCP servers. Nothing else in the
+file changes, and a copy of it as it was is saved beside it first, as
+'jit mcp install' does. Your AI jobs stay; only this app's way in goes.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := runMCPInstall(cmd.OutOrStdout(), false); err != nil {
 			return fmt.Errorf("jit mcp uninstall: %w", err)
@@ -226,62 +237,141 @@ type mcpServerEntry struct {
 	Args    []string `json:"args"`
 }
 
+// mcpEdit is what setMCPEntry did to an app's config.
+type mcpEdit struct {
+	changed bool
+	// written is the file the edit went to: the config path itself, or,
+	// when that is a link, the file it points at.
+	written string
+	// backup is the copy of the file as it was, saved beside the config.
+	backup string
+	// pruned are older jit backups of this config removed after it, and
+	// pruneErr the first removal that failed (the edit itself stands).
+	pruned   []string
+	pruneErr error
+}
+
 // setMCPEntry adds (entry non-nil) or removes the jit entry in the config at
-// path, keeping every other key's bytes as they were. It returns whether the
-// file changed and where the backup went. A file that is not JSON is refused
-// and left alone: it is the user's, and a parse failure is not permission to
-// rewrite it.
-func setMCPEntry(path string, entry *mcpServerEntry, now time.Time) (changed bool, backup string, err error) {
-	raw, err := os.ReadFile(path) // #nosec G304 -- the AI app's own config file, a fixed path under the user's home
-	missing := errors.Is(err, os.ErrNotExist)
-	if err != nil && !missing {
-		return false, "", err
+// path, keeping every other byte of the file as it was (spliceMCPEntry). A
+// file that is not JSON is refused and left alone: it is the user's, and a
+// parse failure is not permission to rewrite it.
+//
+// A config that is a symlink is edited where it points, so the link stays a
+// link (a config kept in a dotfiles repo is the usual case), and the file
+// keeps its permission bits. Replacing the link with a regular file, which
+// renaming over the path did, silently forked the user's config from the
+// copy they manage.
+//
+// Before a change, a copy of the file as it was is saved beside path, 0600,
+// and every older copy jit saved of this config is removed after the edit
+// lands: the copy holds whatever the config held, API keys included, so one
+// is kept, not one per run (pre-release review, 2026-09-26). jit scan and
+// jit migrate treat the copy as the config it came from
+// (audit.IsMCPConfigBackupName).
+func setMCPEntry(path string, entry *mcpServerEntry, now time.Time) (mcpEdit, error) {
+	ed := mcpEdit{written: path}
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return mcpEdit{}, fmt.Errorf("%s is a link to a file that is not there, so it was left as it is", path)
+		}
+		ed.written = target
 	}
+	mode := os.FileMode(0o600)
+	info, err := os.Stat(ed.written)
+	missing := errors.Is(err, os.ErrNotExist)
+	switch {
+	case err != nil && !missing:
+		return mcpEdit{}, err
+	case err == nil && !info.Mode().IsRegular():
+		// A FIFO would hang the read below, and a directory is no config.
+		return mcpEdit{}, fmt.Errorf("%s is not a regular file, so it was left as it is", path)
+	case err == nil:
+		mode = info.Mode().Perm()
+	}
+	var raw []byte
+	if !missing {
+		if raw, err = os.ReadFile(ed.written); err != nil { // #nosec G304 -- the AI app's own config file, a fixed path under the user's home, or where its link points
+			return mcpEdit{}, err
+		}
+	}
+	empty := missing || len(bytes.TrimSpace(raw)) == 0
 	top := map[string]json.RawMessage{}
-	if !missing && len(bytes.TrimSpace(raw)) > 0 {
+	if !empty {
 		if err := json.Unmarshal(raw, &top); err != nil {
-			return false, "", fmt.Errorf("%s is not valid JSON, so it was left as it is (%v)", path, err)
+			return mcpEdit{}, fmt.Errorf("%s is not valid JSON, so it was left as it is (%v)", path, err)
 		}
 	}
 	servers := map[string]json.RawMessage{}
 	if s, ok := top["mcpServers"]; ok {
 		if err := json.Unmarshal(s, &servers); err != nil {
-			return false, "", fmt.Errorf("%s: mcpServers is not an object, so the file was left as it is", path)
+			return mcpEdit{}, fmt.Errorf("%s: mcpServers is not an object, so the file was left as it is", path)
+		}
+		if servers == nil { // "mcpServers": null decodes to a nil map
+			servers = map[string]json.RawMessage{}
 		}
 	}
 	current, has := servers[mcpServerName]
 	if entry == nil {
 		if !has {
-			return false, "", nil
+			return ed, nil
 		}
 		delete(servers, mcpServerName)
 	} else {
 		want, _ := json.Marshal(entry)
 		if has && jsonEqual(current, want) {
-			return false, "", nil
+			return ed, nil
 		}
 		servers[mcpServerName] = want
 	}
+	// What the file must decode to afterwards: the map edit, which the
+	// splice below is checked against rather than trusted.
 	if len(servers) == 0 {
 		delete(top, "mcpServers")
 	} else {
 		s, _ := json.Marshal(servers)
 		top["mcpServers"] = s
 	}
-	out, err := json.MarshalIndent(top, "", "  ")
-	if err != nil {
-		return false, "", err
+
+	var out []byte
+	if empty {
+		out, err = encodeJSONValue(top, memberLayout{multiline: true, step: "  "})
+		out = append(out, '\n')
+	} else {
+		out, err = spliceMCPEntry(raw, entry)
 	}
+	if err != nil {
+		return mcpEdit{}, fmt.Errorf("%s could not be edited in place, so it was left as it is (%w)", path, err)
+	}
+	if want, _ := json.Marshal(top); !jsonEqual(out, want) {
+		return mcpEdit{}, fmt.Errorf("%s could not be edited in place, so it was left as it is", path)
+	}
+
 	if !missing {
-		backup = fmt.Sprintf("%s.jit-backup-%s", path, now.Format("20060102-150405"))
-		if err := os.WriteFile(backup, raw, 0o600); err != nil { // #nosec G703 -- beside the AI app's own config file, a fixed path under the user's home, not external input
-			return false, "", fmt.Errorf("backing up %s: %w", path, err)
+		ed.backup = audit.MCPConfigBackupName(path, now)
+		if err := atomicfile.WriteFile(ed.backup, raw); err != nil {
+			return mcpEdit{}, fmt.Errorf("backing up %s: %w", path, err)
 		}
 	}
-	if err := vault.AtomicWriteFile(path, append(out, '\n')); err != nil {
-		return false, backup, err
+	if err := atomicfile.WriteFileMode(ed.written, out, mode); err != nil {
+		return mcpEdit{}, err
 	}
-	return true, backup, nil
+	ed.changed = true
+	if ed.backup != "" {
+		for _, old := range audit.MCPConfigBackups(path) {
+			if old == ed.backup {
+				continue
+			}
+			if err := os.Remove(old); err != nil {
+				if ed.pruneErr == nil {
+					ed.pruneErr = err
+				}
+				continue
+			}
+			ed.pruned = append(ed.pruned, old)
+		}
+	}
+	return ed, nil
 }
 
 func jsonEqual(a, b json.RawMessage) bool {
@@ -307,17 +397,17 @@ func runMCPInstall(out io.Writer, install bool) error {
 		}
 		entry = &mcpServerEntry{Command: cmdPath, Args: []string{"mcp"}}
 	}
-	changed, backup, err := setMCPEntry(path, entry, time.Now())
+	ed, err := setMCPEntry(path, entry, time.Now())
 	if err != nil {
 		return err
 	}
 	home, _ := os.UserHomeDir()
 	switch {
-	case !changed && install:
+	case !ed.changed && install:
 		_, _ = cOK.Fprint(out, glyphOK)
 		fmt.Fprintf(out, " %s already starts jit's MCP server\n", client.name)
 		return nil
-	case !changed:
+	case !ed.changed:
 		_, _ = cOK.Fprint(out, glyphOK)
 		fmt.Fprintf(out, " %s does not start jit's MCP server\n", client.name)
 		return nil
@@ -328,9 +418,21 @@ func runMCPInstall(out io.Writer, install bool) error {
 	} else {
 		fmt.Fprintf(out, " Removed jit from %s's MCP servers\n", client.name)
 	}
-	fmt.Fprintf(out, "  changed  %s\n", displayPath(home, path))
-	if backup != "" {
-		fmt.Fprintf(out, "  backup   %s\n", displayPath(home, backup))
+	if ed.written != path {
+		fmt.Fprintf(out, "  changed  %s %s %s\n", displayPath(home, path), glyphAction, displayPath(home, ed.written))
+	} else {
+		fmt.Fprintf(out, "  changed  %s\n", displayPath(home, path))
+	}
+	if ed.backup != "" {
+		fmt.Fprintf(out, "  backup   %s\n", displayPath(home, ed.backup))
+		fmt.Fprintln(out, "           the file as it was, with any API keys in it")
+	}
+	for _, p := range ed.pruned {
+		fmt.Fprintf(out, "  removed  %s, an older backup\n", displayPath(home, p))
+	}
+	if ed.pruneErr != nil {
+		_, _ = cWarn.Fprint(out, "  "+glyphWarn)
+		fmt.Fprintf(out, " An older backup is still there: %v\n", ed.pruneErr)
 	}
 	fmt.Fprintf(out, "  Quit and reopen %s to pick this up.\n", client.name)
 	return nil

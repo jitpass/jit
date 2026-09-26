@@ -62,9 +62,16 @@ MCP server the app starts on your Mac. Connect an app once:
 Then **quit and reopen the app**: it reads its MCP servers when it starts.
 Connecting approves nothing. It adds one entry, `jit`, to the app's config
 (`~/Library/Application Support/Claude/claude_desktop_config.json`, or
-`~/.cursor/mcp.json`), after saving a backup beside it, and changes nothing
-else. `jit mcp status` says whether it is set up; `jit mcp uninstall` takes
-it out again.
+`~/.cursor/mcp.json`), and changes nothing else in it: the rest keeps its
+order, spacing and characters, and a config that is a link stays a link.
+`jit mcp status` says whether it is set up; `jit mcp uninstall` takes it
+out again.
+
+Before each change, a copy of the file as it was is saved beside it, as
+`<file>.jit-backup-<date>-<time>`. It holds whatever the file held, API keys
+included, so it is readable only by you, jit keeps only the latest copy, and
+`jit scan` reports a key in it the way it reports one in the config. `jit
+migrate` protects it the same way too.
 
 The app's agent then has three tools: `list_jobs`, `run_job` and
 `request_job`. Ask it, in plain words, to run the job.
@@ -104,7 +111,10 @@ ID. Until then the job runs as it was. A stopped job is changed from its
 
 Approve with `--ask never` (or *Never, until you remove it* on the sheet)
 and the job runs with no Touch ID, even with the vault locked, using a key of
-its own in your keychain. Removing the job deletes that key.
+its own. That key is kept where the vault's key is: your keychain, or, if you
+moved the vault key into the [Secure Enclave](../vault/secure-enclave.md),
+the Secure Enclave, where it opens without Touch ID and only JitPass can use
+it. Removing the job deletes that key.
 
 ## What this does not protect
 

@@ -107,8 +107,10 @@ For the full model see **[How it works](./how-it-works.md)** and the
 - **Envelope encryption.** Every secret is its own encrypted file: a
   per-secret data key, wrapped by a single master key. Tampered or swapped
   files fail to decrypt rather than resolving as the wrong secret.
-- **Master key in the Keychain.** The master key lives in the macOS login
-  Keychain, gated by Touch ID or the device passcode. The vault never syncs
+- **Master key in the Keychain, or the Secure Enclave.** The master key lives
+  in the macOS login Keychain, gated by Touch ID or the device passcode, or,
+  if you move it there, in the [Secure Enclave](../vault/secure-enclave.md),
+  where only JitPass can use it. The vault never syncs
   anywhere; the only way out is an explicit, passphrase-encrypted export.
 - **Decoy-by-default mounts.** A migrated file becomes a named pipe. Read it
   outside a grant and you get placeholder values, not the secret, so backups,

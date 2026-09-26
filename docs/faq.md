@@ -263,16 +263,27 @@ Crypto primitives are in [TECH_STACK.md](../TECH_STACK.md).
 
 ### Where does the master key live, and is it hardware-bound?
 
-The master key is in the macOS login Keychain, and every use requires a Touch
-ID or device-passcode challenge. Today that is an **application-level**
-local-auth gate (LocalAuthentication), not a hardware-enforced Keychain ACL or
-a Secure Enclave binding. A real OS-enforced
-ACL needs an entitlement macOS only grants through a provisioning profile,
-and a provisioning profile can only be embedded in an `.app` bundle, never a
-bare CLI binary like jit (releases are Developer-ID signed, and that alone
-doesn't unlock it; see `spike/secure-enclave/FINDINGS.md`). So the honest
-statement is "OS local-authentication-bound," not "cryptographically enforced
+By default the master key is in the macOS login Keychain, and every use
+requires a Touch ID or device-passcode challenge. In the keychain, that is an
+**application-level** local-auth gate (LocalAuthentication), not an
+OS-enforced one: the key is a plain keychain item, so a program running as
+you that can read that item skips jit's check. The honest statement for the
+default is "OS local-authentication-bound," not "cryptographically enforced
 against local code execution."
+
+Since 2.3.0 you can move the key into your Mac's **Secure Enclave**: in
+JitPass, Settings › Protection, or `jit vault rekey --wrapper secure-enclave`.
+There the key is stored sealed to a Secure Enclave key, and only JitPass's
+signed helper (the `jit` inside JitPass.app) can open it, after Touch ID or
+your password that the enclave itself requires. No other program running as
+you can read it. It is opt-in because the key then can't leave this Mac, so a
+recovery file is required first. See
+[The vault key in the Secure Enclave](./vault/secure-enclave.md).
+
+A bare `jit` binary (the release tarball, `go install`) can never use the
+Secure Enclave: that needs an entitlement macOS only grants through a
+provisioning profile embedded in an `.app` bundle
+(`spike/secure-enclave-mek/FINDINGS.md`). Those installs keep the keychain.
 
 ### So can an attacker who already runs code as me read my secrets?
 
@@ -281,10 +292,11 @@ which is why every prompt names the caller and the session locks aggressively
 (idle TTL, an 8-hour ceiling from the unlock itself, screen lock, sleep). It is
 also why refusing a prompt now throttles the caller that asked: the one thing a
 local attacker can reliably do is ask repeatedly until you approve to make it
-stop. If the service is locked, the master key sits in a
-plain Keychain item with no OS-level ACL today, so a determined local attacker
-could read it directly, bypassing the app-level challenge. This is the
-accepted Phase 1 boundary.
+stop. If the service is locked, it depends on where the key is. In the
+keychain (the default), the key is a plain keychain item, so a determined
+local attacker could read it directly, bypassing the app-level challenge. In
+the Secure Enclave, the key can't be read that way: opening it takes the
+enclave's own Touch ID or password check, through JitPass's signed helper.
 
 ### Is the master key ever in memory?
 

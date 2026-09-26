@@ -40,7 +40,7 @@ jit vault
 * [jit vault list](jit_vault_list.md)	 - List stored secret paths (names only, never values)
 * [jit vault orphans](jit_vault_orphans.md)	 - List (and with --prune delete) secrets no profile references
 * [jit vault prune](jit_vault_prune.md)	 - Delete stale encrypted file backups, keeping each file's newest
-* [jit vault rekey](jit_vault_rekey.md)	 - Rotate the vault's master encryption key
+* [jit vault rekey](jit_vault_rekey.md)	 - Rotate the vault's master key, or move it into the Secure Enclave
 * [jit vault restore](jit_vault_restore.md)	 - Bring back an archived previous version of a secret
 * [jit vault rm](jit_vault_rm.md)	 - Delete one or more secrets
 * [jit vault set](jit_vault_set.md)	 - Encrypt and store a secret

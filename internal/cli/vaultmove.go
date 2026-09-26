@@ -706,14 +706,14 @@ func recoveryFileCurrent(root string) error {
 		return fmt.Errorf("checking for a recovery file: %w", err)
 	}
 	if !recorded {
-		return errors.New("save a recovery file first with `jit vault export`: once the key is in the Secure Enclave it can't move to another Mac, and that file is how the secrets would")
+		return errors.New("save a recovery file first with `jit vault export <file>`: once the key is in the Secure Enclave it can't move to another Mac, and that file is how the secrets would")
 	}
 	newest, err := (&vault.Vault{Root: root}).NewestSecretTime()
 	if err != nil {
 		return fmt.Errorf("checking for a recovery file: %w", err)
 	}
 	if newest.After(exportedAt) {
-		return errors.New("your recovery file is older than your newest secret; save a new one with `jit vault export` first")
+		return errors.New("your recovery file is older than your newest secret; save a new one with `jit vault export <file>` first")
 	}
 	return nil
 }

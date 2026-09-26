@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,22 @@ func hardwareTag(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return testTag + "." + hex.EncodeToString(b)
+}
+
+// neverAsking builds each slot's key as a real enclave key that never asks
+// (no UserPresence), so a test drives both slots with no dialog. Every key
+// it makes is removed when the test ends; a tag without TEST-ONLY fails the
+// test before any key is touched.
+func neverAsking(t *testing.T) func(tag string) enclave {
+	t.Helper()
+	return func(tag string) enclave {
+		if !strings.Contains(tag, "TEST-ONLY") {
+			t.Fatalf("hardware test built key %q", tag)
+		}
+		h := hardware{tag: tag, group: AccessGroup}
+		t.Cleanup(func() { _ = h.remove() })
+		return h
+	}
 }
 
 func needSignedBundle(t *testing.T) {
@@ -101,7 +118,7 @@ func TestHardwareWrapperLifecycle(t *testing.T) {
 	tag := hardwareTag(t)
 	h := hardware{tag: tag, group: AccessGroup}
 	t.Cleanup(func() { _ = h.remove() })
-	w := newWrapper(t.TempDir(), tag, h)
+	w := newWrapper(t.TempDir(), tag, neverAsking(t))
 	mek := testMEK(t)
 	if err := w.Install(mek); err != nil {
 		t.Fatal(err)
@@ -139,7 +156,12 @@ func TestHardwarePresenceKeyAsksOncePerWrapper(t *testing.T) {
 	tag := hardwareTag(t)
 	h := hardware{tag: tag, group: AccessGroup, presence: true}
 	t.Cleanup(func() { _ = h.remove() })
-	w := newWrapper(t.TempDir(), tag, h)
+	w := newWrapper(t.TempDir(), tag, func(tag string) enclave {
+		if !strings.Contains(tag, "TEST-ONLY") {
+			t.Fatalf("hardware test built key %q", tag)
+		}
+		return hardware{tag: tag, group: AccessGroup, presence: true}
+	})
 	mek := testMEK(t)
 	if err := w.Install(mek); err != nil {
 		t.Fatal(err)
@@ -150,5 +172,96 @@ func TestHardwarePresenceKeyAsksOncePerWrapper(t *testing.T) {
 	}
 	if _, err := w.FetchMEK("must not show"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestHardwareSlots drives both slots on the real enclave, with TEST-ONLY
+// keys that never ask, so no dialog: a file naming slot A opens from A; a
+// file naming slot B, with A's key gone (what a jit that rotates leaves),
+// opens from B; a file naming an empty slot is a lost key even with a key in
+// the other; Delete takes both keys.
+//
+//	IDENTIFIER=jit scripts/se-test.sh -test.run TestHardwareSlots
+func TestHardwareSlots(t *testing.T) {
+	needSignedBundle(t)
+	base := hardwareTag(t)
+	w := newWrapper(t.TempDir(), base, neverAsking(t))
+	a, b := w.slots[0], w.slots[1]
+	if a.tag != base || b.tag != base+".b" {
+		t.Fatalf("slots %q and %q", a.tag, b.tag)
+	}
+	present := func(s slot) bool {
+		t.Helper()
+		ok, err := s.enc.present()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+
+	mekA := testMEK(t)
+	if err := w.Install(mekA); err != nil {
+		t.Fatal(err)
+	}
+	if k, _, err := readSealed(w.path); err != nil || k.Tag != a.tag {
+		t.Fatalf("Install wrote tag %q (%v), want slot A's", k.Tag, err)
+	}
+	if !present(a) || present(b) {
+		t.Fatal("Install must make slot A's key and only it")
+	}
+	if p := w.Presence(); p != Present {
+		t.Fatalf("slot A presence %v", p)
+	}
+	if got, err := w.FetchMEK("x"); err != nil || !bytes.Equal(got, mekA) {
+		t.Fatalf("slot A fetch: %v", err)
+	}
+	w.Close()
+
+	mekB := testMEK(t)
+	if err := b.enc.create(); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := b.enc.seal(mekB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSealed(w.path, b.tag, blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.enc.remove(); err != nil {
+		t.Fatal(err)
+	}
+	if p := w.Presence(); p != Present {
+		t.Fatalf("slot B presence %v", p)
+	}
+	if got, err := w.FetchMEK("x"); err != nil || !bytes.Equal(got, mekB) {
+		t.Fatalf("slot B fetch: %v", err)
+	}
+	w.Close()
+
+	if err := a.enc.create(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.enc.remove(); err != nil {
+		t.Fatal(err)
+	}
+	if p := w.Presence(); p != KeyLost {
+		t.Fatalf("file naming the empty slot B, key in A: presence %v, want KeyLost", p)
+	}
+	if _, err := w.FetchMEK("x"); !errors.Is(err, ErrNoKey) {
+		t.Fatalf("fetch from the empty slot B: %v, want ErrNoKey", err)
+	}
+	if err := b.enc.create(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if present(a) || present(b) {
+		t.Fatalf("after Delete: slot A %v, slot B %v", present(a), present(b))
+	}
+	if p := w.Presence(); p != Absent {
+		t.Fatalf("presence after Delete: %v", p)
 	}
 }
