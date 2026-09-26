@@ -19,8 +19,8 @@ is there for a pipeline that wants them to gate.
 
 ## `jit vault rekey` - rotate the master key
 
-Generates a new master encryption key, re-wraps every stored secret's key
-under it (live secrets, file backups, and archived versions - the encrypted
+For a vault whose key is in your login keychain: generates a new master
+encryption key, re-wraps every stored secret's key under it (live secrets, file backups, and archived versions - the encrypted
 values themselves are never touched), then replaces the old master key. One
 Touch ID/passcode approval covers the whole run.
 
@@ -30,6 +30,15 @@ any point: both keys exist until the final step, every re-wrapped secret is
 verified before it's written, re-running `jit vault rekey` finishes an
 interrupted rotation, and other vault commands refuse to write while one is
 in progress.
+
+After a rotation, approve your AI jobs and grants again: the ones made
+before it stop working.
+
+Rotating a key that is in the Secure Enclave isn't available yet; it comes
+in a later version, and `jit vault rekey` on such a vault says so. To rotate
+one now, move the key back with `jit vault rekey --wrapper keychain`, run
+`jit vault rekey`, save a new recovery file with `jit vault export <file>`,
+then move it in again with `jit vault rekey --wrapper secure-enclave`.
 
 `jit vault rekey --wrapper secure-enclave` and `--wrapper keychain` do
 something else: they move the master key between your login keychain and

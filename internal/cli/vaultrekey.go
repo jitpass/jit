@@ -51,7 +51,8 @@ var vaultRekeyCmd = &cobra.Command{
 	Use:   "rekey",
 	Short: "Rotate the vault's master key, or move it into the Secure Enclave",
 	Long: "Does one of two things to the vault's master key.\n\n" +
-		"Without --wrapper, it rotates the key.\n" +
+		"Without --wrapper, it rotates the key of a vault\n" +
+		"whose key is in your login keychain.\n" +
 		"It generates a new master key,\n" +
 		"re-wraps every stored secret's key under it\n" +
 		"(live secrets, file backups and archived versions;\n" +
@@ -59,7 +60,13 @@ var vaultRekeyCmd = &cobra.Command{
 		"then replaces the old master key.\n" +
 		"One Touch ID/passcode approval covers the whole operation.\n" +
 		"Run it if the old key may have been exposed, or on a schedule;\n" +
-		"otherwise the master key never changes for the vault's whole life.\n\n" +
+		"otherwise the master key never changes for the vault's whole life.\n" +
+		"After a rotation, approve your AI jobs and grants again;\n" +
+		"the ones made before it stop working.\n\n" +
+		"Rotating a key that is in the Secure Enclave isn't available yet;\n" +
+		"it comes in a later version.\n" +
+		"To rotate one now, move it back with --wrapper keychain,\n" +
+		"rotate, save a new recovery file, then move it in again.\n\n" +
 		"A rotation is safe to interrupt: until the last step both keys exist,\n" +
 		"every re-wrapped secret is verified before it's written,\n" +
 		"and running `jit vault rekey` again finishes it.\n" +

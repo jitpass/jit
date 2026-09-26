@@ -79,6 +79,24 @@ jit vault rekey --wrapper keychain
 The key is a login-keychain item again, where a program running as you
 could read it. Your secrets, grants and AI jobs stay as they are.
 
+## Rotating the key
+
+Rotating a key that is in the Secure Enclave isn't available yet; it comes
+in a later version. `jit vault rekey` on such a vault refuses and says so.
+
+To rotate it now:
+
+```sh
+jit vault rekey --wrapper keychain         # move it back
+jit vault rekey                            # rotate it
+jit vault export ~/jit-recovery.json       # a new recovery file
+jit vault rekey --wrapper secure-enclave   # move it in again
+```
+
+The rotation rewrites every secret's file, so the move back in needs a new
+recovery file. After the rotation, approve your AI jobs and grants again.
+More in [Vault maintenance](./maintenance.md).
+
 ## Only the jit inside JitPass.app
 
 The Secure Enclave only answers a program signed with JitPass's permission

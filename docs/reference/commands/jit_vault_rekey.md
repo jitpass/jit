@@ -6,7 +6,8 @@ Rotate the vault's master key, or move it into the Secure Enclave
 
 Does one of two things to the vault's master key.
 
-Without --wrapper, it rotates the key.
+Without --wrapper, it rotates the key of a vault
+whose key is in your login keychain.
 It generates a new master key,
 re-wraps every stored secret's key under it
 (live secrets, file backups and archived versions;
@@ -15,6 +16,13 @@ then replaces the old master key.
 One Touch ID/passcode approval covers the whole operation.
 Run it if the old key may have been exposed, or on a schedule;
 otherwise the master key never changes for the vault's whole life.
+After a rotation, approve your AI jobs and grants again;
+the ones made before it stop working.
+
+Rotating a key that is in the Secure Enclave isn't available yet;
+it comes in a later version.
+To rotate one now, move it back with --wrapper keychain,
+rotate, save a new recovery file, then move it in again.
 
 A rotation is safe to interrupt: until the last step both keys exist,
 every re-wrapped secret is verified before it's written,
