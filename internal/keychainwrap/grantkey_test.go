@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -158,6 +159,26 @@ func TestGrantKeyDeleteIsFinalAndIdempotent(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "jit vault init") {
 		t.Errorf("Load error = %q, sends the user at the vault for a grant's missing key", err)
+	}
+	if !errors.Is(err, ErrNoGrantKey) {
+		t.Errorf("Load after Delete = %v, want ErrNoGrantKey", err)
+	}
+}
+
+// Load's "gone" is proof, not a guess: only the keychain saying the item is
+// not there is ErrNoGrantKey (the agent stops a never-ask job for good on
+// it). A lookup only: this test makes no item.
+func TestGrantKeyLoadOfAMissingKeyIsNoGrantKey(t *testing.T) {
+	keys := testGrantKeys(t)
+	_, err := keys.Load("g-never-made")
+	if !errors.Is(err, ErrNoGrantKey) {
+		t.Fatalf("Load of a key never made = %v, want ErrNoGrantKey", err)
+	}
+	if want := "no key for grant g-never-made in the keychain (was it revoked?)"; err.Error() != want {
+		t.Errorf("the sentence changed: %q, want %q", err, want)
+	}
+	if _, err := keys.Load(""); err == nil || errors.Is(err, ErrNoGrantKey) {
+		t.Errorf("Load(\"\") = %v: must fail, and not as a key proven gone", err)
 	}
 }
 

@@ -101,6 +101,9 @@ var serviceTTLCmd = &cobra.Command{
 		if err := validateAgentTTLSetting(d); err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
+		if err := serviceNeedsApp(serviceCommand(cmd, args)); err != nil {
+			return fmt.Errorf("jit service ttl: %w", err)
+		}
 		// installAgentService writes the plist with the new --ttl and reloads
 		// it, creating the login item if it wasn't there yet. Preserve the
 		// consent setting across the TTL change.
@@ -160,6 +163,10 @@ var serviceConsentCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("jit service consent: expected 'on' or 'off', got %q", args[0])
 		}
+		// Before the Touch ID below: a refusal must not follow a prompt.
+		if err := serviceNeedsApp(serviceCommand(cmd, args)); err != nil {
+			return fmt.Errorf("jit service consent: %w", err)
+		}
 		// Turning consent OFF reopens the exact window the feature exists to
 		// close, so it must prove a human is present — never ride an unlocked
 		// agent session. Turning it ON (or reading state) only strengthens the
@@ -197,6 +204,12 @@ var serviceConsentCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// serviceCommand is the command being run, without the leading "jit", for
+// serviceNeedsApp's refusal to name: "service ttl 10m".
+func serviceCommand(cmd *cobra.Command, args []string) string {
+	return strings.Join(append([]string{strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")}, args...), " ")
 }
 
 // requireConsentOffPresence forces a fresh Touch ID/passcode gesture before
@@ -242,6 +255,12 @@ var agentRestartCmd = &cobra.Command{
 		"Session history survives, it's durable.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Every branch below, the plain reload too: a service this copy of
+		// jit set up or restarted on an enclave vault it can't reach could
+		// never unlock, and "Restarted" would say it could.
+		if err := serviceNeedsApp(serviceCommand(cmd, args)); err != nil {
+			return fmt.Errorf("jit service restart: %w", err)
+		}
 		plistPath, err := agentPlistPath()
 		if err != nil {
 			return fmt.Errorf("jit service restart: %w", err)

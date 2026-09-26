@@ -34,6 +34,22 @@ import (
 
 const grantService = "com.jitpass.grant.key"
 
+// ErrNoGrantKey is Load's answer when the keychain says the grant's item is
+// not there (errSecItemNotFound): the key is proven gone. Besides that,
+// Load fails only on an empty id; a key that is there but can't be read
+// fails later, in Open.
+var ErrNoGrantKey = errors.New("no key for this grant in the keychain")
+
+// missingGrantKey is ErrNoGrantKey (errors.Is) in a sentence naming the
+// grant.
+type missingGrantKey string
+
+func (id missingGrantKey) Error() string {
+	return fmt.Sprintf("no key for grant %s in the keychain (was it revoked?)", string(id))
+}
+
+func (missingGrantKey) Is(target error) bool { return target == ErrNoGrantKey }
+
 // GrantKeys is the keychain-backed store the agent's standing grants use.
 // The zero value is ready and targets the production service.
 type GrantKeys struct {
@@ -67,7 +83,7 @@ func (g GrantKeys) wrapper(id string) (*Wrapper, error) {
 		service:   g.serviceName(),
 		account:   id,
 		challenge: func(string) error { return nil },
-		missing:   fmt.Errorf("no key for grant %s in the keychain (was it revoked?)", id),
+		missing:   missingGrantKey(id),
 	}, nil
 }
 

@@ -171,6 +171,18 @@ func (w *Wrapper) Presence() Presence {
 	return Indeterminate
 }
 
+// Reachable reports whether this process can reach the enclave's access
+// group at all, whatever the sealed file says: nil when it can (with or
+// without a key under the tag), ErrUnavailable when it can't (a jit outside
+// JitPass.app), and any other error when it couldn't tell. Like Presence it
+// only looks the key up, so it never prompts and never makes a key; a
+// command that can only fail from here (`jit vault rekey --wrapper`) asks
+// it before its questions and its keychain reads.
+func (w *Wrapper) Reachable() error {
+	_, err := w.enc.present()
+	return err
+}
+
 // Install seals mek to the enclave key, creating the key when it does not
 // exist, and writes the sealed file. It refuses when a sealed file is
 // already there: replacing one is a rekey, which stages and verifies (plan

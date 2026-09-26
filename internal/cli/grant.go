@@ -780,9 +780,19 @@ func (k keychainGrantKeys) Create(id string) (agent.GrantKey, error) {
 func (k keychainGrantKeys) Load(id string) (agent.GrantKey, error) {
 	key, err := k.keys.Load(id)
 	if err != nil {
-		return nil, err
+		return nil, absentAs(err, keychainwrap.ErrNoGrantKey)
 	}
 	return key, nil
+}
+
+// absentAs marks a backend's own "no such key" (gone) as
+// agent.ErrGrantKeyAbsent, the one Load error the agent treats as proof the
+// key is gone; every other error passes through unmarked.
+func absentAs(err, gone error) error {
+	if errors.Is(err, gone) {
+		return fmt.Errorf("%w: %w", agent.ErrGrantKeyAbsent, err)
+	}
+	return err
 }
 
 func (k keychainGrantKeys) Present(id string) (bool, error) {
@@ -807,7 +817,7 @@ func (e enclaveGrantKeys) Create(id string) (agent.GrantKey, error) {
 func (e enclaveGrantKeys) Load(id string) (agent.GrantKey, error) {
 	key, err := e.keys.Load(id)
 	if err != nil {
-		return nil, err
+		return nil, absentAs(err, secureenclave.ErrNoGrantKey)
 	}
 	return key, nil
 }

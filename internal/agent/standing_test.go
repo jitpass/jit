@@ -32,6 +32,9 @@ type memGrantKeys struct {
 	// as secureenclave.GrantKey does; otherwise they say nothing, like the
 	// keychain's.
 	enclave bool
+	// loadErr, when set, is what Load answers for a key that IS there: a
+	// store that couldn't say (an enclave this jit can't reach).
+	loadErr error
 }
 
 type memGrantKey struct{ key []byte }
@@ -70,8 +73,11 @@ func (m *memGrantKeys) Load(id string) (GrantKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.keys[id]
+	if ok && m.loadErr != nil {
+		return nil, m.loadErr
+	}
 	if !ok {
-		return nil, os.ErrNotExist
+		return nil, fmt.Errorf("%w: %w", ErrGrantKeyAbsent, os.ErrNotExist)
 	}
 	return m.handOut(k), nil
 }

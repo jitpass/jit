@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/selfpath"
 )
 
@@ -184,6 +186,39 @@ func agentPlistNeedsRepoint(data []byte) bool {
 	return installed != want
 }
 
+// serviceNeedsApp refuses pointing the service at this binary, or
+// restarting it on this binary's say-so, when the vault's key is in the
+// Secure Enclave and this binary can't reach the enclave: a jit outside
+// JitPass.app (a tarball, `go install`), which has no entitlement. The
+// service it would run could never unlock, while the command reported
+// success. command is what to run from the app instead ("service
+// restart"), for the refusal to name.
+//
+// The check reads the sealed file and looks the vault's enclave key up
+// (keystore.Store.Presence): it never prompts and never makes a key. It
+// fails closed: an enclave vault whose key jit couldn't look up refuses
+// too. A keychain vault is never refused, and costs one lstat.
+func serviceNeedsApp(command string) error {
+	root, err := vaultRootDir()
+	if err != nil {
+		return fmt.Errorf("couldn't find the vault to check where its key is: %w", err)
+	}
+	ks := openKeyStore(root)
+	if ks.Kind() != keystore.KindSecureEnclave {
+		return nil
+	}
+	switch ks.Presence() {
+	case keystore.Present, keystore.KeyLost:
+		// Reachable. A lost key is the service's to report, not this
+		// command's to hide by refusing.
+		return nil
+	case keystore.Unavailable:
+		return needsAppJitError{sealed: true, command: command}
+	}
+	return errors.New("this vault's key is in the Secure Enclave, and jit couldn't\n" +
+		"check whether this copy of jit can reach it; the service was left as it was")
+}
+
 // installAgentService writes the launchd LaunchAgent plist that runs
 // `jit service run --ttl <ttl>` and (re)loads it, returning the plist path and
 // whether the socket answered within a short wait. It is the shared core of
@@ -202,6 +237,12 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 // injected, for the one caller whose new build is not its own: `jit upgrade`
 // (see restartServiceOntoCurrentBinary). Everything else wants the default.
 func installAgentServiceReady(ttl time.Duration, consent bool, ready agentReady) (plistPath string, running bool, err error) {
+	// Every path that writes the plist comes through here, so this is the
+	// one check none of them can skip; the commands also check first, to
+	// refuse before anything else they do.
+	if err := serviceNeedsApp("service restart"); err != nil {
+		return "", false, err
+	}
 	exePath, err := agentBinaryPath()
 	if err != nil {
 		return "", false, err

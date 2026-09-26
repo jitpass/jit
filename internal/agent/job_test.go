@@ -467,6 +467,77 @@ func TestNeverJobWithItsKeyGoneRefusesWithoutPrompting(t *testing.T) {
 	}
 }
 
+// A key gone is a stop that stands until the job is approved again: the
+// second run is refused as stopped, still without a prompt.
+func TestNeverJobWithItsKeyGoneStaysStopped(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.keys.Delete(r.stored(t).KeyID)
+	if _, err := r.c.JobRun("notion-guests"); err == nil {
+		t.Fatal("ran with its key gone")
+	}
+	if got := r.stored(t).Stopped; got != "the job's key is gone" {
+		t.Fatalf("stopped = %q, want the key-gone stop", got)
+	}
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), "stopped because the job's key is gone") {
+		t.Fatalf("second run: %v", err)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("a stopped job prompted or ran")
+	}
+}
+
+// A key that is there but could not be loaded (an enclave this copy of jit
+// can't reach, a lookup that failed) proves nothing about the key. The run
+// is refused, naming the real cause, without a prompt, and the job is NOT
+// stopped: once the key loads again, the next run runs with no new
+// approval. It used to be stopped for good as "the job's key is gone".
+func TestNeverJobWhoseKeyWontLoadIsNotStopped(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("grant key: this copy of jit can't use the Secure Enclave; use the jit inside JitPass.app")
+	r.keys.mu.Lock()
+	r.keys.loadErr = cause
+	r.keys.mu.Unlock()
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil {
+		t.Fatal("ran with a key that couldn't be loaded")
+	}
+	const want = "agent: job_run: notion-guests: the job's key couldn't be loaded (grant key: this copy of jit can't use the Secure Enclave; use the jit inside JitPass.app). The job wasn't stopped; the next run tries again"
+	if err.Error() != want {
+		t.Fatalf("refusal:\n got %q\nwant %q", err, want)
+	}
+	if strings.Contains(err.Error(), "gone") || strings.Contains(err.Error(), "approve it again") {
+		t.Fatalf("a key that wouldn't load was called gone, or a stop: %v", err)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("a run whose key wouldn't load prompted or ran")
+	}
+	j := r.stored(t)
+	if j.Stopped != "" {
+		t.Fatalf("stopped = %q; a key that wouldn't load must not stop the job", j.Stopped)
+	}
+	if !strings.Contains(j.LastRefusal, "couldn't be loaded") {
+		t.Errorf("last refusal = %q, want the real cause recorded", j.LastRefusal)
+	}
+	r.keys.mu.Lock()
+	r.keys.loadErr = nil
+	r.keys.mu.Unlock()
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatalf("the next run, with the key loading again: %v", err)
+	}
+	if r.runs() != 1 || r.prompts() != before {
+		t.Fatalf("runs %d, prompts %d: want one unasked run", r.runs(), r.prompts()-before)
+	}
+}
+
 // A job that could not be saved must not leave its key behind.
 func TestNeverJobThatCannotBeSavedLeavesNoKey(t *testing.T) {
 	r := newJobRig(t)

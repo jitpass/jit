@@ -81,6 +81,13 @@ type GrantKeyStore interface {
 // names it any more. But no one may be told it was deleted.
 var ErrGrantKeyUnreachable = errors.New("the Secure Enclave could not be reached from this copy of jit")
 
+// ErrGrantKeyAbsent is a GrantKeyStore's Load saying the key is proven gone:
+// its store was reached and has no key under the id (revoked, or deleted
+// out of band). Only this makes a never-ask job's stop sticky. A store that
+// could not be reached, or a lookup that failed, says nothing about the key,
+// so any other Load error is a refusal of that one run.
+var ErrGrantKeyAbsent = errors.New("the key is gone")
+
 // keyKeptNote is what a revoke or a remove says, instead of claiming a
 // delete, when the key its entries are sealed for is in an enclave this
 // copy of jit cannot reach.

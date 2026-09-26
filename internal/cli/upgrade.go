@@ -254,13 +254,28 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "Replaced %s.\n", exePath)
 	}
 
-	// Move the service onto the just-installed binary now, rather than waiting
-	// on the stale-binary poll. Best-effort: the upgrade itself succeeded even
-	// if the restart hiccups, so a restart failure is a warning, not an error
-	// that would wrongly imply the binary wasn't swapped.
+	upgradeMoveService(out, latest)
+	return nil
+}
+
+// upgradeMoveService moves the service onto the just-installed binary now,
+// rather than waiting on the stale-binary poll, and ends the upgrade's
+// output. Best-effort: the upgrade itself succeeded even if the restart
+// hiccups, so a restart failure is a warning, not an error that would
+// wrongly imply the binary wasn't swapped.
+func upgradeMoveService(out io.Writer, latest string) {
 	fmt.Fprintf(out, "Restarting service ... ")
 	running, restartErr := restartServiceOntoCurrentBinary()
+	var needsApp needsAppJitError
 	switch {
+	case errors.As(restartErr, &needsApp):
+		// The binary is upgraded; the service, which this copy of jit can't
+		// run on an enclave vault, is left on whatever it runs now. No
+		// "Done": its promise of a Touch ID next time would be false.
+		fmt.Fprintln(out, "left as it was:")
+		fmt.Fprint(out, hlCmds(needsApp.Error()+"\n"))
+		fmt.Fprintf(out, "Upgraded this jit to %s. The service was not moved onto it.\n", latest)
+		return
 	case restartErr != nil:
 		fmt.Fprintln(out, "could not restart automatically")
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("  Run `jit service restart` to move the service onto %s (%s).\n", latest, restartErr)))
@@ -272,7 +287,6 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(out, "Done. Upgraded to %s. The next vault use will prompt Touch ID.\n", latest)
-	return nil
 }
 
 // upgradeLatestTag resolves the latest release's tag (e.g. "v0.41.0") from
@@ -562,6 +576,11 @@ func sudoCommand(args ...string) *exec.Cmd {
 // demanding it made every successful upgrade wait out the full timeout and
 // then report failure over a healthy service.
 func restartServiceOntoCurrentBinary() (running bool, err error) {
+	// First, and for every branch: the reload below restarts a service on
+	// a binary as surely as a repoint does (serviceNeedsApp).
+	if err := serviceNeedsApp("service restart"); err != nil {
+		return false, err
+	}
 	plistPath, err := agentPlistPath()
 	if err != nil {
 		return false, err

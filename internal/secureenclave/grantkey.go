@@ -35,6 +35,22 @@ const GrantWrap = "se-p256-v1"
 
 const grantTagPrefix = "com.jitpass.grant."
 
+// ErrNoGrantKey is Load's answer when the enclave was reached and holds no
+// key for the grant: the key is proven gone. Every other Load failure (an
+// enclave this jit can't reach, a lookup that failed) says nothing about
+// the key, and a caller must not treat it as gone.
+var ErrNoGrantKey = errors.New("no Secure Enclave key for this grant")
+
+// missingGrantKey is ErrNoGrantKey (errors.Is) in a sentence naming the
+// grant.
+type missingGrantKey string
+
+func (id missingGrantKey) Error() string {
+	return fmt.Sprintf("no Secure Enclave key for grant %s (was it revoked?)", string(id))
+}
+
+func (missingGrantKey) Is(target error) bool { return target == ErrNoGrantKey }
+
 // GrantKeys creates, loads and deletes grant keys in the enclave. The zero
 // value targets production tags; tests set tagPrefix through
 // NewTestingGrantKeys.
@@ -109,7 +125,7 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 		return nil, fmt.Errorf("grant key: %w", err)
 	}
 	if !present {
-		return nil, fmt.Errorf("no Secure Enclave key for grant %s (was it revoked?)", id)
+		return nil, missingGrantKey(id)
 	}
 	return &GrantKey{k: k}, nil
 }

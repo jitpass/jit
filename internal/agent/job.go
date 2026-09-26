@@ -679,6 +679,9 @@ func (s *Server) runJob(name string, c *caller) Response {
 		// falls back to prompting, which would turn a job the human set to
 		// run while away into one that silently waits on a dialog.
 		if err := s.openJobKeys(&j, deks); err != nil {
+			if errors.As(err, &jobKeyUnloaded{}) {
+				return s.refuseJobRun(&j, c, requester, err.Error())
+			}
 			return s.refuseJob(&j, c, requester, err.Error())
 		}
 	default:
@@ -792,8 +795,14 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 		}
 	}
 	key, err := s.loadGrantKey(j.KeyID, wrap)
-	if err != nil {
+	if errors.Is(err, ErrGrantKeyAbsent) {
 		return fmt.Errorf("the job's key is gone")
+	}
+	if err != nil {
+		// The store couldn't say whether the key is there (an enclave this
+		// jit can't reach, a lookup that failed): nothing about the job
+		// changed, so this run is refused and the next one tries again.
+		return jobKeyUnloaded{err}
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
@@ -826,6 +835,31 @@ func (s *Server) refuseJob(j *job.Job, c *caller, requester, why string) Respons
 	s.jobMu.Unlock()
 	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why)
 	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. It won't run until you approve it again", j.Name, why)}
+}
+
+// jobKeyUnloaded is openJobKeys failing to load the job's key for a reason
+// that does not prove it gone (ErrGrantKeyAbsent does): not a stop.
+type jobKeyUnloaded struct{ err error }
+
+func (e jobKeyUnloaded) Error() string {
+	return fmt.Sprintf("the job's key couldn't be loaded (%s)", e.err)
+}
+
+func (e jobKeyUnloaded) Unwrap() error { return e.err }
+
+// refuseJobRun is refuseJob for a cause outside the job: the run did not
+// happen and says why, but the job is NOT stopped, so the next run tries
+// again without a new approval.
+func (s *Server) refuseJobRun(j *job.Job, c *caller, requester, why string) Response {
+	s.jobMu.Lock()
+	if cur, ok := s.jobs[j.Name]; ok && cur.ApprovedUnix == j.ApprovedUnix {
+		cur.LastRefusal = why
+		cur.LastCaller = requester
+		_ = s.saveJobsLocked()
+	}
+	s.jobMu.Unlock()
+	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why)
+	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. The job wasn't stopped; the next run tries again", j.Name, why)}
 }
 
 // recordJobEvent writes one job event to the ring and the durable trail,
