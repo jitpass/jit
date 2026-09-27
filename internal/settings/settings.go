@@ -136,6 +136,36 @@ func (s *Store) Exists(path string) (bool, error) {
 	return err == nil, err
 }
 
+// List returns every stored setting's path, sorted. An empty or missing
+// store is an empty list.
+func (s *Store) List() ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(s.root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && p == s.root {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if d.IsDir() || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), ".tmp-") {
+			return nil
+		}
+		rel, err := filepath.Rel(s.root, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if ValidatePath(rel) == nil {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return out, err
+}
+
 // Remove deletes the setting at path. A missing one is not an error: the
 // caller wanted it gone.
 func (s *Store) Remove(path string) error {

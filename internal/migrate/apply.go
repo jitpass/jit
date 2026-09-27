@@ -350,6 +350,10 @@ func ApplyEnvFileSplit(v *vault.Vault, profilesRoot, envPath string, split EnvSp
 		return EnvFileMigration{}, err
 	}
 	store := settings.New(v.Root)
+	classes, cerr := settings.LoadClasses(v.Root)
+	if cerr != nil {
+		classes = nil // unreadable: leave it as it is rather than overwrite it
+	}
 	var settingNames, checkNames []string
 	for _, name := range varNames {
 		secretPath := profileName + "/" + name
@@ -368,9 +372,19 @@ func ApplyEnvFileSplit(v *vault.Vault, profilesRoot, envPath string, split EnvSp
 			return EnvFileMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
 		}
 		entries[name] = secretPath
+		if classes != nil {
+			classes.Set(secretPath, string(class))
+		}
 		if class == audit.EnvVarCheck && !split.Secret[name] {
 			checkNames = append(checkNames, name)
 		}
+	}
+	// Advisory: the index lets the app warn before Touch ID that moving a
+	// value out would leave a counted secret in plain text. Losing it costs
+	// that warning its precision (an unknown class is warned about as a
+	// possible secret), never a value, so it never fails the migration.
+	if classes != nil {
+		_ = classes.Save()
 	}
 
 	if err := writeProfileManifest(profilePath, entries, varNames); err != nil {
