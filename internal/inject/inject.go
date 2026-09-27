@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -15,9 +16,22 @@ import (
 // plaintext value. Callers should treat the returned values the same way
 // vault.Get's caller would — never log them, never write them anywhere but
 // the target's environment.
+//
+// An entry naming a plain setting (jit://setting/…, design/secrets-only-
+// vault.md) is read from the settings store beside v, with no decrypt: it
+// was never a secret.
 func Resolve(v *vault.Vault, p profile.Profile) (map[string]string, error) {
 	values := make(map[string]string, len(p))
+	store := settings.New(v.Root)
 	for varName, secretPath := range p {
+		if path, ok := settings.PathOf(secretPath); ok {
+			val, err := store.Get(path)
+			if err != nil {
+				return nil, fmt.Errorf("resolving %s (setting %s): %w", varName, path, err)
+			}
+			values[varName] = string(val)
+			continue
+		}
 		val, err := v.Get(secretPath)
 		if err != nil {
 			return nil, fmt.Errorf("resolving %s (%s): %w", varName, secretPath, err)

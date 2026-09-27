@@ -23,6 +23,7 @@ import (
 	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -61,11 +62,57 @@ func resolveJobSecrets(root string) func(p agent.GrantProfile) ([]agent.JobSecre
 		sort.Strings(vars)
 		out := make([]agent.JobSecretSource, 0, len(vars))
 		for _, name := range vars {
+			// A plain setting is resolveJobSettings' to report, never a
+			// secret to unwrap.
+			if settings.IsPointer(p[name]) {
+				continue
+			}
 			wrapped, class, err := v.WrappedDEK(p[name])
 			if err != nil {
 				return nil, fmt.Errorf("profile %s: %s (%s): %w (the profile names it, the vault does not have it - `jit vault list` shows what is stored)", gp.Name, name, p[name], err)
 			}
 			out = append(out, agent.JobSecretSource{Var: name, Path: p[name], Wrapped: wrapped, Class: class})
+		}
+		return out, nil
+	}
+}
+
+// resolveJobSettings is the service's OnResolveJobSettings: the same
+// profile's plain settings, each with the file that holds it, which the job's
+// fingerprint covers (design/secrets-only-vault.md, D8). A setting whose file
+// is missing refuses approval here, as a secret missing from the vault does.
+func resolveJobSettings(root string) func(p agent.GrantProfile) ([]agent.JobSettingSource, error) {
+	return func(gp agent.GrantProfile) ([]agent.JobSettingSource, error) {
+		loadRoot := gp.Root
+		if loadRoot == "" {
+			if home, herr := profile.GlobalRoot(); herr == nil {
+				loadRoot = home
+			}
+		}
+		p, err := profile.Load(loadRoot, gp.Name)
+		if err != nil {
+			return nil, err
+		}
+		store := settings.New(root)
+		vars := make([]string, 0, len(p))
+		for k := range p {
+			vars = append(vars, k)
+		}
+		sort.Strings(vars)
+		var out []agent.JobSettingSource
+		for _, name := range vars {
+			path, ok := settings.PathOf(p[name])
+			if !ok {
+				continue
+			}
+			file, err := store.File(path)
+			if err != nil {
+				return nil, fmt.Errorf("profile %s: %s: %w", gp.Name, name, err)
+			}
+			if ok, err := store.Exists(path); err != nil || !ok {
+				return nil, fmt.Errorf("profile %s: %s: the setting's file is missing (%s)", gp.Name, name, path)
+			}
+			out = append(out, agent.JobSettingSource{Var: name, Path: p[name], File: file})
 		}
 		return out, nil
 	}
@@ -105,6 +152,11 @@ func runJobProcess(root string, mounts jobRunMarker) func(j job.Job, deks map[st
 		p := profile.Profile{}
 		for _, sec := range j.Secrets {
 			p[sec.Var] = sec.Path
+		}
+		// Plain settings, read from their files; the fingerprint checked
+		// before this run already refused a changed one. Never hidden.
+		for _, st := range j.Settings {
+			p[st.Var] = st.Path
 		}
 		values, err := inject.Resolve(v, p)
 		if err != nil {

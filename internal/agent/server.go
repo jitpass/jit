@@ -204,6 +204,11 @@ type Server struct {
 	// claims. Nil means a job can carry no secrets.
 	OnResolveJob func(p GrantProfile) ([]JobSecretSource, error)
 
+	// OnResolveJobSettings, if set, resolves the same profile's plain
+	// settings (design/secrets-only-vault.md): each variable, its pointer,
+	// and the file holding it, which the job's fingerprint covers.
+	OnResolveJobSettings func(p GrantProfile) ([]JobSettingSource, error)
+
 	// OnRunJob, if set, runs an approved job (design/agent-jobs.md): decrypt
 	// its secrets with deks (DEK by wrapped-bytes digest, unwrapped here under
 	// the job's own approval), start the command with them, and return the

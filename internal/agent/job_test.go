@@ -39,8 +39,10 @@ type jobRig struct {
 	mu      sync.Mutex
 	vault   map[string][]byte // path → wrapped bytes as the vault holds them now
 	sources []JobSecretSource
-	ran     []job.Job
-	gotDEKs []map[string][]byte
+	// settings is what OnResolveJobSettings returns; none by default.
+	settings []JobSettingSource
+	ran      []job.Job
+	gotDEKs  []map[string][]byte
 }
 
 var jobDEK = bytes.Repeat([]byte{0x07}, 32)
@@ -69,6 +71,11 @@ func newJobRig(t *testing.T) *jobRig {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			return append([]JobSecretSource(nil), r.sources...), nil
+		}
+		s.OnResolveJobSettings = func(GrantProfile) ([]JobSettingSource, error) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return append([]JobSettingSource(nil), r.settings...), nil
 		}
 		s.OnWrappedDEK = func(path string) ([]byte, string, error) {
 			r.mu.Lock()
@@ -177,6 +184,51 @@ func TestJobRunRefusesAChangedFileWithoutPrompting(t *testing.T) {
 	}
 	if !strings.Contains(jobs[0].LastRefusal, "list_guest_users.py") {
 		t.Fatalf("LastRefusal = %q, want it to name the file", jobs[0].LastRefusal)
+	}
+}
+
+// A plain setting sits outside the vault, so nothing but the fingerprint
+// stands between an approved job and a BILLING_URL pointed somewhere else
+// (design/secrets-only-vault.md, D8). The setting is recorded on the job, and
+// a change to its file refuses the run without a prompt, like a changed
+// script.
+func TestJobRunRefusesAChangedSetting(t *testing.T) {
+	r := newJobRig(t)
+	file := filepath.Join(t.TempDir(), "settings", "billing", "BILLING_BASE_URL")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("https://api.example.com"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	r.settings = []JobSettingSource{{Var: "BILLING_BASE_URL", Path: "jit://setting/billing/BILLING_BASE_URL", File: file}}
+	r.mu.Unlock()
+
+	st, err := r.c.JobAllow("billing-report", r.spec())
+	if err != nil {
+		t.Fatalf("JobAllow: %v", err)
+	}
+	if len(st.Secrets) != 1 {
+		t.Fatalf("a setting was counted as a secret: %+v", st.Secrets)
+	}
+	stored, err := job.Load(r.storeAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored["billing-report"].Settings; len(got) != 1 || got[0].Var != "BILLING_BASE_URL" {
+		t.Fatalf("stored settings = %+v, want BILLING_BASE_URL", got)
+	}
+
+	if err := os.WriteFile(file, []byte("https://attacker.example.net"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := r.prompts()
+	if _, err := r.c.JobRun("billing-report"); err == nil || !strings.Contains(err.Error(), "BILLING_BASE_URL") {
+		t.Fatalf("JobRun after the setting changed: %v, want a refusal naming it", err)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatalf("a changed setting still prompted (%d) or ran (%d)", r.prompts()-before, r.runs())
 	}
 }
 

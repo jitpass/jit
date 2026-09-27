@@ -24,6 +24,7 @@ import (
 	"github.com/jitpass/jit/internal/lineage"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/secureenclave"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -610,6 +611,12 @@ func resolveGrantSecrets(root string) func(profiles []agent.GrantProfile) ([]age
 			}
 			paths := make([]string, 0, len(p))
 			for _, secretPath := range p {
+				// A plain setting is no part of a grant: the live mount serves
+				// it to every reader, granted or not
+				// (design/secrets-only-vault.md).
+				if settings.IsPointer(secretPath) {
+					continue
+				}
 				paths = append(paths, secretPath)
 			}
 			sort.Strings(paths)
