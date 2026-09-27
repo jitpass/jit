@@ -328,6 +328,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	if isTemplate && !prodMatch && !ipMatch && !tokenMatch {
 		return Finding{}, false, nil
 	}
+	// No variables at all, active or commented out: nothing plaintext sits
+	// here, and a finding would offer Protect on a file `jit migrate`
+	// refuses ("has no active KEY=value lines"), so the app's Protect
+	// failed on a file it had just recommended.
+	if active == 0 && commented == 0 {
+		return Finding{}, false, nil
+	}
 
 	f := cfg.baseFinding()
 	f.FindingType = FindingTypeEnvFilePresent
@@ -437,7 +444,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	// avoid double-counting the same secret — but the skip must not cost the
 	// user the actionable "one command fixes this" hint the wrappable finding
 	// carried, so it rides this finding instead.
-	if tool, ok := wrap.WrappableToolForPath(cfg.HomeDir, path); ok {
+	// Every variable is commented out: the values are still plaintext on
+	// disk, but `jit migrate` moves only active lines and refuses this file,
+	// so the fix is the user's, and neither migrate nor wrap is offered.
+	if active == 0 {
+		f.Remedy = RemedyManual
+		f.Evidence += "; every line is commented out, so jit has nothing to move: delete the ones you no longer need"
+	} else if tool, ok := wrap.WrappableToolForPath(cfg.HomeDir, path); ok {
 		f.Evidence += fmt.Sprintf("; one command moves it into the vault and keeps %s working: jit wrap %s", tool, tool)
 	}
 
