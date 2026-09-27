@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -118,6 +119,13 @@ func (p *mcpPendingWrites) secretExists(v *vault.Vault, secretPath string) (bool
 func (p *mcpPendingWrites) getSecret(v *vault.Vault, secretPath string) ([]byte, error) {
 	if value, ok := p.secrets[secretPath]; ok {
 		return append([]byte(nil), value...), nil
+	}
+	// A profile made from a .env names its plain settings by pointer
+	// (design/secrets-only-vault.md). Carried into an MCP server's own
+	// profile, a setting is vaulted with the rest: the safe direction, a
+	// Touch ID where there was none, never a value left in plain text.
+	if path, ok := settings.PathOf(secretPath); ok {
+		return settings.New(v.Root).Get(path)
 	}
 	return v.Get(secretPath)
 }

@@ -1,7 +1,7 @@
 // Copyright 2026 Meni Tasa
 // SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
-package settings
+package settings_test
 
 import (
 	"errors"
@@ -9,19 +9,20 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
 func TestPointerRoundTrip(t *testing.T) {
-	p := Pointer("billing-sync/BILLING_URL")
+	p := settings.Pointer("billing-sync/BILLING_URL")
 	if p != "jit://setting/billing-sync/BILLING_URL" {
 		t.Errorf("Pointer = %q", p)
 	}
-	if got, ok := PathOf(p); !ok || got != "billing-sync/BILLING_URL" {
-		t.Errorf("PathOf(%q) = %q, %v", p, got, ok)
+	if got, ok := settings.PathOf(p); !ok || got != "billing-sync/BILLING_URL" {
+		t.Errorf("settings.PathOf(%q) = %q, %v", p, got, ok)
 	}
 	// A vault path is not a pointer, and no pointer is a legal vault path.
-	if IsPointer("billing-sync/BILLING_CLIENT_SECRET") {
+	if settings.IsPointer("billing-sync/BILLING_CLIENT_SECRET") {
 		t.Error("a vault path read as a setting pointer")
 	}
 	if err := vault.ValidatePath(p); err == nil {
@@ -31,14 +32,14 @@ func TestPointerRoundTrip(t *testing.T) {
 
 func TestStoreSetGetRemove(t *testing.T) {
 	root := t.TempDir()
-	s := New(root)
+	s := settings.New(root)
 	const path = "billing-sync/BILLING_URL"
 
 	if ok, err := s.Exists(path); err != nil || ok {
 		t.Fatalf("Exists before Set = %v, %v", ok, err)
 	}
-	if _, err := s.Get(path); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Get before Set = %v, want ErrNotFound", err)
+	if _, err := s.Get(path); !errors.Is(err, settings.ErrNotFound) {
+		t.Fatalf("Get before Set = %v, want settings.ErrNotFound", err)
 	}
 	if err := s.Set(path, []byte("https://billing.example.com")); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -49,7 +50,7 @@ func TestStoreSetGetRemove(t *testing.T) {
 	}
 
 	// As private as the .env the value came from.
-	f := filepath.Join(root, Dir, "billing-sync", "BILLING_URL")
+	f := filepath.Join(root, settings.Dir, "billing-sync", "BILLING_URL")
 	info, err := os.Stat(f)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
@@ -77,7 +78,7 @@ func TestStoreSetGetRemove(t *testing.T) {
 }
 
 func TestStoreRefusesPathsOutsideIt(t *testing.T) {
-	s := New(t.TempDir())
+	s := settings.New(t.TempDir())
 	for _, p := range []string{"", "../escape", "a/../../b", "/abs", "a//b", "a/./b", "sp ace"} {
 		if err := s.Set(p, []byte("x")); err == nil {
 			t.Errorf("Set(%q) succeeded, want refused", p)
@@ -93,7 +94,7 @@ func TestPathPatternMatchesVault(t *testing.T) {
 		"a", "billing-sync/BILLING_URL", "a.b/c_d-e", "db..old/key", "x/y/z",
 		"", "../x", "a/..", "a/.", "/a", "a/", "a//b", "a b", "a:b", "jit://setting/a",
 	} {
-		mine, theirs := ValidatePath(p) == nil, vault.ValidatePath(p) == nil
+		mine, theirs := settings.ValidatePath(p) == nil, vault.ValidatePath(p) == nil
 		if mine != theirs {
 			t.Errorf("path %q: settings accepts=%v, vault accepts=%v", p, mine, theirs)
 		}

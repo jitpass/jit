@@ -366,6 +366,9 @@ func ApplyEnvFileSplit(v *vault.Vault, profilesRoot, envPath string, split EnvSp
 			}
 			entries[name] = settings.Pointer(secretPath)
 			settingNames = append(settingNames, name)
+			if classes != nil {
+				classes.SetSettingProvenance(secretPath, settings.Provenance{Origin: meta.Origin, GroupID: meta.GroupID})
+			}
 			continue
 		}
 		if err := v.SetWithMeta(secretPath, []byte(values[name]), meta); err != nil {

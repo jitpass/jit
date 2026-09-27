@@ -1732,7 +1732,12 @@ var vaultExportCmd = &cobra.Command{
 			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("warning: recording export time for `jit status`: %v\n", err)))
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s.\n", countWord(len(paths), "secret", "secrets"), destPath)
+		kept, _ := settings.New(v.Root).List()
+		what := countWord(len(paths), "secret", "secrets")
+		if len(kept) > 0 {
+			what += " and " + countWord(len(kept), "setting", "settings")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s.\n", what, destPath)
 		return nil
 	},
 }

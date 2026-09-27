@@ -10,6 +10,8 @@ import (
 	"fmt"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/jitpass/jit/internal/settings"
 )
 
 // exportVersion is ExportEnvelope's on-disk schema version — bumped if the
@@ -30,6 +32,13 @@ type exportEntry struct {
 	Value   []byte `json:"value"`
 	Storage string `json:"storage,omitempty"`
 }
+
+// exportStorageSetting marks an export entry that is a plain setting kept
+// beside the vault (design/secrets-only-vault.md), keyed by its
+// jit://setting/ pointer. An export is a machine's restore, and settings are
+// half of what its profiles read. A jit that predates settings refuses the
+// entry (Import's default case) rather than storing it as a secret.
+const exportStorageSetting = "setting"
 
 // Argon2id parameters for deriving an export's encryption key from a
 // passphrase. Deliberately memory-hard and reasonably slow (not vault
@@ -98,6 +107,18 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 		}
 		secrets[path] = exportEntry{Value: value, Storage: storage}
 	}
+	store := settings.New(v.Root)
+	kept, err := store.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing settings: %w", err)
+	}
+	for _, path := range kept {
+		value, err := store.Get(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading setting %s: %w", path, err)
+		}
+		secrets[settings.Pointer(path)] = exportEntry{Value: value, Storage: exportStorageSetting}
+	}
 
 	plaintext, err := json.Marshal(secrets)
 	if err != nil {
@@ -144,6 +165,13 @@ func (v *Vault) Import(env *ExportEnvelope, passphrase []byte) (int, error) {
 			err = v.Set(path, entry.Value)
 		case StorageOpRef:
 			err = v.SetReference(path, string(entry.Value), Meta{})
+		case exportStorageSetting:
+			setting, ok := settings.PathOf(path)
+			if !ok {
+				err = fmt.Errorf("a setting entry must be keyed by its %s pointer", settings.PointerPrefix)
+				break
+			}
+			err = settings.New(v.Root).Set(setting, entry.Value)
 		default:
 			// Same fail-closed stance as Get's storage gate: restoring a
 			// future marker's payload as a literal secret would silently

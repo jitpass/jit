@@ -138,6 +138,15 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 		if err != nil {
 			return fmt.Errorf("jit vault %s: %w", verb, err)
 		}
+		// A 1Password link is a reference, not a value: moving it out would
+		// write the item's current value to disk and cut the link, so later
+		// changes in 1Password stop reaching the file. Refused, as the app
+		// hides Move Out for one.
+		if out && exists {
+			if info, ierr := readVault.Info(p); ierr == nil && info.Storage == vault.StorageOpRef {
+				return fmt.Errorf("jit vault %s: nothing moved, %s is a 1Password link; a plain copy would cut the link", verb, p)
+			}
+		}
 		if !exists {
 			where := "the vault"
 			if !out {
@@ -184,7 +193,7 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 
 	result := settingMoveResult{Moved: []settingMovedEntry{}}
 	for _, t := range targets {
-		scan, err := settingMoveOne(v, store, t, out)
+		scan, err := settingMoveOne(v, store, classes, t, out)
 		if err != nil {
 			return fmt.Errorf("jit vault %s: %w", verb, err)
 		}
@@ -193,6 +202,7 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 				classes.Set(t.path, "")
 			} else {
 				classes.Set(t.path, scan)
+				classes.SetSettingProvenance(t.path, settings.Provenance{})
 			}
 		}
 		result.Moved = append(result.Moved, settingMovedEntry{Path: t.path, Scan: scan, Profiles: t.profiles})
@@ -212,7 +222,7 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 // value is written to its new place first, then every manifest is pointed
 // at it, and only then is the old copy removed. A failure part way leaves
 // the value in both places, never in neither.
-func settingMoveOne(v *vault.Vault, store *settings.Store, t settingMoveTarget, out bool) (string, error) {
+func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Classes, t settingMoveTarget, out bool) (string, error) {
 	var value []byte
 	var err error
 	if out {
@@ -225,9 +235,21 @@ func settingMoveOne(v *vault.Vault, store *settings.Store, t settingMoveTarget, 
 	}
 	scan := string(audit.ClassifyEnvVar(path.Base(t.path), string(value)))
 	if out {
+		// The envelope's origin and group go with the value, into the index
+		// beside the vault: a plain file has no header to keep them in.
+		if classes != nil {
+			if info, ierr := v.Info(t.path); ierr == nil {
+				classes.SetSettingProvenance(t.path, settings.Provenance{Origin: info.Origin, GroupID: info.GroupID})
+			}
+		}
 		err = store.Set(t.path, value)
 	} else {
-		err = v.SetWithMeta(t.path, value, vault.Meta{Class: vault.ClassDotenv})
+		meta := vault.Meta{Class: vault.ClassDotenv}
+		if classes != nil {
+			prov := classes.SettingProvenance(t.path)
+			meta.Origin, meta.GroupID = prov.Origin, prov.GroupID
+		}
+		err = v.SetWithMeta(t.path, value, meta)
 	}
 	if err != nil {
 		return "", fmt.Errorf("writing %s: %w", t.path, err)

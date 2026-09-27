@@ -789,6 +789,14 @@ func buildLooseFileRemovalPlan(root, home, file string, rv *vault.Vault) (looseF
 				originSecrets[p] = true
 			}
 		}
+		// A plain setting has no envelope; its origin is in the index beside
+		// the vault. Keyed as the manifest names it, so the profile that
+		// holds it is found as this file's own below.
+		if classes, cerr := settings.LoadClasses(rv.Root); cerr == nil {
+			for _, p := range classes.SettingsFrom(func(o string) bool { return expandTilde(o, home) == file }) {
+				originSecrets[settings.Pointer(p)] = true
+			}
+		}
 	}
 
 	// The profile(s) dedicated to this file: any profile referencing one of the

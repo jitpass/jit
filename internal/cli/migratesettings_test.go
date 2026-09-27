@@ -83,3 +83,76 @@ func TestMigrateSettingsDryRunMovesNothing(t *testing.T) {
 		t.Error("a dry run moved BILLING_URL")
 	}
 }
+
+// A dry run changes nothing, the class index included: a class it recorded
+// would tell the app the entries were checked, and hide the cleanup that has
+// not happened (review of #183).
+func TestMigrateSettingsDryRunRecordsNoClass(t *testing.T) {
+	r := oldStyleRig(t)
+	if _, err := execMigrateSettings(t, "--yes", "--dry-run"); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	classes, err := settings.LoadClasses(r.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := classes.Get("billing/BILLING_URL"); got != "" {
+		t.Errorf("class after a dry run = %q, want none", got)
+	}
+}
+
+// Every .env entry is read and classed, named by a profile or not, so the
+// app's "may hold settings" count can reach zero; one no profile names is a
+// setting left where it is, and said so (review of #183).
+func TestMigrateSettingsClassesWhatItCannotMove(t *testing.T) {
+	r := oldStyleRig(t)
+	if err := r.v.SetWithMeta("billing/ORPHAN_URL", []byte("https://old.example.com"), vault.Meta{Class: vault.ClassDotenv}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execMigrateSettings(t, "--yes")
+	if err != nil {
+		t.Fatalf("migrate settings: %v\n%s", err, out)
+	}
+	if ok, _ := r.v.Exists("billing/ORPHAN_URL"); !ok {
+		t.Error("an entry no profile names was moved")
+	}
+	classes, err := settings.LoadClasses(r.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := classes.Get("billing/ORPHAN_URL"); got != "setting" {
+		t.Errorf("class of the unnamed entry = %q, want setting", got)
+	}
+	if !strings.Contains(out, "no profile names it") {
+		t.Errorf("output does not say why it stayed:\n%s", out)
+	}
+}
+
+// A 1Password link is never read or copied out: reading resolves the item,
+// and a plain copy would cut the link (review of #183).
+func TestA1PasswordLinkNeverMovesOut(t *testing.T) {
+	r := oldStyleRig(t)
+	if err := r.v.SetReference("billing/LINKED_URL", "op://Work/Billing/url", vault.Meta{Class: vault.ClassDotenv}); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "BILLING_URL: billing/BILLING_URL\nLINKED_URL: billing/LINKED_URL\n"
+	if err := os.WriteFile(r.manifest, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execVaultMove(t, "move-out", "billing/LINKED_URL", "--yes"); err == nil || !strings.Contains(err.Error(), "1Password link") {
+		t.Fatalf("move-out of a link = %v, want refused", err)
+	}
+	if len(r.reasons) != 0 {
+		t.Errorf("a refused move asked for Touch ID: %q", r.reasons)
+	}
+	out, err := execMigrateSettings(t, "--yes")
+	if err != nil {
+		t.Fatalf("migrate settings: %v\n%s", err, out)
+	}
+	if ok, _ := settings.New(r.root).Exists("billing/LINKED_URL"); ok {
+		t.Error("the cleanup wrote a 1Password link's value to disk")
+	}
+	if ok, _ := r.v.Exists("billing/LINKED_URL"); !ok {
+		t.Error("the cleanup removed the link")
+	}
+}

@@ -203,3 +203,30 @@ func TestVaultSettingsListsWhatMovedOut(t *testing.T) {
 		t.Errorf("setting = %+v", st)
 	}
 }
+
+// Out and back keeps where the value came from: the envelope's origin and
+// group ride in the index while the value is a plain setting (review of #183).
+func TestVaultMoveKeepsTheOrigin(t *testing.T) {
+	r := newMoveRig(t)
+	meta := vault.Meta{Class: vault.ClassDotenv, Origin: "~/code/billing-sync/.env", GroupID: "g1"}
+	// A fresh path: the rig's own entry was stored without an origin, and a
+	// rotation keeps the birth record it has.
+	if err := r.v.SetWithMeta("billing/REPORT_FILE", []byte("out/report.csv"), meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.manifest, []byte("REPORT_FILE: billing/REPORT_FILE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"move-out", "move-in"} {
+		if out, err := execVaultMove(t, dir, "billing/REPORT_FILE", "--yes"); err != nil {
+			t.Fatalf("%s: %v\n%s", dir, err, out)
+		}
+	}
+	info, err := r.v.Info("billing/REPORT_FILE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Origin != meta.Origin || info.GroupID != meta.GroupID {
+		t.Errorf("after out and back: origin %q group %q, want %q %q", info.Origin, info.GroupID, meta.Origin, meta.GroupID)
+	}
+}

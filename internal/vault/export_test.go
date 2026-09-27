@@ -6,6 +6,8 @@ package vault
 import (
 	"bytes"
 	"testing"
+
+	"github.com/jitpass/jit/internal/settings"
 )
 
 func TestExportImportRoundTrip(t *testing.T) {
@@ -215,5 +217,38 @@ func TestWipeEntriesZeroesEveryEntry(t *testing.T) {
 				t.Errorf("m[%q][%d] = %#x, want 0 — the plaintext is still in the backing array", name, i, byteVal)
 			}
 		}
+	}
+}
+
+// A machine's restore brings its plain settings back too: they are half of
+// what a profile made from a .env reads (review of #183). They go back
+// beside the vault, never into it.
+func TestExportImportCarriesSettings(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("billing-sync/CLIENT_SECRET", []byte("fixture-secret")); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.New(v.Root).Set("billing-sync/BILLING_URL", []byte("https://billing.example.com")); err != nil {
+		t.Fatal(err)
+	}
+	passphrase := []byte("correct horse battery staple")
+	env, err := v.Export(passphrase)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	v2 := newTestVault(t)
+	if _, err := v2.Import(env, passphrase); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	got, err := settings.New(v2.Root).Get("billing-sync/BILLING_URL")
+	if err != nil || string(got) != "https://billing.example.com" {
+		t.Errorf("restored setting = %q, %v", got, err)
+	}
+	if ok, _ := v2.Exists("billing-sync/BILLING_URL"); ok {
+		t.Error("the setting was restored into the vault")
+	}
+	if got, err := v2.Get("billing-sync/CLIENT_SECRET"); err != nil || string(got) != "fixture-secret" {
+		t.Errorf("restored secret = %q, %v", got, err)
 	}
 }

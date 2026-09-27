@@ -73,33 +73,44 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jit migrate settings: nothing moved, can't tell which profiles name what: %w", err)
 	}
 
-	// The candidates: vault entries a profile names, born from a .env. Info
-	// reads the header only, no Touch ID.
+	// The candidates: every vault entry born from a .env, named by a profile
+	// or not. Every one is read and its class recorded, so the Vault window's
+	// "may hold settings" count reaches zero; only those a profile names, and
+	// no pointer file does, can move. Info reads the header only, no Touch ID.
+	// A 1Password link is never a candidate: reading it resolves the item,
+	// and a plain copy would cut the link (the app does not count them).
 	readVault := &vault.Vault{Root: root}
-	var candidates []settingMoveTarget
-	for p, uses := range usage.byPath {
-		if settings.IsPointer(p) || vault.IsBackupPath(p) {
+	stored, err := readVault.List()
+	if err != nil {
+		return fmt.Errorf("jit migrate settings: %w", err)
+	}
+	type candidate struct {
+		settingMoveTarget
+		why string // why it cannot move even if it is a setting; "" when it can
+	}
+	var candidates []candidate
+	for _, p := range stored {
+		if vault.IsBackupPath(p) {
 			continue
 		}
 		info, err := readVault.Info(p)
-		if err != nil || info.Class != vault.ClassDotenv {
+		if err != nil || info.Class != vault.ClassDotenv || info.Storage == vault.StorageOpRef {
 			continue
 		}
-		t := settingMoveTarget{path: p, from: p, to: settings.Pointer(p)}
-		pointerFile := false
-		for _, u := range uses {
+		c := candidate{settingMoveTarget: settingMoveTarget{path: p, from: p, to: settings.Pointer(p)}}
+		for _, u := range usage.byPath[p] {
 			if u.PointerFile != "" {
-				pointerFile = true
+				c.why = "a pointer file names it (" + shortPath(u.PointerFile) + ")"
 			}
-			if u.ProfilePath != "" && !containsString(t.manifests, u.ProfilePath) {
-				t.manifests = append(t.manifests, u.ProfilePath)
-				t.profiles = append(t.profiles, u.ProfileName)
+			if u.ProfilePath != "" && !containsString(c.manifests, u.ProfilePath) {
+				c.manifests = append(c.manifests, u.ProfilePath)
+				c.profiles = append(c.profiles, u.ProfileName)
 			}
 		}
-		if pointerFile || len(t.manifests) == 0 {
-			continue
+		if c.why == "" && len(c.manifests) == 0 {
+			c.why = "no profile names it"
 		}
-		candidates = append(candidates, t)
+		candidates = append(candidates, c)
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].path < candidates[j].path })
 
@@ -138,37 +149,42 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 		classes = nil
 	}
 	store := settings.New(root)
-	for _, t := range candidates {
-		value, err := v.Get(t.path)
+	for _, c := range candidates {
+		value, err := v.Get(c.path)
 		if err != nil {
-			result.Skipped = append(result.Skipped, migrateSettingsSkip{Path: t.path, Reason: "could not be read: " + err.Error()})
+			result.Skipped = append(result.Skipped, migrateSettingsSkip{Path: c.path, Reason: "could not be read: " + err.Error()})
 			continue
 		}
 		result.Read++
-		class := audit.ClassifyEnvVar(path.Base(t.path), string(value))
+		class := audit.ClassifyEnvVar(path.Base(c.path), string(value))
 		if classes != nil {
-			classes.Set(t.path, string(class))
+			classes.Set(c.path, string(class))
 		}
-		switch class {
-		case audit.EnvVarCheck:
-			result.Checks = append(result.Checks, t.path)
+		switch {
+		case class == audit.EnvVarCheck:
+			result.Checks = append(result.Checks, c.path)
 			continue
-		case audit.EnvVarSecret:
+		case class == audit.EnvVarSecret:
+			continue
+		case c.why != "":
+			result.Skipped = append(result.Skipped, migrateSettingsSkip{Path: c.path, Reason: "a setting, left in the vault: " + c.why})
+			continue
+		case migrateDryRun:
+			result.Moved = append(result.Moved, c.path)
 			continue
 		}
-		if migrateDryRun {
-			result.Moved = append(result.Moved, t.path)
-			continue
-		}
-		if _, err := settingMoveOne(v, store, t, true); err != nil {
+		if _, err := settingMoveOne(v, store, classes, c.settingMoveTarget, true); err != nil {
 			return fmt.Errorf("jit migrate settings: %w (moved so far: %d)", err, len(result.Moved))
 		}
 		if classes != nil {
-			classes.Set(t.path, "")
+			classes.Set(c.path, "")
 		}
-		result.Moved = append(result.Moved, t.path)
+		result.Moved = append(result.Moved, c.path)
 	}
-	if classes != nil {
+	// A dry run changes nothing, the class index included: a class recorded
+	// here would tell the app these entries were checked, and hide the
+	// cleanup that has not happened.
+	if classes != nil && !migrateDryRun {
 		_ = classes.Save()
 	}
 
