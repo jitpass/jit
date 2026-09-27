@@ -250,11 +250,13 @@ func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Cla
 		if classes == nil {
 			return "", fmt.Errorf("moving %s out: the index beside the vault could not be read, so its origin would be lost", t.path)
 		}
-		if info, ierr := v.Info(t.path); ierr == nil {
-			classes.SetSettingProvenance(t.path, settings.Provenance{Origin: info.Origin, GroupID: info.GroupID})
-			if serr := classes.Save(); serr != nil {
-				return "", fmt.Errorf("moving %s out: saving its origin: %w", t.path, serr)
-			}
+		info, ierr := v.Info(t.path)
+		if ierr != nil {
+			return "", fmt.Errorf("moving %s out: reading its origin: %w", t.path, ierr)
+		}
+		classes.SetSettingProvenance(t.path, settings.Provenance{Origin: info.Origin, GroupID: info.GroupID})
+		if serr := classes.Save(); serr != nil {
+			return "", fmt.Errorf("moving %s out: saving its origin: %w", t.path, serr)
 		}
 		err = store.Set(t.path, value)
 	} else {

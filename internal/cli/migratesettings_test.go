@@ -7,6 +7,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -154,5 +155,20 @@ func TestA1PasswordLinkNeverMovesOut(t *testing.T) {
 	}
 	if ok, _ := r.v.Exists("billing/LINKED_URL"); !ok {
 		t.Error("the cleanup removed the link")
+	}
+}
+
+// A dry run moves and saves nothing, so an index it cannot read does not
+// stop it (review of #183); a real run still refuses.
+func TestMigrateSettingsDryRunNeedsNoIndex(t *testing.T) {
+	r := oldStyleRig(t)
+	if err := os.WriteFile(filepath.Join(r.root, settings.ClassesFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := execMigrateSettings(t, "--yes", "--dry-run"); err != nil || !strings.Contains(out, "Would move 1 setting") {
+		t.Errorf("dry run with an unreadable index = %v\n%s", err, out)
+	}
+	if _, err := execMigrateSettings(t, "--yes"); err == nil {
+		t.Error("a real run with an unreadable index succeeded")
 	}
 }

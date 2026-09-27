@@ -139,7 +139,11 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 	// Before the Touch ID: an index that cannot be read refuses the run
 	// without spending a fingerprint on it.
 	classes, cerr := settings.LoadClasses(root)
-	if cerr != nil {
+	switch {
+	case cerr != nil && migrateDryRun:
+		// A dry run moves nothing and saves nothing, so it needs no index.
+		classes = nil
+	case cerr != nil:
 		// Moving out keeps each value's origin only in this index, and the
 		// app's banner reads the classes it records.
 		return fmt.Errorf("jit migrate settings: nothing read: %w", cerr)
