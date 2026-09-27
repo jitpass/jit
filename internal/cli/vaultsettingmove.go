@@ -179,16 +179,23 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 		}
 	}
 
+	// Before the Touch ID: an index that cannot be read refuses the run
+	// without spending a fingerprint on it.
+	classes, cerr := settings.LoadClasses(root)
+	if cerr != nil {
+		if out {
+			// Moving out keeps each value's origin only in this index.
+			return fmt.Errorf("jit vault %s: nothing moved: %w", verb, cerr)
+		}
+		classes = nil
+	}
+
 	v, err := openVaultFreshAuth()
 	if err != nil {
 		return fmt.Errorf("jit vault %s: %w", verb, err)
 	}
 	if err := requireFreshUserPresence(v, settingMoveReason(targets, out)); err != nil {
 		return fmt.Errorf("jit vault %s: nothing moved: %w", verb, err)
-	}
-	classes, cerr := settings.LoadClasses(root)
-	if cerr != nil {
-		classes = nil
 	}
 
 	result := settingMoveResult{Moved: []settingMovedEntry{}}
@@ -237,9 +244,16 @@ func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Cla
 	if out {
 		// The envelope's origin and group go with the value, into the index
 		// beside the vault: a plain file has no header to keep them in.
-		if classes != nil {
-			if info, ierr := v.Info(t.path); ierr == nil {
-				classes.SetSettingProvenance(t.path, settings.Provenance{Origin: info.Origin, GroupID: info.GroupID})
+		// Saved now, before the vault copy (the only other place they are
+		// kept) is removed below: a run that fails on a later value must not
+		// have lost this one's origin (review of #183).
+		if classes == nil {
+			return "", fmt.Errorf("moving %s out: the index beside the vault could not be read, so its origin would be lost", t.path)
+		}
+		if info, ierr := v.Info(t.path); ierr == nil {
+			classes.SetSettingProvenance(t.path, settings.Provenance{Origin: info.Origin, GroupID: info.GroupID})
+			if serr := classes.Save(); serr != nil {
+				return "", fmt.Errorf("moving %s out: saving its origin: %w", t.path, serr)
 			}
 		}
 		err = store.Set(t.path, value)

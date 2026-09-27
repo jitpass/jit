@@ -229,7 +229,7 @@ func TestExportImportRoundTripsReference(t *testing.T) {
 	}
 
 	restored := newTestVault(t)
-	n, err := restored.Import(env, []byte("passphrase"))
+	n, _, err := restored.Import(env, []byte("passphrase"))
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestImportReadsVersionOneExports(t *testing.T) {
 		Payload: hex.EncodeToString(sealed),
 	}
 
-	n, err := v.Import(env, []byte("passphrase"))
+	n, _, err := v.Import(env, []byte("passphrase"))
 	if err != nil {
 		t.Fatalf("Import of v1 export: %v", err)
 	}

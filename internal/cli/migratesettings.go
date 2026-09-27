@@ -136,6 +136,15 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// Before the Touch ID: an index that cannot be read refuses the run
+	// without spending a fingerprint on it.
+	classes, cerr := settings.LoadClasses(root)
+	if cerr != nil {
+		// Moving out keeps each value's origin only in this index, and the
+		// app's banner reads the classes it records.
+		return fmt.Errorf("jit migrate settings: nothing read: %w", cerr)
+	}
+
 	v, err := openVaultFreshAuth()
 	if err != nil {
 		return fmt.Errorf("jit migrate settings: %w", err)
@@ -143,10 +152,6 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 	reason := fmt.Sprintf("check %s for settings to move out of the vault", countWord(len(candidates), "entry", "entries"))
 	if err := requireFreshUserPresence(v, reason); err != nil {
 		return fmt.Errorf("jit migrate settings: nothing moved: %w", err)
-	}
-	classes, cerr := settings.LoadClasses(root)
-	if cerr != nil {
-		classes = nil
 	}
 	store := settings.New(root)
 	for _, c := range candidates {

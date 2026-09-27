@@ -230,3 +230,54 @@ func TestVaultMoveKeepsTheOrigin(t *testing.T) {
 		t.Errorf("after out and back: origin %q group %q, want %q %q", info.Origin, info.GroupID, meta.Origin, meta.GroupID)
 	}
 }
+
+// A run that fails on its second value has already saved the first one's
+// origin: the vault copy it removed was the only other record (review of
+// #183).
+func TestAFailedMoveKeepsWhatItMovedTraceable(t *testing.T) {
+	r := newMoveRig(t)
+	meta := vault.Meta{Class: vault.ClassDotenv, Origin: "~/code/billing-sync/.env", GroupID: "g1"}
+	for _, p := range []string{"billing/FIRST_FILE", "billing/SECOND_FILE"} {
+		if err := r.v.SetWithMeta(p, []byte("out/x.csv"), meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(r.manifest, []byte("FIRST_FILE: billing/FIRST_FILE\nSECOND_FILE: billing/SECOND_FILE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A folder where the second setting's file would go: its write fails.
+	if err := os.MkdirAll(filepath.Join(r.root, settings.Dir, "billing", "SECOND_FILE"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execVaultMove(t, "move-out", "billing/FIRST_FILE", "billing/SECOND_FILE", "--yes"); err == nil {
+		t.Fatal("the second move was meant to fail")
+	}
+	if ok, _ := r.v.Exists("billing/FIRST_FILE"); ok {
+		t.Fatal("precondition: the first value moved before the failure")
+	}
+	classes, err := settings.LoadClasses(r.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := classes.SettingProvenance("billing/FIRST_FILE"); got.Origin != meta.Origin {
+		t.Errorf("first value's origin after the failed run = %+v, want %q", got, meta.Origin)
+	}
+}
+
+// An index that cannot be read refuses a move-out before Touch ID: moving
+// out keeps each value's origin only there.
+func TestMoveOutRefusesAnUnreadableIndex(t *testing.T) {
+	r := newMoveRig(t)
+	if err := os.WriteFile(filepath.Join(r.root, settings.ClassesFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execVaultMove(t, "move-out", "billing/EXPORT_SECRETS_FILE", "--yes"); err == nil {
+		t.Fatal("move-out with an unreadable index succeeded")
+	}
+	if len(r.reasons) != 0 {
+		t.Errorf("a refused move asked for Touch ID: %q", r.reasons)
+	}
+	if ok, _ := r.v.Exists("billing/EXPORT_SECRETS_FILE"); !ok {
+		t.Error("a refused move removed the value")
+	}
+}

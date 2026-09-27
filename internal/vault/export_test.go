@@ -5,6 +5,9 @@ package vault
 
 import (
 	"bytes"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/jitpass/jit/internal/settings"
@@ -33,7 +36,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	// spirit) — Import must not depend on anything Export's own vault
 	// still has in memory or on disk.
 	v2 := newTestVault(t)
-	n, err := v2.Import(env, passphrase)
+	n, _, err := v2.Import(env, passphrase)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -60,7 +63,7 @@ func TestExportEmptyVault(t *testing.T) {
 	}
 
 	v2 := newTestVault(t)
-	n, err := v2.Import(env, []byte("passphrase"))
+	n, _, err := v2.Import(env, []byte("passphrase"))
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -80,7 +83,7 @@ func TestImportWrongPassphraseRejected(t *testing.T) {
 	}
 
 	v2 := newTestVault(t)
-	if _, err := v2.Import(env, []byte("wrong passphrase")); err == nil {
+	if _, _, err := v2.Import(env, []byte("wrong passphrase")); err == nil {
 		t.Error("Import with the wrong passphrase succeeded, want a decryption error")
 	}
 }
@@ -101,7 +104,7 @@ func TestImportTamperedPayloadRejected(t *testing.T) {
 	env.Payload = string(tampered)
 
 	v2 := newTestVault(t)
-	if _, err := v2.Import(env, passphrase); err == nil {
+	if _, _, err := v2.Import(env, passphrase); err == nil {
 		t.Error("Import on a tampered export succeeded, want an error")
 	}
 }
@@ -115,7 +118,7 @@ func TestImportUnsupportedVersionRejected(t *testing.T) {
 	env.Version = exportVersion + 1
 
 	v2 := newTestVault(t)
-	if _, err := v2.Import(env, []byte("passphrase")); err == nil {
+	if _, _, err := v2.Import(env, []byte("passphrase")); err == nil {
 		t.Error("Import on an unsupported version succeeded, want an error")
 	}
 }
@@ -138,7 +141,7 @@ func TestImportOverwritesExistingSecret(t *testing.T) {
 	if err := v2.Set("stripe/dev-key", []byte("stale-local-value")); err != nil {
 		t.Fatalf("Set on destination vault: %v", err)
 	}
-	if _, err := v2.Import(env, passphrase); err != nil {
+	if _, _, err := v2.Import(env, passphrase); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	got, err := v2.Get("stripe/dev-key")
@@ -238,7 +241,7 @@ func TestExportImportCarriesSettings(t *testing.T) {
 	}
 
 	v2 := newTestVault(t)
-	if _, err := v2.Import(env, passphrase); err != nil {
+	if _, _, err := v2.Import(env, passphrase); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	got, err := settings.New(v2.Root).Get("billing-sync/BILLING_URL")
@@ -250,5 +253,65 @@ func TestExportImportCarriesSettings(t *testing.T) {
 	}
 	if got, err := v2.Get("billing-sync/CLIENT_SECRET"); err != nil || string(got) != "fixture-secret" {
 		t.Errorf("restored secret = %q, %v", got, err)
+	}
+}
+
+// A vault with no settings still exports as version 2, which every earlier
+// jit reads; one with settings is version 3, which a jit that predates them
+// refuses whole, up front (review of #183).
+func TestExportVersionFollowsSettings(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("a/SECRET", []byte("fixture")); err != nil {
+		t.Fatal(err)
+	}
+	env, err := v.Export([]byte("passphrase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Version != 2 {
+		t.Errorf("no settings: version %d, want 2", env.Version)
+	}
+	if err := settings.New(v.Root).Set("a/URL", []byte("https://example.com")); err != nil {
+		t.Fatal(err)
+	}
+	if env, err = v.Export([]byte("passphrase")); err != nil {
+		t.Fatal(err)
+	}
+	if env.Version != 3 {
+		t.Errorf("with settings: version %d, want 3", env.Version)
+	}
+}
+
+// An entry of a kind this jit does not know refuses the file before any
+// entry is written: the older jit this simulates used to restore a random
+// part of the file and then stop.
+func TestImportChecksEveryEntryBeforeWriting(t *testing.T) {
+	// Twenty good entries beside one unknown: whatever order the map is
+	// walked in, a writer that stops at the unknown one has almost surely
+	// written a good one first.
+	entries := map[string]exportEntry{"a/FUTURE": {Value: []byte("x"), Storage: "from-the-future"}}
+	for i := 0; i < 20; i++ {
+		entries[fmt.Sprintf("a/OK%d", i)] = exportEntry{Value: []byte("fine")}
+	}
+	plaintext, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	salt := bytes.Repeat([]byte{1}, argon2SaltSize)
+	key := deriveExportKey([]byte("passphrase"), salt)
+	sealed, err := seal(key, plaintext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &ExportEnvelope{Version: exportVersion, Salt: hex.EncodeToString(salt), Payload: hex.EncodeToString(sealed)}
+
+	v := newTestVault(t)
+	if _, _, err := v.Import(env, []byte("passphrase")); err == nil {
+		t.Fatal("Import accepted an unknown storage kind")
+	}
+	for i := 0; i < 20; i++ {
+		if ok, _ := v.Exists(fmt.Sprintf("a/OK%d", i)); ok {
+			t.Fatal("an entry was written before the file was refused")
+		}
 	}
 }

@@ -1810,11 +1810,15 @@ var vaultImportCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault import: %w", err)
 		}
-		n, err := v.Import(&env, passphrase)
+		n, kept, err := v.Import(&env, passphrase)
 		if err != nil {
 			return fmt.Errorf("jit vault import: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", countWord(n, "secret", "secrets"), srcPath)
+		what := countWord(n, "secret", "secrets")
+		if kept > 0 {
+			what += " and " + countWord(kept, "setting", "settings")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", what, srcPath)
 		reportLostKeyRestore(cmd, v.Root)
 		return nil
 	},
