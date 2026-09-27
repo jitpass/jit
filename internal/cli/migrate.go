@@ -1135,6 +1135,22 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			summary.checkGitHistory(mcpPath)
 
 			result, err := migrate.ApplyMCPConfig(v, mcpPath)
+			// A config whose only credential is an --env-file jit already
+			// protected — by this run's .env pass, which goes first, or an
+			// earlier one — has nothing left to move. That is done, not a
+			// failure: failing here stopped Protect All after the .env was
+			// vaulted, and the report then said nothing had changed.
+			if errors.Is(err, migrate.ErrNoMCPSecrets) {
+				if protected := migrate.ProtectedMCPEnvFiles(mcpPath); len(protected) > 0 {
+					shown := make([]string, len(protected))
+					for i, p := range protected {
+						shown[i] = displayPath(home, p)
+					}
+					fmt.Fprintf(out, "  "+glyphBullet+" %s: nothing left to move; its secrets are in %s, already protected\n",
+						displayPath(home, mcpPath), strings.Join(shown, ", "))
+					continue
+				}
+			}
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
