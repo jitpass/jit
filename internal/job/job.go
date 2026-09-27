@@ -55,6 +55,17 @@ type Secret struct {
 	raw []byte
 }
 
+// Setting is one plain value a job's profile sets (design/secrets-only-
+// vault.md): not a secret, so never unwrapped, sealed or hidden, and read
+// from its file when the job runs. The file is in the job's Extra, so a
+// changed setting stops the job like any other changed file: an approved job
+// whose BILLING_URL could be pointed elsewhere would send its secret there.
+type Setting struct {
+	Var string `json:"var"`
+	// Path is the manifest's jit://setting/ pointer, frozen at approval.
+	Path string `json:"path"`
+}
+
 // Job is one approved command and the secrets it gets.
 type Job struct {
 	Name string `json:"name"`
@@ -68,7 +79,9 @@ type Job struct {
 	Profile     string   `json:"profile,omitempty"`
 	ProfileRoot string   `json:"profile_root,omitempty"`
 	Secrets     []Secret `json:"secrets"`
-	Ask         Ask      `json:"ask"`
+	// Settings are the profile's plain values, with their files in Extra.
+	Settings []Setting `json:"settings,omitempty"`
+	Ask      Ask       `json:"ask"`
 	// KeyID names the job's own key in the keychain, for a job that never
 	// asks. Minted fresh at every approval, so approving again replaces the
 	// key rather than reusing it.

@@ -19,6 +19,7 @@ import (
 	"github.com/jitpass/jit/internal/lineage"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -301,7 +302,10 @@ type servedMount struct {
 
 	mu    sync.Mutex
 	decoy []byte
-	real  []byte // nil until resolveReal succeeds; cleared again by stop()
+	// buildDecoy, when set, rebuilds the decoy for one read, so a setting
+	// moved since serving began is current. Nil or a nil result means decoy.
+	buildDecoy func() []byte
+	real       []byte // nil until resolveReal succeeds; cleared again by stop()
 	// gen advances every time the session locks (invalidateReal). resolveReal
 	// captures it before its decrypt and only installs real content if it is
 	// still unchanged afterward, so a resolve that was mid-decrypt when the
@@ -529,33 +533,24 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			continue
 		}
 
-		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
+		decoy, err := m.decoyContent(entry)
 		if err != nil {
 			m.logMountSkip(entry.MountPath, err)
 			continue
 		}
-		// DecoyValues only ever reads p's KEYS (variable names) — never a
-		// resolved value — which is exactly why this needs no vault
-		// access and is safe to run before any unlock has ever happened.
-		decoyValues := mount.DecoyValues(p)
-		var decoy []byte
-		if entry.TemplatePath != "" {
-			tmpl, err := os.ReadFile(entry.TemplatePath) // #nosec G304 -- path comes from jit's own mount registry, not external input
-			if err != nil {
-				m.logMountSkip(entry.MountPath, fmt.Errorf("reading template: %w", err))
-				continue
-			}
-			decoy = mount.FormatTemplate(tmpl, decoyValues)
-		} else {
-			decoy = mount.FormatDotenv(decoyValues, varOrder)
-		}
-		// Decoy content self-diagnoses: whoever opens the file sees what
-		// these values are and the one command that fixes it, instead of
-		// debugging `jit-hidden-*` strings through their app's own
-		// error output. Real content never carries this line.
-		decoy = append(mount.DecoyNotice(), decoy...)
 
 		sm := &servedMount{decoy: decoy, done: make(chan struct{})}
+		// Rebuilt per read, so a setting moved into or out of the vault is
+		// what the next reader sees, with no refresh and no unlock. The
+		// content built above stands in if a rebuild fails.
+		decoyEntry := entry
+		sm.buildDecoy = func() []byte {
+			b, err := m.decoyContent(decoyEntry)
+			if err != nil {
+				return nil
+			}
+			return b
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		sm.cancel = cancel
 
@@ -1252,4 +1247,53 @@ func (m *mountManager) shutdown() {
 	// After wg.Wait, so the last in-flight serve's event is already recorded
 	// and gets written by this flush rather than being dropped.
 	m.serveAudit.stopFlusher()
+}
+
+// decoyContent is what a mount serves any reader outside a grant: every
+// secret as a placeholder, every plain setting as itself, and the notice.
+// It reads the manifest, the template and the settings, never the vault,
+// which is why it is safe before any unlock has ever happened.
+func (m *mountManager) decoyContent(entry mount.Entry) ([]byte, error) {
+	p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
+	if err != nil {
+		return nil, err
+	}
+	// DecoyValues only ever reads p's KEYS (variable names), never a
+	// resolved value.
+	decoyValues := mount.DecoyValues(p)
+	// A plain setting is real in the decoy too: a decoy stands in for a
+	// secret, and a setting never was one (design/secrets-only-vault.md).
+	// A program without a grant reads its real URL beside a decoy key.
+	overlaySettings(settings.New(m.root), p, decoyValues)
+	var decoy []byte
+	if entry.TemplatePath != "" {
+		tmpl, err := os.ReadFile(entry.TemplatePath) // #nosec G304 -- path comes from jit's own mount registry, not external input
+		if err != nil {
+			return nil, fmt.Errorf("reading template: %w", err)
+		}
+		decoy = mount.FormatTemplate(tmpl, decoyValues)
+	} else {
+		decoy = mount.FormatDotenv(decoyValues, varOrder)
+	}
+	// Decoy content self-diagnoses: whoever opens the file sees what these
+	// values are and the one command that fixes it, instead of debugging
+	// `jit-hidden-*` strings through their app's own error output. Real
+	// content never carries this line.
+	return append(mount.DecoyNotice(), decoy...), nil
+}
+
+// overlaySettings replaces each plain setting's placeholder in values with
+// the setting itself, read from store. Secrets keep their placeholders. A
+// setting that cannot be read keeps its placeholder rather than failing the
+// mount.
+func overlaySettings(store *settings.Store, p profile.Profile, values map[string]string) {
+	for name, entry := range p {
+		path, ok := settings.PathOf(entry)
+		if !ok {
+			continue
+		}
+		if v, err := store.Get(path); err == nil {
+			values[name] = string(v)
+		}
+	}
 }

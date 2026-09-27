@@ -15,6 +15,7 @@ import (
 
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/pointerfile"
+	"github.com/jitpass/jit/internal/settings"
 )
 
 // readPointers reads every pointer file jit can enumerate: in-place pointer
@@ -147,6 +148,11 @@ func readPointerFile(file string, mustRead bool) ([]string, error) {
 		value = strings.Trim(strings.TrimSpace(value), `"'`)
 		if p, ok := pointerfile.VaultPath(value); ok && p != "" {
 			paths = append(paths, p)
+		} else if settings.IsPointer(value) {
+			// A plain setting's line (design/secrets-only-vault.md), kept in
+			// the pointer form manifests name it by, so a move or a delete
+			// sees this file as one of the setting's users.
+			paths = append(paths, value)
 		}
 	}
 	if err := sc.Err(); err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -700,6 +701,29 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 
 		for _, varName := range vars {
 			secretPath := e.prof[varName]
+			// A plain setting is not a vault path: it takes no part in the
+			// vault's orphan and origin sweeps, and its check is that the
+			// file is there (design/secrets-only-vault.md).
+			if setting, ok := settings.PathOf(secretPath); ok {
+				if unlaunched {
+					continue
+				}
+				out.SecretsChecked++
+				if status := checkSetting(v, setting); status.kind != "" {
+					out.Findings = append(out.Findings, checkFinding{
+						Kind:     status.kind,
+						Profile:  e.name,
+						Scope:    e.scope,
+						Variable: varName,
+						Path:     secretPath,
+						Detail:   status.detail,
+						Action:   fmt.Sprintf("`jit profile drop %s %s` if the tool never needed it", e.name, varName),
+					})
+				} else {
+					out.OKRefs = append(out.OKRefs, checkedRef{Profile: e.name, Scope: e.scope, Variable: varName, Path: secretPath})
+				}
+				continue
+			}
 			referenced[secretPath] = true
 			if by := referencedBy[secretPath]; !unlaunched && (len(by) == 0 || by[len(by)-1] != e.name) {
 				referencedBy[secretPath] = append(by, e.name)
@@ -1081,6 +1105,19 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 		targets = append(targets, mountTarget{name: name, prof: p})
 	}
 	return targets, findings, parseFailed
+}
+
+// checkSetting is checkSecret for a plain setting: the file beside the vault
+// is there, or the entry is missing. Nothing to verify: it is not encrypted.
+func checkSetting(v *vault.Vault, path string) secretStatus {
+	exists, err := settings.New(v.Root).Exists(path)
+	switch {
+	case err != nil:
+		return secretStatus{kind: kindBadPath, detail: err.Error()}
+	case !exists:
+		return secretStatus{kind: kindMissing, detail: "the setting's file is missing"}
+	}
+	return secretStatus{}
 }
 
 // secretStatus is one path's verdict, cached across profiles that share it.

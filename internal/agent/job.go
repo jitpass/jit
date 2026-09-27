@@ -38,6 +38,15 @@ type JobSecretSource struct {
 	Class   string
 }
 
+// JobSettingSource is one plain setting a job's profile sets: the variable,
+// the manifest's jit://setting/ pointer, and the file that holds the value.
+// No value crosses here either; the file goes into the job's fingerprint.
+type JobSettingSource struct {
+	Var  string
+	Path string
+	File string
+}
+
 // maxJobChanges caps the changes a status carries. The first few name the
 // problem; a whole reinstalled venv would otherwise ship thousands of paths.
 const maxJobChanges = 20
@@ -139,6 +148,7 @@ type preparedJob struct {
 	ask                      job.Ask
 	outputs, extra           []string
 	sources                  []JobSecretSource
+	settings                 []JobSettingSource
 	profileName, profileRoot string
 	before                   job.Fingerprint
 	shownCount               int
@@ -236,6 +246,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	}
 
 	var sources []JobSecretSource
+	var pjSettings []JobSettingSource
 	profileName, profileRoot := "", ""
 	if spec.Profile != nil {
 		if s.OnResolveJob == nil {
@@ -246,6 +257,21 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 			return nil, err.Error()
 		}
 		profileName, profileRoot = spec.Profile.Name, spec.Profile.Root
+		// A setting is plain, so what protects the job from it is the
+		// fingerprint: its file joins Extra, and a changed setting stops the
+		// job like a changed script (design/secrets-only-vault.md, D8). The
+		// CLI wires this hook with OnResolveJob, and OnResolveJob skips
+		// settings, so each value lands in exactly one of the two lists.
+		if s.OnResolveJobSettings != nil {
+			jobSettings, serr := s.OnResolveJobSettings(*spec.Profile)
+			if serr != nil {
+				return nil, serr.Error()
+			}
+			for _, st := range jobSettings {
+				extra = append(extra, st.File)
+			}
+			pjSettings = jobSettings
+		}
 	}
 	shown := map[string]bool{}
 	for _, v := range spec.Shown {
@@ -253,6 +279,11 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	}
 	for _, src := range sources {
 		delete(shown, src.Var)
+	}
+	// A setting is shown already: it is not a secret. Naming one in --show
+	// is not a mistake worth refusing.
+	for _, st := range pjSettings {
+		delete(shown, st.Var)
 	}
 	if len(shown) > 0 {
 		names := make([]string, 0, len(shown))
@@ -279,7 +310,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	}
 	return &preparedJob{
 		name: req.JobName, dir: dir, exe: exe, spec: spec, ask: ask, outputs: outputs, extra: extra,
-		sources: sources, profileName: profileName, profileRoot: profileRoot, before: before,
+		sources: sources, settings: pjSettings, profileName: profileName, profileRoot: profileRoot, before: before,
 		shownCount: shownCount, exists: exists, unfingerprinted: gap,
 		reason: jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask),
 	}, ""
@@ -341,6 +372,9 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		Profile: profileName, ProfileRoot: profileRoot, Ask: ask, Outputs: outputs, Extra: extra,
 		PathEnv: spec.PathEnv, Home: spec.Home, Fingerprint: after,
 		Description: spec.Description, ApprovedUnix: time.Now().Unix(),
+	}
+	for _, st := range pj.settings {
+		j.Settings = append(j.Settings, job.Setting{Var: st.Var, Path: st.Path})
 	}
 	for _, src := range sources {
 		j.Secrets = append(j.Secrets, job.Secret{

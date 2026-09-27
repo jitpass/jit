@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"github.com/jitpass/jit/internal/profile"
 	"os"
 	"path/filepath"
 	"slices"
@@ -87,8 +88,12 @@ func TestUnmountEnvFileLeavesVaultAndProfileIntact(t *testing.T) {
 	if _, err := os.Stat(applied.ProfilePath); err != nil {
 		t.Errorf("profile manifest %s should still exist after unmount: %v", applied.ProfilePath, err)
 	}
-	if got, err := v.Get(applied.ProfileName + "/GREETING"); err != nil || string(got) != "hello" {
-		t.Errorf("vault secret should still exist after unmount, got (%q, %v)", got, err)
+	p, err := profile.LoadFile(applied.ProfilePath)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if got, err := storedValue(v, p["GREETING"]); err != nil || string(got) != "hello" {
+		t.Errorf("stored value should still exist after unmount, got (%q, %v)", got, err)
 	}
 }
 

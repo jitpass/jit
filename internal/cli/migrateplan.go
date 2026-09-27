@@ -163,23 +163,21 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		}
 		_, _ = cBold.Fprintf(w, "%s\n\n", scopedHeader)
 		printMigratePlanCategoryAnnotated(w,
-			pluralWord(len(d.envFiles), ".env file", ".env files")+" "+glyphAction+" EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
+			pluralWord(len(d.envFiles), ".env file", ".env files")+" "+glyphAction+" secrets move to the vault; settings stay as plain text, and the file keeps working as a live, auto-updating mount",
 			shorten(d.envFiles),
 			func(item string) string {
 				if migrate.IsEnvBackupOnlySuffix(filepath.Base(item)) {
 					return "backup-suffixed, replaced with a safe pointer file instead, never mounted"
 				}
-				// Per-file counts, because "3 change(s)" (three FILES) was the
-				// only number the plan gave for an operation that moves every
-				// variable in each of them into the vault.
-				total, shaped, ok := migrate.EnvFilePreview(envOriginal[item])
-				if !ok || total == 0 {
+				// Per-file, because the plan is the consent: it says what
+				// goes to the vault and what stays plain, with the user's
+				// --secret/--setting already applied, before anything moves.
+				split, _ := loadMigrateSplit() // refused before planning if malformed
+				plan, ok := migrate.EnvFileSplitPreview(envOriginal[item], split.forFile(envOriginal[item]))
+				if !ok || len(plan) == 0 {
 					return ""
 				}
-				if shaped == 0 {
-					return countWord(total, "variable", "variables")
-				}
-				return fmt.Sprintf("%s, %d secret-shaped", countWord(total, "variable", "variables"), shaped)
+				return envSplitLine(plan)
 			})
 		printMigratePlanCategory(w,
 			pluralWord(len(d.tfvarsFiles), "Terraform tfvars file", "Terraform tfvars files")+" "+glyphAction+" secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",

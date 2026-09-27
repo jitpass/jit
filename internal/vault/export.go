@@ -10,6 +10,8 @@ import (
 	"fmt"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/jitpass/jit/internal/settings"
 )
 
 // exportVersion is ExportEnvelope's on-disk schema version — bumped if the
@@ -18,7 +20,16 @@ import (
 // was a bare path→value map; version 2 wraps each value in an exportEntry
 // so a reference-kind secret (envelope.Storage) exports as the reference
 // it is. Import reads both, forever.
-const exportVersion = 2
+//
+// Version 3 is version 2 with plain settings in it (exportStorageSetting),
+// written only when there are any, so a vault with none still exports as a
+// file every earlier jit reads. A jit that predates settings refuses a
+// version 3 file before writing anything, rather than restoring part of it
+// and stopping at the first setting (review of #183).
+const exportVersion = 3
+
+// exportVersionNoSettings is what an export without settings is written as.
+const exportVersionNoSettings = 2
 
 // exportEntry is one secret inside a version-2 export payload: the stored
 // payload bytes plus the envelope's storage marker. Carrying storage is
@@ -30,6 +41,13 @@ type exportEntry struct {
 	Value   []byte `json:"value"`
 	Storage string `json:"storage,omitempty"`
 }
+
+// exportStorageSetting marks an export entry that is a plain setting kept
+// beside the vault (design/secrets-only-vault.md), keyed by its
+// jit://setting/ pointer. An export is a machine's restore, and settings are
+// half of what its profiles read. A jit that predates settings refuses the
+// entry (Import's default case) rather than storing it as a secret.
+const exportStorageSetting = "setting"
 
 // Argon2id parameters for deriving an export's encryption key from a
 // passphrase. Deliberately memory-hard and reasonably slow (not vault
@@ -98,6 +116,18 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 		}
 		secrets[path] = exportEntry{Value: value, Storage: storage}
 	}
+	store := settings.New(v.Root)
+	kept, err := store.List()
+	if err != nil {
+		return nil, fmt.Errorf("listing settings: %w", err)
+	}
+	for _, path := range kept {
+		value, err := store.Get(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading setting %s: %w", path, err)
+		}
+		secrets[settings.Pointer(path)] = exportEntry{Value: value, Storage: exportStorageSetting}
+	}
 
 	plaintext, err := json.Marshal(secrets)
 	if err != nil {
@@ -119,8 +149,12 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 		return nil, fmt.Errorf("encrypting export: %w", err)
 	}
 
+	version := exportVersionNoSettings
+	if len(kept) > 0 {
+		version = exportVersion
+	}
 	return &ExportEnvelope{
-		Version: exportVersion,
+		Version: version,
 		Salt:    hex.EncodeToString(salt),
 		Payload: hex.EncodeToString(sealed),
 	}, nil
@@ -131,12 +165,26 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 // secret, so a link is restored as a link (so it needs the same
 // KeyWrapper Set always does), overwriting any existing secret at the
 // same path. Returns the number of secrets restored.
-func (v *Vault) Import(env *ExportEnvelope, passphrase []byte) (int, error) {
+func (v *Vault) Import(env *ExportEnvelope, passphrase []byte) (restored, settingsRestored int, err error) {
 	secrets, err := decryptExport(env, passphrase)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer wipeEntries(secrets)
+
+	// Every entry is checked before any is written: a kind this jit does not
+	// know refuses the file whole, never after overwriting some secrets.
+	for path, entry := range secrets {
+		switch entry.Storage {
+		case "", StorageOpRef:
+		case exportStorageSetting:
+			if _, ok := settings.PathOf(path); !ok {
+				return 0, 0, fmt.Errorf("restoring %s: a setting entry must be keyed by its %s pointer", path, settings.PointerPrefix)
+			}
+		default:
+			return 0, 0, fmt.Errorf("restoring %s: storage kind %q is newer than this jit understands, upgrade jit to import it", path, entry.Storage)
+		}
+	}
 
 	for path, entry := range secrets {
 		switch entry.Storage {
@@ -144,6 +192,10 @@ func (v *Vault) Import(env *ExportEnvelope, passphrase []byte) (int, error) {
 			err = v.Set(path, entry.Value)
 		case StorageOpRef:
 			err = v.SetReference(path, string(entry.Value), Meta{})
+		case exportStorageSetting:
+			setting, _ := settings.PathOf(path)
+			err = settings.New(v.Root).Set(setting, entry.Value)
+			settingsRestored++
 		default:
 			// Same fail-closed stance as Get's storage gate: restoring a
 			// future marker's payload as a literal secret would silently
@@ -151,10 +203,10 @@ func (v *Vault) Import(env *ExportEnvelope, passphrase []byte) (int, error) {
 			err = fmt.Errorf("storage kind %q is newer than this jit understands, upgrade jit to import it", entry.Storage)
 		}
 		if err != nil {
-			return 0, fmt.Errorf("restoring %s: %w", path, err)
+			return 0, 0, fmt.Errorf("restoring %s: %w", path, err)
 		}
 	}
-	return len(secrets), nil
+	return len(secrets) - settingsRestored, settingsRestored, nil
 }
 
 // VerifyExportPassphrase decrypts env just to confirm passphrase is

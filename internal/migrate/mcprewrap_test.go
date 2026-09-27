@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 )
 
 // readServerEntry pulls one server's command and args back out of a rewritten
@@ -373,5 +376,52 @@ func TestDiscoverMCPConfigsIgnoresAHealthyWrapper(t *testing.T) {
 	}
 	if len(configs) != 0 {
 		t.Errorf("DiscoverMCPConfigs = %v, want a healthy single wrapper left alone", configs)
+	}
+}
+
+// The carried profile may hold plain settings (a profile made from a .env,
+// design/secrets-only-vault.md). Carrying reads them from the settings store
+// instead of failing on the pointer (review of #183), and they land in the
+// new profile's vault entries.
+func TestApplyMCPConfigRewrapCarriesSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	pathA := filepath.Join(home, "projA", "mcp.json")
+	writeFile(t, pathA, `{"mcpServers":{"ledger":{"command":"ledger-server","args":["serve"],
+		"env":{"LEDGER_URL":"url-a","LEDGER_KEY":"key-a"}}}}`)
+	if _, err := ApplyMCPConfig(v, pathA); err != nil {
+		t.Fatalf("ApplyMCPConfig(A): %v", err)
+	}
+	// A's LEDGER_URL is a plain setting now, as a move-out would leave it.
+	manifest, err := profile.Path(home, "mcp-ledger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.New(v.Root).Set("mcp-ledger/LEDGER_URL", []byte("url-a")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := profile.MarshalOrdered(profile.Profile{
+		"LEDGER_URL": settings.Pointer("mcp-ledger/LEDGER_URL"),
+		"LEDGER_KEY": "mcp-ledger/LEDGER_KEY",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, manifest, string(data))
+
+	pathB := filepath.Join(home, "projB", "mcp.json")
+	writeFile(t, pathB, `{"mcpServers":{"ledger":{
+		"command":"/usr/local/bin/jit",
+		"args":["run","--profile","mcp-ledger","--","ledger-server","serve"],
+		"env":{"LEDGER_TOKEN":"token-b"}}}}`)
+	result, err := ApplyMCPConfig(v, pathB)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig(B) over a profile with a setting: %v", err)
+	}
+	ns := result.Servers[0].ProfileName
+	if got, gerr := v.Get(ns + "/LEDGER_URL"); gerr != nil || string(got) != "url-a" {
+		t.Errorf("%s/LEDGER_URL = (%q, %v), want the carried setting", ns, got, gerr)
 	}
 }

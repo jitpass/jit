@@ -8,12 +8,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -134,5 +136,41 @@ func TestMergeEnvEmptyBase(t *testing.T) {
 	merged := MergeEnv(nil, map[string]string{"A": "1"})
 	if len(merged) != 1 || merged[0] != "A=1" {
 		t.Errorf("MergeEnv(nil, {A:1}) = %v, want [A=1]", merged)
+	}
+}
+
+// A setting resolves from the store beside the vault, next to a secret that
+// still decrypts, and never reaches the vault at all.
+func TestResolveReadsSettingsBesideSecrets(t *testing.T) {
+	v := &vault.Vault{Root: t.TempDir(), KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.Set("billing-sync/CLIENT_SECRET", []byte("fixture-secret")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := settings.New(v.Root).Set("billing-sync/BILLING_URL", []byte("https://billing.example.com")); err != nil {
+		t.Fatalf("settings Set: %v", err)
+	}
+	got, err := Resolve(v, profile.Profile{
+		"CLIENT_SECRET": "billing-sync/CLIENT_SECRET",
+		"BILLING_URL":   settings.Pointer("billing-sync/BILLING_URL"),
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := map[string]string{"CLIENT_SECRET": "fixture-secret", "BILLING_URL": "https://billing.example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Resolve = %v, want %v", got, want)
+	}
+	if ok, _ := v.Exists("billing-sync/BILLING_URL"); ok {
+		t.Error("the setting reached the vault")
+	}
+}
+
+// A missing setting fails as loudly as a missing secret: a program started
+// without a variable it expects is worse than one that does not start.
+func TestResolveMissingSettingFailsLoud(t *testing.T) {
+	v := &vault.Vault{Root: t.TempDir(), KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	_, err := Resolve(v, profile.Profile{"BILLING_URL": settings.Pointer("billing-sync/BILLING_URL")})
+	if !errors.Is(err, settings.ErrNotFound) {
+		t.Errorf("Resolve with a missing setting = %v, want settings.ErrNotFound", err)
 	}
 }

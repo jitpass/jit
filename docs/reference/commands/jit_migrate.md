@@ -92,13 +92,15 @@ jit migrate <file-or-dir>... [flags]
 ### Options
 
 ```
-      --clean           also delete files whose stated fix is deletion (Trash copies, archived copies whose secrets are all vaulted, AI agent cache leftovers); each is backed up encrypted first and jit migrate undo restores it; gated by its own y/N plus Touch ID
-      --dry-run         preview the plan without changing anything
-      --format string   output format: "text" (default), or "json": one document on stdout naming what was vaulted, what the agent-cache sweep removed and what it left, plus the text report; needs --yes (default "text")
-      --mount           for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
-      --no-1password    store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
-      --only strings    scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,cargo,streamlit,loose,cache (default: all)
-  -y, --yes             skip the confirmation prompt and proceed immediately
+      --clean                 also delete files whose stated fix is deletion (Trash copies, archived copies whose secrets are all vaulted, AI agent cache leftovers); each is backed up encrypted first and jit migrate undo restores it; gated by its own y/N plus Touch ID
+      --dry-run               preview the plan without changing anything
+      --format string         output format: "text" (default), or "json": one document on stdout naming what was vaulted, what the agent-cache sweep removed and what it left, plus the text report; needs --yes (default "text")
+      --mount                 for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --no-1password          store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
+      --only strings          scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,cargo,streamlit,loose,cache (default: all)
+      --secret stringArray    send this .env variable to the vault even if the scan calls it a setting: NAME, or FILE:NAME for one file (repeatable)
+      --setting stringArray   keep this .env variable as a plain setting beside the vault even if the scan calls it a secret: NAME, or FILE:NAME for one file (repeatable)
+  -y, --yes                   skip the confirmation prompt and proceed immediately
 ```
 
 ### Options inherited from parent commands
@@ -113,7 +115,9 @@ jit migrate <file-or-dir>... [flags]
 * [jit migrate caches](jit_migrate_caches.md)	 - Remove copies of your vaulted secrets that AI agents cached (whole-vault sweep)
 * [jit migrate forget](jit_migrate_forget.md)	 - Delete a pointer file nothing uses any more
 * [jit migrate path](jit_migrate_path.md)	 - Alias for `jit migrate <file-or-dir>...`
+* [jit migrate preview](jit_migrate_preview.md)	 - Show where each .env variable would go, before anything moves
 * [jit migrate redact](jit_migrate_redact.md)	 - Replace tokens AI agents cached — found by their format — with a marker
 * [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from a project completely (restore plaintext, delete its secrets)
+* [jit migrate settings](jit_migrate_settings.md)	 - Move the plain settings out of profiles protected before settings stayed plain
 * [jit migrate undo](jit_migrate_undo.md)	 - Restore named migrated files from their encrypted pre-migration backups
 

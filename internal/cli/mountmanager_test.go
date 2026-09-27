@@ -18,6 +18,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -565,6 +566,54 @@ func TestEnsureServingDecoyCarriesNotice(t *testing.T) {
 	}
 	if !strings.Contains(decoy, "jit run") {
 		t.Errorf("decoy content = %q, want the self-diagnosing notice naming a jit run grant", decoy)
+	}
+}
+
+// A plain setting is real in the decoy every reader gets; the secret beside
+// it is still a placeholder (design/secrets-only-vault.md).
+func TestEnsureServingDecoyCarriesRealSettings(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	manifest := "API_KEY: fixture/API_KEY\nBILLING_URL: " + settings.Pointer("fixture/BILLING_URL") + "\n"
+	if err := os.WriteFile(profilePath, []byte(manifest), 0o600); err != nil {
+		t.Fatalf("writing fixture profile: %v", err)
+	}
+	if err := settings.New(dir).Set("fixture/BILLING_URL", []byte("https://billing.example.com")); err != nil {
+		t.Fatalf("settings Set: %v", err)
+	}
+	mountPath := filepath.Join(dir, ".env")
+	if err := mount.CreateFIFO(mountPath); err != nil {
+		t.Fatalf("creating fixture FIFO: %v", err)
+	}
+
+	m := &mountManager{root: dir, stdout: io.Discard, stderr: io.Discard}
+	m.ensureServing([]mount.Entry{{MountPath: mountPath, ProfilePath: profilePath}})
+	defer m.shutdown()
+
+	m.mu.Lock()
+	sm := m.served[mountPath]
+	m.mu.Unlock()
+	if sm == nil {
+		t.Fatal("mount not served")
+	}
+	sm.mu.Lock()
+	decoy := string(sm.decoy)
+	sm.mu.Unlock()
+
+	if !strings.Contains(decoy, "BILLING_URL=https://billing.example.com") {
+		t.Errorf("decoy = %q, want the real setting", decoy)
+	}
+	if !strings.Contains(decoy, "API_KEY=jit-hidden-API_KEY") {
+		t.Errorf("decoy = %q, want the secret still a placeholder", decoy)
+	}
+
+	// A setting that changes after serving began (moved in or out, or its
+	// value edited) is what the next reader gets, with no refresh.
+	if err := settings.New(dir).Set("fixture/BILLING_URL", []byte("https://billing-2.example.com")); err != nil {
+		t.Fatalf("settings Set: %v", err)
+	}
+	if got := string(m.serveContent(mountPath, sm)); !strings.Contains(got, "BILLING_URL=https://billing-2.example.com") {
+		t.Errorf("served after the change = %q, want the new setting", got)
 	}
 }
 

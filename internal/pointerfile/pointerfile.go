@@ -28,7 +28,11 @@
 // has for the output vocabulary.
 package pointerfile
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jitpass/jit/internal/settings"
+)
 
 const (
 	// Header is the first line of a file jit rewrote in place. Matched as a
@@ -67,11 +71,20 @@ const (
 	CompanionSuffix = ".pointers"
 )
 
-// Value renders vaultPath as a pointer value.
-func Value(vaultPath string) string { return ValuePrefix + vaultPath }
+// Value renders a manifest entry as a pointer value: a vault path gains the
+// jit://vault/ prefix, and a plain setting keeps the jit://setting/ pointer
+// it already is (design/secrets-only-vault.md).
+func Value(vaultPath string) string {
+	if settings.IsPointer(vaultPath) {
+		return vaultPath
+	}
+	return ValuePrefix + vaultPath
+}
 
-// IsValue reports whether s is a pointer rather than a real credential.
-func IsValue(s string) bool { return strings.HasPrefix(s, ValuePrefix) }
+// IsValue reports whether s is a pointer rather than a real credential: to
+// the vault, or to a plain setting beside it. Neither may be stored as though
+// it were a credential.
+func IsValue(s string) bool { return strings.HasPrefix(s, ValuePrefix) || settings.IsPointer(s) }
 
 // VaultPath returns the vault path a pointer value names, and whether s was a
 // pointer at all. Callers that only need the yes/no want IsValue.

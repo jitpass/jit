@@ -498,6 +498,11 @@ var migrateCmd = &cobra.Command{
 		if err := validateOutputFormat(migrateFormat); err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
+		// A malformed --secret/--setting is refused before discovery, the
+		// plan or any prompt: the plan must show the split it will apply.
+		if _, err := loadMigrateSplit(); err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
 		if len(args) == 0 {
 			if migrateFormat == "json" {
 				return errors.New("jit migrate: --format json is for `jit migrate <path>`; the bare run's plan is interactive")
@@ -519,6 +524,11 @@ var migratePathCmd = &cobra.Command{
 	Args:  requirePaths("jit migrate path"),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateOutputFormat(migrateFormat); err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		// A malformed --secret/--setting is refused before discovery, the
+		// plan or any prompt: the plan must show the split it will apply.
+		if _, err := loadMigrateSplit(); err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
 		return runMigratePath(cmd, args)
@@ -954,9 +964,18 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			// produce a nonsensical profile name/path disconnected from the
 			// project the secret actually came from.
 			envProfilesRoot := filepath.Dir(envPath)
-			result, err := migrate.ApplyEnvFile(v, envProfilesRoot, envPath)
+			split, err := loadMigrateSplit()
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			result, err := migrate.ApplyEnvFileSplit(v, envProfilesRoot, envPath, split.forFile(envPath))
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			if cleanInputs != nil {
+				for _, name := range result.Settings {
+					cleanInputs.settings = append(cleanInputs.settings, result.ProfileName+"/"+name)
+				}
 			}
 			// A backup-suffixed file (.bak/.old/.orig/.backup) never
 			// became a live mount at all (GAPS.md #34) — ApplyEnvFile
@@ -967,7 +986,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			if !result.Mounted {
 				summary.backupOnlyFiles++
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
-					displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
+					displayPath(home, envPath), result.ProfileName, envResultCounts(result), result.BackupPath)))
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 				noteKeptVariables(out, result.KeptVariables, result.ProfileName)
 				noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
@@ -976,7 +995,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			if err := addMount(mount.Entry{MountPath: result.EnvPath, ProfilePath: result.ProfilePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", result.EnvPath, err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, envResultCounts(result), result.BackupPath)))
+			noteChecks(out, result)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			noteKeptVariables(out, result.KeptVariables, result.ProfileName)
 			noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
@@ -1572,7 +1592,10 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 // declined plan, a dry run), which the clean phase never reaches anyway.
 type cleanPhaseInputs struct {
 	vaulted []migrate.AgentCacheSecret
-	swept   map[string]bool
+	// settings are the .env variables kept as plain settings, as
+	// "profile/NAME", for --format json (design/secrets-only-vault.md).
+	settings []string
+	swept    map[string]bool
 	// live are the files the cache sweep left alone because an agent
 	// session was writing them — the clean pass must refuse those too
 	// (design/migrate-clean.md D2's SkipLive exclusion).
@@ -2440,6 +2463,13 @@ func init() {
 	const no1pUsage = "store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)"
 	migrateCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
 	migratePathCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
+	// Local like --mount: only a run that vaults a .env reads them.
+	const toVaultUsage = "send this .env variable to the vault even if the scan calls it a setting: NAME, or FILE:NAME for one file (repeatable)"
+	const keepPlainUsage = "keep this .env variable as a plain setting beside the vault even if the scan calls it a secret: NAME, or FILE:NAME for one file (repeatable)"
+	for _, c := range []*cobra.Command{migrateCmd, migratePathCmd} {
+		c.Flags().StringArrayVar(&migrateSecretNames, "secret", nil, toVaultUsage)
+		c.Flags().StringArrayVar(&migrateSettingNames, "setting", nil, keepPlainUsage)
+	}
 	// Local like --mount: undo/remove/caches never delete scan findings.
 	// Wording promises the safety net up front — the flag's whole risk is
 	// deletion, so the one fact that changes the decision (encrypted

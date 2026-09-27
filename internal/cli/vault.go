@@ -30,6 +30,7 @@ import (
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/pasteboard"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/termtext"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -112,6 +113,11 @@ type vaultSecretJSON struct {
 	// vault rm`'s warning make. Omitted when nothing references it, so a
 	// delete dialog can say "used by wrap-gh" before the user confirms.
 	UsedBy []string `json:"used_by,omitempty"`
+	// Scan is what the scan said of the value when it went into the vault:
+	// "secret", "check" or "setting" (the user sent a setting in), from the
+	// class index beside the vault. Omitted when unknown: vaulted before the
+	// index existed (design/secrets-only-vault.md).
+	Scan string `json:"scan,omitempty"`
 }
 
 // vaultGetResult is `jit vault get --json`'s object: the decrypted value plus
@@ -1380,6 +1386,12 @@ var vaultListCmd = &cobra.Command{
 			// profile is skipped, never an error): prompt-free plain
 			// files, so the snapshot can afford them on every list.
 			refs := referencesForPaths(root, cwd, secrets)
+			// Advisory, like Scan itself: an unreadable index leaves every
+			// class unknown rather than failing the listing.
+			classes, cerr := settings.LoadClasses(root)
+			if cerr != nil {
+				classes = nil
+			}
 			out := vaultListResult{Secrets: make([]vaultSecretJSON, 0, len(secrets)), Backups: backups}
 			for _, p := range secrets {
 				info := meta[p]
@@ -1401,6 +1413,7 @@ var vaultListCmd = &cobra.Command{
 					CreatedUnix:    info.CreatedUnix,
 					UpdatedUnix:    info.UpdatedUnix,
 					Storage:        info.Storage,
+					Scan:           classOf(classes, p),
 				})
 			}
 			return writeJSON(cmd.OutOrStdout(), out)
@@ -1719,7 +1732,12 @@ var vaultExportCmd = &cobra.Command{
 			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("warning: recording export time for `jit status`: %v\n", err)))
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s.\n", countWord(len(paths), "secret", "secrets"), destPath)
+		kept, _ := settings.New(v.Root).List()
+		what := countWord(len(paths), "secret", "secrets")
+		if len(kept) > 0 {
+			what += " and " + countWord(len(kept), "setting", "settings")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s.\n", what, destPath)
 		return nil
 	},
 }
@@ -1792,11 +1810,15 @@ var vaultImportCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault import: %w", err)
 		}
-		n, err := v.Import(&env, passphrase)
+		n, kept, err := v.Import(&env, passphrase)
 		if err != nil {
 			return fmt.Errorf("jit vault import: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", countWord(n, "secret", "secrets"), srcPath)
+		what := countWord(n, "secret", "secrets")
+		if kept > 0 {
+			what += " and " + countWord(kept, "setting", "settings")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", what, srcPath)
 		reportLostKeyRestore(cmd, v.Root)
 		return nil
 	},
@@ -3078,4 +3100,12 @@ func init() {
 
 	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultHistoryCmd, vaultRestoreCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultOrphansCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
 	rootCmd.AddCommand(vaultCmd)
+}
+
+// classOf is a path's recorded scan class, "" when there is no index.
+func classOf(c *settings.Classes, path string) string {
+	if c == nil {
+		return ""
+	}
+	return c.Get(path)
 }

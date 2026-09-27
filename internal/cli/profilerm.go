@@ -17,7 +17,6 @@ import (
 	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
-	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -195,9 +194,9 @@ func runProfileRm(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("jit profile rm: %w", err)
 		}
 		for _, p := range plan.deletePaths {
-			if err := v.Remove(p); err != nil && !errors.Is(err, vault.ErrNotFound) {
+			if err := removeVaultEntry(v, p); err != nil {
 				invocationDeleted = removed
-				return fmt.Errorf("jit profile rm: deleting %s: %w", p, err)
+				return fmt.Errorf("jit profile rm: %w", err)
 			}
 			removed = append(removed, p)
 		}
@@ -269,7 +268,7 @@ func planProfileRm(m *launchers.Map, home, name, manifest string) (profileRmPlan
 	self := canonicalPath(manifest)
 	origins := map[string]int{}
 	for _, path := range uniqueValues(p.Values) {
-		ok, err := v.Exists(path)
+		ok, err := vaultEntryExists(v, path)
 		if err != nil {
 			return plan, fmt.Errorf("checking %s: %w", path, err)
 		}
