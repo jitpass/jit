@@ -1135,6 +1135,23 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			summary.checkGitHistory(mcpPath)
 
 			result, err := migrate.ApplyMCPConfig(v, mcpPath)
+			// A config whose only credential is an --env-file jit already
+			// protected — by this run's .env pass, which goes first, or an
+			// earlier one — has nothing left to move. That is done, not a
+			// failure: failing here stopped Protect All after the .env was
+			// vaulted, and the report then said nothing had changed.
+			if errors.Is(err, migrate.ErrNoMCPSecrets) {
+				if protected := migrate.ProtectedMCPEnvFiles(mcpPath); len(protected) > 0 {
+					shown := make([]string, len(protected))
+					for i, p := range protected {
+						shown[i] = displayPath(home, p)
+					}
+					fmt.Fprintf(out, "  "+glyphBullet+" %s: nothing left to move; its secrets are in %s, already protected\n",
+						displayPath(home, mcpPath), strings.Join(shown, ", "))
+					noteSkippedProjects(out, result.SkippedProjects)
+					continue
+				}
+			}
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
@@ -1145,14 +1162,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				noteRewrap(out, sm.RewrappedFrom)
 				noteDuplicateValues(out, v, dupIdx.get(), sm.ProfileName, sm.Variables)
 			}
-			// A project block that could not be parsed still holds whatever
-			// `jit scan` flagged. Saying nothing here would report success
-			// over a file that is still partly exposed — the exact
-			// zero-errors dead end the projects support exists to close.
-			for _, dir := range result.SkippedProjects {
-				fmt.Fprintf(out, "  %s project block %s couldn't be parsed, left unchanged\n", glyphWarn, dir)
-				wrapBody(out, 4, "    ", "its servers are NOT migrated; fix the JSON and re-run")
-			}
+			noteSkippedProjects(out, result.SkippedProjects)
 		}
 		fmt.Fprintf(out, "  Restart the %s above to pick up the change.\n", pluralWord(n, "MCP host", "MCP hosts"))
 		fmt.Fprintln(out)
@@ -2499,4 +2509,17 @@ func manifestGroupID(v *vault.Vault, manifestPath string) string {
 		group = info.GroupID
 	}
 	return group
+}
+
+// noteSkippedProjects names each ~/.claude.json project block that could
+// not be parsed. Such a block still holds whatever `jit scan` flagged, so
+// saying nothing would report success over a file that is still partly
+// exposed, the zero-errors dead end the projects support exists to close.
+// Said on every path that reports the config done, including "nothing left
+// to move".
+func noteSkippedProjects(out io.Writer, dirs []string) {
+	for _, dir := range dirs {
+		fmt.Fprintf(out, "  %s project block %s couldn't be parsed, left unchanged\n", glyphWarn, dir)
+		wrapBody(out, 4, "    ", "its servers are NOT migrated; fix the JSON and re-run")
+	}
 }

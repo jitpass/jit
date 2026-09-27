@@ -5,6 +5,7 @@ package migrate
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1243,5 +1244,97 @@ func TestClaudeCodeStoreDegradesSafelyOnMangledProjects(t *testing.T) {
 	}
 	if !strings.Contains(string(projects["/Users/x/broken"]), "not an object") {
 		t.Error("the unparseable block was modified")
+	}
+}
+
+// Protect All names a .env and the .mcp.json that reads it by --env-file in
+// one run, and every .env applies before any MCP config. By the time the
+// config's turn comes its only credential is a live mount, so there is
+// nothing left to move. That must be told apart from a real failure: the run
+// used to stop there, after the .env was already vaulted (2026-09-27).
+func TestProtectedMCPEnvFilesNamesAnEnvFileThisRunMounted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "srv")
+	envPath := filepath.Join(dir, ".env")
+	writeFile(t, envPath, "SRV_TOKEN=fixture-value\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","`+envPath+`","srv"]}}}`)
+
+	v := newTestVault(t)
+	if _, err := ApplyEnvFile(v, dir, envPath); err != nil {
+		t.Fatalf("ApplyEnvFile: %v", err)
+	}
+	_, err := ApplyMCPConfig(v, path)
+	if !errors.Is(err, ErrNoMCPSecrets) {
+		t.Fatalf("ApplyMCPConfig after its .env was protected = %v, want ErrNoMCPSecrets", err)
+	}
+	if got := ProtectedMCPEnvFiles(path); !reflect.DeepEqual(got, []string{envPath}) {
+		t.Errorf("ProtectedMCPEnvFiles = %v, want [%s]: the .env is a live mount now", got, envPath)
+	}
+}
+
+// A pointer file is protected too: the same answer for the shape an earlier
+// run leaves behind.
+func TestProtectedMCPEnvFilesNamesAPointerFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "done.env")
+	writeFile(t, envPath, "# jit pointer file, no secret values here, only vault paths.\nTOKEN=jit://vault/mcp-other/TOKEN\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","`+envPath+`","srv"]}}}`)
+
+	if got := ProtectedMCPEnvFiles(path); !reflect.DeepEqual(got, []string{envPath}) {
+		t.Errorf("ProtectedMCPEnvFiles = %v, want [%s]", got, envPath)
+	}
+}
+
+// The negative: a plain .env that still holds values, and a server with no
+// --env-file at all, are not "already protected". The caller keeps its error.
+func TestProtectedMCPEnvFilesIgnoresPlainFilesAndServersWithout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "live.env")
+	writeFile(t, envPath, "SRV_TOKEN=fixture-value\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{
+		"a":{"command":"uv","args":["run","--env-file","`+envPath+`","a"]},
+		"b":{"command":"b-server"}}}`)
+
+	if got := ProtectedMCPEnvFiles(path); len(got) != 0 {
+		t.Errorf("ProtectedMCPEnvFiles = %v, want none", got)
+	}
+
+	bare := filepath.Join(home, "bare.json")
+	writeFile(t, bare, `{"mcpServers":{"b":{"command":"b-server"}}}`)
+	v := newTestVault(t)
+	if _, err := ApplyMCPConfig(v, bare); !errors.Is(err, ErrNoMCPSecrets) {
+		t.Errorf("ApplyMCPConfig(no secrets) = %v, want ErrNoMCPSecrets", err)
+	}
+	if got := ProtectedMCPEnvFiles(bare); len(got) != 0 {
+		t.Errorf("ProtectedMCPEnvFiles(bare) = %v, want none", got)
+	}
+}
+
+// "Nothing left to move" must not swallow a project block that could not be
+// parsed: that block still holds its secrets in plain text, and the caller
+// that treats ErrNoMCPSecrets as done has to be able to say so.
+func TestNoMCPSecretsStillNamesUnparsedBlocks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "done.env")
+	writeFile(t, envPath, "# jit pointer file, no secret values here, only vault paths.\nTOKEN=jit://vault/other/TOKEN\n")
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, `{
+	  "mcpServers": {"srv": {"command": "uv", "args": ["run", "--env-file", "`+envPath+`", "srv"]}},
+	  "projects": {"/Users/x/broken": {"mcpServers": "not an object"}}
+	}`)
+
+	result, err := ApplyMCPConfig(newTestVault(t), path)
+	if !errors.Is(err, ErrNoMCPSecrets) {
+		t.Fatalf("ApplyMCPConfig = %v, want ErrNoMCPSecrets", err)
+	}
+	if len(result.SkippedProjects) != 1 {
+		t.Errorf("SkippedProjects = %v, want the broken block reported with the error", result.SkippedProjects)
 	}
 }

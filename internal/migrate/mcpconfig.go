@@ -215,6 +215,53 @@ func MCPEnvFilePreview(path string) []string {
 	return found
 }
 
+// ErrNoMCPSecrets is ApplyMCPConfig finding no server with anything to move.
+// A caller tells it apart because one cause is not a failure: a config whose
+// only credential is an --env-file that jit already protected — earlier in
+// the same run (every .env applies before any MCP config) or in an earlier
+// one. See ProtectedMCPEnvFiles.
+var ErrNoMCPSecrets = errors.New("no server with secrets to migrate")
+
+// ProtectedMCPEnvFiles returns the --env-file targets in path that jit has
+// already protected: a live mount (a named pipe) or a pointer file. Their
+// values are in the vault, so a config reading them has nothing left to
+// move. Best-effort, like MCPEnvFilePreview: an unreadable config returns
+// nothing, and the caller keeps its error.
+func ProtectedMCPEnvFiles(path string) []string {
+	_, blocks, _, err := loadMCPFile(path)
+	if err != nil {
+		return nil
+	}
+	var found []string
+	seen := map[string]bool{}
+	for _, b := range blocks {
+		for _, entry := range b.servers {
+			var args []string
+			if raw, ok := entry["args"]; ok {
+				if err := json.Unmarshal(raw, &args); err != nil {
+					continue
+				}
+			}
+			var cwd string
+			if raw, ok := entry["cwd"]; ok {
+				_ = json.Unmarshal(raw, &cwd)
+			}
+			for _, target := range audit.MCPEnvFileArgs(path, cwd, args) {
+				info, err := os.Stat(target)
+				if err != nil || seen[target] {
+					continue
+				}
+				if info.Mode()&fs.ModeNamedPipe != 0 || (info.Mode().IsRegular() && LooksLikePointerContent(target)) {
+					seen[target] = true
+					found = append(found, target)
+				}
+			}
+		}
+	}
+	sort.Strings(found)
+	return found
+}
+
 // ApplyMCPConfig moves every server's secrets in path into v's vault — both
 // the env block and any file it reads via --env-file — one profile per server (named "mcp-<server>") stored in the
 // home-rooted global profile store (profile.GlobalRoot) — an MCP host
@@ -304,7 +351,10 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 		}
 	}
 	if len(result.Servers) == 0 {
-		return MCPConfigMigration{}, fmt.Errorf("%s has no server with secrets to migrate", path)
+		// The project blocks that could not be parsed go back with the
+		// error: a caller that treats ErrNoMCPSecrets as done must still say
+		// those blocks were left exposed.
+		return MCPConfigMigration{FilePath: path, SkippedProjects: skippedProjects}, fmt.Errorf("%s has %w", path, ErrNoMCPSecrets)
 	}
 
 	// Every server planned; only now does anything reach the vault or the
