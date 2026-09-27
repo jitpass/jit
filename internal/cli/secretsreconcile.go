@@ -9,6 +9,7 @@ import (
 
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -150,9 +151,16 @@ func reconcileSecrets(root, cwd string, v *vault.Vault) (secretsReconciliation, 
 		if info.Scope == profile.ScopeProject {
 			target = projectRefs
 			rec.WiredProfiles++
-			rec.WiredRefs += len(p)
 		}
 		for _, vaultPath := range p {
+			// A plain setting is not a vault reference: it is neither wired
+			// to a secret nor missing from the vault.
+			if settings.IsPointer(vaultPath) {
+				continue
+			}
+			if info.Scope == profile.ScopeProject {
+				rec.WiredRefs++
+			}
 			target[vaultPath] = true
 		}
 	}

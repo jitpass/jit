@@ -77,6 +77,7 @@ func execMigrate(t *testing.T, args ...string) (stdout string, err error) {
 	migrateNo1Password = false
 	migrateClean = false
 	migrateFormat = "text"
+	migrateSecretNames, migrateSettingNames = nil, nil
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order

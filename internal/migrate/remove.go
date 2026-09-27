@@ -16,6 +16,7 @@ import (
 
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/pointerfile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -76,10 +77,15 @@ func RestorePointerFile(v *vault.Vault, path string) ([]string, error) {
 			continue
 		}
 		name, ref, ok := strings.Cut(trimmed, "=")
-		if !ok || !strings.HasPrefix(ref, pointerValuePrefix) {
+		if !ok || (!strings.HasPrefix(ref, pointerValuePrefix) && !settings.IsPointer(ref)) {
 			return nil, fmt.Errorf("%s line %d isn't a jit pointer line, refusing to restore a file jit doesn't fully understand", path, i+1)
 		}
-		secret, err := v.Get(strings.TrimPrefix(ref, pointerValuePrefix))
+		var secret []byte
+		if setting, isSetting := settings.PathOf(ref); isSetting {
+			secret, err = settings.New(v.Root).Get(setting)
+		} else {
+			secret, err = v.Get(strings.TrimPrefix(ref, pointerValuePrefix))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("resolving %s (%s): %w", name, ref, err)
 		}

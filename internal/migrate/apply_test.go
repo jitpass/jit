@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -62,6 +63,16 @@ func (f *fakeKeyWrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
 	}
 	nonce, ciphertext := wrapped[:gcm.NonceSize()], wrapped[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// storedValue reads what one manifest entry names, a vault secret or a plain
+// setting beside it (design/secrets-only-vault.md), so a test about where a
+// value went need not care which kind the classifier made it.
+func storedValue(v *vault.Vault, entry string) ([]byte, error) {
+	if path, ok := settings.PathOf(entry); ok {
+		return settings.New(v.Root).Get(path)
+	}
+	return v.Get(entry)
 }
 
 func newTestVault(t *testing.T) *vault.Vault {
@@ -580,9 +591,9 @@ func TestApplyEnvFileVariantSuffixDisambiguatesProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profile.LoadFile(.env): %v", err)
 	}
-	got, err := v.Get(envProfile["SHARED"])
+	got, err := storedValue(v, envProfile["SHARED"])
 	if err != nil {
-		t.Fatalf("v.Get(%s): %v", envProfile["SHARED"], err)
+		t.Fatalf("storedValue(%s): %v", envProfile["SHARED"], err)
 	}
 	if string(got) != "from-env" {
 		t.Errorf(".env's SHARED = %q after .env.bak was migrated, want %q, .env.bak must not overwrite .env's vault value", got, "from-env")

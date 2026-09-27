@@ -179,9 +179,18 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 		}
 	}
 
+	// Built before the lock: it reads files. Only used when the choice below
+	// is the decoy.
+	var fresh []byte
+	if sm.buildDecoy != nil {
+		fresh = sm.buildDecoy()
+	}
 	now := time.Now()
 	sm.mu.Lock()
 	content, decoy := sm.decoy, true
+	if fresh != nil {
+		content = fresh
+	}
 	if sm.real != nil && authorized {
 		content, decoy = sm.real, false
 	}

@@ -88,8 +88,13 @@ are four kinds of reader:
   grant. A decoy exists to stand in for a secret, and a setting was never
   secret. A program without a grant now reads a file whose settings are real
   and whose secrets are decoys, which is closer to what it expects than
-  today's all-decoy file.
+  today's all-decoy file. The decoy is built per read, so a setting moved
+  into or out of the vault is current for the next reader with no refresh.
+  A move never changes a value, so the real content a grant serves stays
+  correct as it is.
 - **Writers** keep both kinds of entry as they found them.
+- **AI jobs** record their settings at approval, and each setting's file
+  joins the job's fingerprint (D8).
 
 ## Moving one value
 
@@ -124,3 +129,12 @@ Findings.
 - **D6:** moving a counted secret out is allowed, with the row warning and
   Cancel as the default button.
 - **D7:** settings live outside the manifest (above).
+- **D8:** an AI job's settings are covered by its fingerprint. A setting
+  is plain, so anything running as the user can change it, and a vault
+  entry cannot be changed without Touch ID. For `jit run` and the live mount
+  that is no weaker than today: a program that can edit a setting can edit
+  the code it configures. An approved job is different: its fingerprint
+  exists so that nothing it loads changes under it, and a `BILLING_URL`
+  pointed elsewhere would send the job's secret there. So the setting's
+  file is fingerprinted with the job, and a change stops it until it is
+  approved again.

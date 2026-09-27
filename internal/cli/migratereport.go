@@ -38,6 +38,9 @@ type migrateReport struct {
 	// "github.com/oauth_token" — the last segment of each vault path,
 	// once each. Names only.
 	Vaulted []string `json:"vaulted"`
+	// Settings are the .env variables kept as plain settings beside the
+	// vault, as "profile/NAME" (design/secrets-only-vault.md). Names only.
+	Settings []string `json:"settings"`
 	// Caches is the agent-cache sweep's result: the files it rewrote and
 	// the files it deliberately left alone, each with why.
 	Caches migrateCacheReport `json:"caches"`
@@ -71,10 +74,11 @@ type cacheFileReport struct {
 // indexes without checking.
 func newMigrateReport() *migrateReport {
 	return &migrateReport{
-		Targets: []string{},
-		Vaulted: []string{},
-		Caches:  migrateCacheReport{Removed: []cacheFileReport{}, Left: []cacheFileReport{}},
-		Errors:  []string{},
+		Targets:  []string{},
+		Vaulted:  []string{},
+		Settings: []string{},
+		Caches:   migrateCacheReport{Removed: []cacheFileReport{}, Left: []cacheFileReport{}},
+		Errors:   []string{},
 	}
 }
 
@@ -82,6 +86,7 @@ func newMigrateReport() *migrateReport {
 // (from the same OnSet capture the cache sweep hunts with; only the Var
 // half is kept) and the sweep's edits and skips.
 func (r *migrateReport) fill(in cleanPhaseInputs) {
+	r.Settings = append(r.Settings, in.settings...)
 	seen := map[string]bool{}
 	for _, s := range in.vaulted {
 		if s.Var == "" || seen[s.Var] {

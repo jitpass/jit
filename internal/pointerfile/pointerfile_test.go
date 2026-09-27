@@ -105,3 +105,18 @@ func TestNoRawFormatSpellingsOutsideThisPackage(t *testing.T) {
 			strings.Join(offenders, "\n  "))
 	}
 }
+
+// A plain setting's entry is already a pointer: rendered as itself, never as
+// jit://vault/jit://setting/…, and never mistaken for a credential.
+func TestValueKeepsASettingPointer(t *testing.T) {
+	const entry = "jit://setting/billing-sync/BILLING_URL"
+	if got := Value(entry); got != entry {
+		t.Errorf("Value(%q) = %q, want it unchanged", entry, got)
+	}
+	if !IsValue(entry) {
+		t.Errorf("IsValue(%q) = false; a setting pointer would be stored as a credential", entry)
+	}
+	if _, ok := VaultPath(entry); ok {
+		t.Errorf("VaultPath(%q) read a setting pointer as a vault path", entry)
+	}
+}

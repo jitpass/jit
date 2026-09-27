@@ -22,6 +22,7 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -443,8 +444,8 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	// clean`/`rm` deleted earlier) is the desired end state, not a failure
 	// worth stranding the removal halfway over.
 	for _, sp := range plan.deletePaths {
-		if err := v.Remove(sp); err != nil && !errors.Is(err, vault.ErrNotFound) {
-			return fmt.Errorf("jit migrate remove: deleting vault secret %s: %w", sp, err)
+		if err := removeVaultEntry(v, sp); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
 		}
 	}
 	for _, rec := range plan.backups {
@@ -694,8 +695,8 @@ func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
 	// A secret already gone is the desired end state, not a failure worth
 	// stranding the removal halfway.
 	for _, sp := range plan.deletePaths {
-		if err := v.Remove(sp); err != nil && !errors.Is(err, vault.ErrNotFound) {
-			return fmt.Errorf("jit migrate remove: deleting vault secret %s: %w", sp, err)
+		if err := removeVaultEntry(v, sp); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
 		}
 	}
 
@@ -1501,4 +1502,28 @@ func displayJitDirs(home string, dirs []string) string {
 func init() {
 	migrateRemoveCmd.Flags().BoolVarP(&migrateRemoveYes, "yes", "y", false, "skip the confirmation prompt and remove immediately")
 	migrateCmd.AddCommand(migrateRemoveCmd)
+}
+
+// removeVaultEntry deletes what one manifest entry names: a vault secret, or
+// a plain setting beside the vault (design/secrets-only-vault.md). Either
+// one already gone is the desired end state.
+func removeVaultEntry(v *vault.Vault, entry string) error {
+	if path, ok := settings.PathOf(entry); ok {
+		if err := settings.New(v.Root).Remove(path); err != nil {
+			return fmt.Errorf("deleting setting %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := v.Remove(entry); err != nil && !errors.Is(err, vault.ErrNotFound) {
+		return fmt.Errorf("deleting vault secret %s: %w", entry, err)
+	}
+	return nil
+}
+
+// vaultEntryExists is Exists for either kind of manifest entry.
+func vaultEntryExists(v *vault.Vault, entry string) (bool, error) {
+	if path, ok := settings.PathOf(entry); ok {
+		return settings.New(v.Root).Exists(path)
+	}
+	return v.Exists(entry)
 }

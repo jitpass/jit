@@ -16,6 +16,7 @@ import (
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -185,6 +186,33 @@ type EnvFileMigration struct {
 	// companion when this is false — EnvPath already IS the pointer
 	// file at that point.
 	Mounted bool
+	// Settings are the variables kept as plain settings beside the vault
+	// rather than in it (design/secrets-only-vault.md), in file order.
+	// Variables still lists every variable the file declared.
+	Settings []string
+	// Checks are the variables that went to the vault as class "check": a
+	// name that looks like a secret holding a value that does not. They are
+	// the ones worth a second look.
+	Checks []string
+}
+
+// EnvSplit is the user's word on where a variable goes, over
+// audit.ClassifyEnvVar's: a name in Secret goes to the vault, a name in
+// Setting stays plain. A name in neither goes where its class says.
+type EnvSplit struct {
+	Secret  map[string]bool
+	Setting map[string]bool
+}
+
+// inVault decides one variable: the user's word first, then its class.
+func (s EnvSplit) inVault(name string, class audit.EnvVarClass) bool {
+	switch {
+	case s.Secret[name]:
+		return true
+	case s.Setting[name]:
+		return false
+	}
+	return class.InVault()
 }
 
 // DiscoverEnvFiles walks root (a project directory, not the whole home
@@ -257,8 +285,9 @@ func DiscoverEnvFiles(root string) ([]string, error) {
 	return found, nil
 }
 
-// ApplyEnvFile converts one real .env file into a profile manifest (every
-// variable mapped to a vault path), moves each value into v's vault, then
+// ApplyEnvFile converts one real .env file into a profile manifest, moves each
+// secret into v's vault and keeps every other variable as a plain setting
+// beside it (ApplyEnvFileSplit), then
 // replaces the physical file with a FIFO (mount.CreateFIFO) — literally
 // RFC.md Pillar III Tier 3's own description of what jit migrate does to
 // a .env file. Order matters for safety: every vault write and the profile
@@ -266,6 +295,14 @@ func DiscoverEnvFiles(root string) ([]string, error) {
 // failure partway through never leaves the source file gone with nothing
 // usable in its place.
 func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigration, error) {
+	return ApplyEnvFileSplit(v, profilesRoot, envPath, EnvSplit{})
+}
+
+// ApplyEnvFileSplit is ApplyEnvFile with the user's overrides. Only what the
+// scan counts as a secret, and what the user names as one, goes to the
+// vault; every other variable is kept as a plain setting beside it, and the
+// live mount still rebuilds the whole file (design/secrets-only-vault.md).
+func ApplyEnvFileSplit(v *vault.Vault, profilesRoot, envPath string, split EnvSplit) (EnvFileMigration, error) {
 	values, varNames, unparsed, err := parseEnvFile(envPath)
 	if err != nil {
 		return EnvFileMigration{}, fmt.Errorf("parsing %s: %w", envPath, err)
@@ -312,12 +349,28 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 	if err != nil {
 		return EnvFileMigration{}, err
 	}
+	store := settings.New(v.Root)
+	var settingNames, checkNames []string
 	for _, name := range varNames {
 		secretPath := profileName + "/" + name
+		class := audit.ClassifyEnvVar(name, values[name])
+		if !split.inVault(name, class) {
+			// Before the manifest names it and before the file is replaced,
+			// as a vault write is: a failure here leaves the file intact.
+			if err := store.Set(secretPath, []byte(values[name])); err != nil {
+				return EnvFileMigration{}, fmt.Errorf("keeping %s as a setting: %w", name, err)
+			}
+			entries[name] = settings.Pointer(secretPath)
+			settingNames = append(settingNames, name)
+			continue
+		}
 		if err := v.SetWithMeta(secretPath, []byte(values[name]), meta); err != nil {
 			return EnvFileMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
 		}
 		entries[name] = secretPath
+		if class == audit.EnvVarCheck && !split.Secret[name] {
+			checkNames = append(checkNames, name)
+		}
 	}
 
 	if err := writeProfileManifest(profilePath, entries, varNames); err != nil {
@@ -372,6 +425,8 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 		BackupPath:         backupPath,
 		Mounted:            mounted,
 		NamespaceMovedFrom: movedFrom,
+		Settings:           settingNames,
+		Checks:             checkNames,
 	}, nil
 }
 
@@ -493,32 +548,38 @@ var envExportPrefix = regexp.MustCompile(`^export\s+`)
 // occurrence for a name assigned twice — dotenv's last-wins applies to
 // the value only), which is what lets the live mount and the manifest
 // keep the file's own order instead of alphabetizing (issue #4).
-// EnvFilePreview reports what migrating path would move: how many variables
-// the file defines in total, and how many of those have secret-shaped names.
-//
-// It exists for `jit migrate`'s PLAN, which is the moment the user consents
-// to a mutating, credential-touching operation and so is the moment it has to
-// be honest about scope. The plan used to say only "3 change(s)" — three
-// files — while a migration moves EVERY variable in each file into the vault,
-// including ordinary config like PORT=3000 and DEBUG=true. That is the
-// correct behavior (the live mount has to reproduce the whole file, not a
-// subset of it), but a user reading "secrets move to the vault" reasonably
-// expects only the secrets to move, and nothing told them otherwise.
-//
-// An unreadable or unparseable file reports ok=false rather than an error:
-// this only enriches a display line, and a plan must still render for a file
-// the apply step will fail on for its own reasons.
-func EnvFilePreview(path string) (total, secretShaped int, ok bool) {
-	_, names, _, err := parseEnvFile(path)
-	if err != nil {
-		return 0, 0, false
+// EnvVarPlan is where one variable of a .env will go, for a plan shown
+// before anything moves: the user's consent is to this list.
+type EnvVarPlan struct {
+	Name  string
+	Class audit.EnvVarClass
+	// InVault is the decision after the user's overrides.
+	InVault bool
+	// Value is set for a setting only. A value bound for the vault never
+	// leaves this function: the plan shows secrets as dots.
+	Value string
+}
+
+// EnvFileSplitPreview reports, in file order, where migrating path with
+// split would put each variable. It reads the file and classifies; it never
+// touches the vault. ok is false for an unreadable or unparseable file: this
+// only enriches a plan, and a plan must still render for a file the apply
+// step will refuse for its own reasons.
+func EnvFileSplitPreview(path string, split EnvSplit) ([]EnvVarPlan, bool) {
+	values, names, unparsed, err := parseEnvFile(path)
+	if err != nil || len(unparsed) > 0 {
+		return nil, false
 	}
+	out := make([]EnvVarPlan, 0, len(names))
 	for _, n := range names {
-		if audit.LooksLikeSecretKey(n) {
-			secretShaped++
+		class := audit.ClassifyEnvVar(n, values[n])
+		vp := EnvVarPlan{Name: n, Class: class, InVault: split.inVault(n, class)}
+		if !vp.InVault {
+			vp.Value = values[n]
 		}
+		out = append(out, vp)
 	}
-	return len(names), secretShaped, true
+	return out, true
 }
 
 func parseEnvFile(path string) (map[string]string, []string, []int, error) {

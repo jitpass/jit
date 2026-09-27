@@ -13,6 +13,7 @@ import (
 
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 )
 
 // Remedy values. The taxonomy is the user's, not the scanner's: "migrate"
@@ -570,7 +571,14 @@ func countProtectedSecrets(registryPath string) int {
 			n++
 			continue
 		}
-		n += len(p)
+		// Secrets only: a plain setting the mount also serves was never
+		// protected, and counting it made one client secret read as
+		// fourteen (design/secrets-only-vault.md).
+		for _, entry := range p {
+			if !settings.IsPointer(entry) {
+				n++
+			}
+		}
 	}
 	return n
 }

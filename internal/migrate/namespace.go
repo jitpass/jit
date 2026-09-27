@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -76,13 +77,23 @@ func claimNamespace(v *vault.Vault, profilesRoot, base string, varNames []string
 		}
 
 		conflict := false
+		store := settings.New(v.Root)
 		for _, varName := range varNames {
 			secretPath := name + "/" + varName
+			// This namespace is ours when our manifest names the variable in
+			// either form: a secret moves to a setting, or back, on a later
+			// run (design/secrets-only-vault.md). Anything else holding the
+			// path, in the vault or as a setting, belongs to another manifest.
+			ours := entries[varName] == secretPath || entries[varName] == settings.Pointer(secretPath)
 			exists, eerr := v.Exists(secretPath)
 			if eerr != nil {
 				return "", "", nil, "", fmt.Errorf("checking vault path %s: %w", secretPath, eerr)
 			}
-			if exists && entries[varName] != secretPath {
+			settingExists, serr := store.Exists(secretPath)
+			if serr != nil {
+				return "", "", nil, "", fmt.Errorf("checking setting %s: %w", secretPath, serr)
+			}
+			if (exists || settingExists) && !ours {
 				conflict = true
 				break
 			}
