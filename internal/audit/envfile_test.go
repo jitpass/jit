@@ -568,3 +568,37 @@ REDIS_PORT=6379
 		t.Errorf("build metadata must not escalate, got %+v", findings)
 	}
 }
+
+// TestScanEnvFilesNothingToMigrate: an env file with no active KEY=value
+// line was a finding with remedy "migrate", so JitPass offered Protect and
+// `jit migrate` then refused the file ("has no active KEY=value lines").
+// A file with no variables is no finding; one whose variables are all
+// commented out is still plaintext on disk, but the fix is the user's.
+func TestScanEnvFilesNothingToMigrate(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "empty"))
+	mkdirAll(t, filepath.Join(home, "code", "notes"))
+	mkdirAll(t, filepath.Join(home, "code", "commented"))
+	writeFile(t, filepath.Join(home, "code", "empty", ".env"), "")
+	writeFile(t, filepath.Join(home, "code", "notes", ".env"), "\n# fill these in from the team wiki\n\n")
+	writeFile(t, filepath.Join(home, "code", "commented", ".env"), "# PORT=8080\n# LOG_LEVEL=debug\n")
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 (the commented-out file only): %+v", len(findings), findings)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	f := findings[0]
+	if !strings.HasSuffix(f.FilePath, filepath.Join("commented", ".env")) {
+		t.Fatalf("finding is for %s, want the commented-out file", f.FilePath)
+	}
+	if f.Remedy != RemedyManual || f.FixCommand != "" {
+		t.Errorf("remedy %q fix %q, want manual with no command: jit migrate refuses a file with no active lines", f.Remedy, f.FixCommand)
+	}
+	if !strings.Contains(f.Evidence, "commented out, so jit has nothing to move") {
+		t.Errorf("evidence %q does not say why jit cannot act", f.Evidence)
+	}
+}
