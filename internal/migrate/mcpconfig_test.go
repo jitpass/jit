@@ -1315,3 +1315,26 @@ func TestProtectedMCPEnvFilesIgnoresPlainFilesAndServersWithout(t *testing.T) {
 		t.Errorf("ProtectedMCPEnvFiles(bare) = %v, want none", got)
 	}
 }
+
+// "Nothing left to move" must not swallow a project block that could not be
+// parsed: that block still holds its secrets in plain text, and the caller
+// that treats ErrNoMCPSecrets as done has to be able to say so.
+func TestNoMCPSecretsStillNamesUnparsedBlocks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "done.env")
+	writeFile(t, envPath, "# jit pointer file, no secret values here, only vault paths.\nTOKEN=jit://vault/other/TOKEN\n")
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, `{
+	  "mcpServers": {"srv": {"command": "uv", "args": ["run", "--env-file", "`+envPath+`", "srv"]}},
+	  "projects": {"/Users/x/broken": {"mcpServers": "not an object"}}
+	}`)
+
+	result, err := ApplyMCPConfig(newTestVault(t), path)
+	if !errors.Is(err, ErrNoMCPSecrets) {
+		t.Fatalf("ApplyMCPConfig = %v, want ErrNoMCPSecrets", err)
+	}
+	if len(result.SkippedProjects) != 1 {
+		t.Errorf("SkippedProjects = %v, want the broken block reported with the error", result.SkippedProjects)
+	}
+}

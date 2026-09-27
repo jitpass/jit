@@ -1148,6 +1148,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 					}
 					fmt.Fprintf(out, "  "+glyphBullet+" %s: nothing left to move; its secrets are in %s, already protected\n",
 						displayPath(home, mcpPath), strings.Join(shown, ", "))
+					noteSkippedProjects(out, result.SkippedProjects)
 					continue
 				}
 			}
@@ -1161,14 +1162,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				noteRewrap(out, sm.RewrappedFrom)
 				noteDuplicateValues(out, v, dupIdx.get(), sm.ProfileName, sm.Variables)
 			}
-			// A project block that could not be parsed still holds whatever
-			// `jit scan` flagged. Saying nothing here would report success
-			// over a file that is still partly exposed — the exact
-			// zero-errors dead end the projects support exists to close.
-			for _, dir := range result.SkippedProjects {
-				fmt.Fprintf(out, "  %s project block %s couldn't be parsed, left unchanged\n", glyphWarn, dir)
-				wrapBody(out, 4, "    ", "its servers are NOT migrated; fix the JSON and re-run")
-			}
+			noteSkippedProjects(out, result.SkippedProjects)
 		}
 		fmt.Fprintf(out, "  Restart the %s above to pick up the change.\n", pluralWord(n, "MCP host", "MCP hosts"))
 		fmt.Fprintln(out)
@@ -2515,4 +2509,17 @@ func manifestGroupID(v *vault.Vault, manifestPath string) string {
 		group = info.GroupID
 	}
 	return group
+}
+
+// noteSkippedProjects names each ~/.claude.json project block that could
+// not be parsed. Such a block still holds whatever `jit scan` flagged, so
+// saying nothing would report success over a file that is still partly
+// exposed, the zero-errors dead end the projects support exists to close.
+// Said on every path that reports the config done, including "nothing left
+// to move".
+func noteSkippedProjects(out io.Writer, dirs []string) {
+	for _, dir := range dirs {
+		fmt.Fprintf(out, "  %s project block %s couldn't be parsed, left unchanged\n", glyphWarn, dir)
+		wrapBody(out, 4, "    ", "its servers are NOT migrated; fix the JSON and re-run")
+	}
 }

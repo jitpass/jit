@@ -351,7 +351,10 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 		}
 	}
 	if len(result.Servers) == 0 {
-		return MCPConfigMigration{}, fmt.Errorf("%s has %w", path, ErrNoMCPSecrets)
+		// The project blocks that could not be parsed go back with the
+		// error: a caller that treats ErrNoMCPSecrets as done must still say
+		// those blocks were left exposed.
+		return MCPConfigMigration{FilePath: path, SkippedProjects: skippedProjects}, fmt.Errorf("%s has %w", path, ErrNoMCPSecrets)
 	}
 
 	// Every server planned; only now does anything reach the vault or the
