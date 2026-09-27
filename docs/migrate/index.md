@@ -88,8 +88,8 @@ Each modified file is backed up before it's rewritten.
 Project files you named
 
 [.env file] 1
-  → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount
-  • ~/code/myapp/.env (3 variables, 2 secret-shaped)
+  → secrets move to the vault; settings stay as plain text, and the file keeps working as a live, auto-updating mount
+  • ~/code/myapp/.env (2 to the vault, 1 setting)
 
 ────────────────────────────────────────────
   1 change planned across 1 category

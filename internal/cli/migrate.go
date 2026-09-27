@@ -2464,11 +2464,11 @@ func init() {
 	migrateCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
 	migratePathCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
 	// Local like --mount: only a run that vaults a .env reads them.
-	const secretUsage = "send this .env variable to the vault even if the scan calls it a setting: NAME, or FILE:NAME for one file (repeatable)"
-	const settingUsage = "keep this .env variable as a plain setting beside the vault even if the scan calls it a secret: NAME, or FILE:NAME for one file (repeatable)"
+	const toVaultUsage = "send this .env variable to the vault even if the scan calls it a setting: NAME, or FILE:NAME for one file (repeatable)"
+	const keepPlainUsage = "keep this .env variable as a plain setting beside the vault even if the scan calls it a secret: NAME, or FILE:NAME for one file (repeatable)"
 	for _, c := range []*cobra.Command{migrateCmd, migratePathCmd} {
-		c.Flags().StringArrayVar(&migrateSecretNames, "secret", nil, secretUsage)
-		c.Flags().StringArrayVar(&migrateSettingNames, "setting", nil, settingUsage)
+		c.Flags().StringArrayVar(&migrateSecretNames, "secret", nil, toVaultUsage)
+		c.Flags().StringArrayVar(&migrateSettingNames, "setting", nil, keepPlainUsage)
 	}
 	// Local like --mount: undo/remove/caches never delete scan findings.
 	// Wording promises the safety net up front — the flag's whole risk is

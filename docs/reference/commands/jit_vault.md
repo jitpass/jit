@@ -38,10 +38,13 @@ jit vault
 * [jit vault init](jit_vault_init.md)	 - Set up the local vault (generates the master encryption key)
 * [jit vault link](jit_vault_link.md)	 - Store a 1Password reference instead of a value
 * [jit vault list](jit_vault_list.md)	 - List stored secret paths (names only, never values)
+* [jit vault move-in](jit_vault_move-in.md)	 - Move plain settings into the vault
+* [jit vault move-out](jit_vault_move-out.md)	 - Keep vault entries as plain settings beside the vault instead
 * [jit vault orphans](jit_vault_orphans.md)	 - List (and with --prune delete) secrets no profile references
 * [jit vault prune](jit_vault_prune.md)	 - Delete stale encrypted file backups, keeping each file's newest
 * [jit vault rekey](jit_vault_rekey.md)	 - Rotate the vault's master key, or move it into the Secure Enclave
 * [jit vault restore](jit_vault_restore.md)	 - Bring back an archived previous version of a secret
 * [jit vault rm](jit_vault_rm.md)	 - Delete one or more secrets
 * [jit vault set](jit_vault_set.md)	 - Encrypt and store a secret
+* [jit vault settings](jit_vault_settings.md)	 - List the plain settings kept beside the vault, with their values
 

@@ -262,6 +262,27 @@ func ProtectedMCPEnvFiles(path string) []string {
 	return found
 }
 
+// MCPInlineServers counts the servers in path that carry an env block of
+// their own, the credentials a config holds inline rather than through an
+// --env-file. For a plan: a config with none and only --env-file targets
+// that the same run protects has nothing left to move. Best-effort, like
+// MCPEnvFilePreview.
+func MCPInlineServers(path string) int {
+	_, blocks, _, err := loadMCPFile(path)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, b := range blocks {
+		for _, entry := range b.servers {
+			if hasNonEmptyEnv(entry) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // ApplyMCPConfig moves every server's secrets in path into v's vault — both
 // the env block and any file it reads via --env-file — one profile per server (named "mcp-<server>") stored in the
 // home-rooted global profile store (profile.GlobalRoot) — an MCP host
