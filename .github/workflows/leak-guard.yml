@@ -19,9 +19,13 @@ on:
 permissions:
   contents: read
 
+# A PR's newer run supersedes its older one: it checks the whole PR again.
+# A push to main never does: each push's run checks only that push's commits,
+# so cancelling an earlier one would leave its commits unchecked. Pushes are
+# grouped by commit and never cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   leak-guard:
@@ -47,8 +51,13 @@ jobs:
           else
             base="$BEFORE"; head="$AFTER"
           fi
-          # With no usable base, check just the new tip.
+          # With no usable base, check just the new tip. A base this clone
+          # does not have (a force-push, after a history rewrite) is the same
+          # case, said out loud rather than failing every later step.
           if [ -z "$base" ] || [ "$base" = "$ZERO" ]; then
+            range="-1 $head"
+          elif ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "::warning::base $base is not in this clone (a force-push?); checking only the new tip"
             range="-1 $head"
           else
             range="$base..$head"
@@ -87,7 +96,12 @@ jobs:
           # Report where, never the matching text: the log is public.
           bad=0
           hit() { echo "::error::$1"; bad=1; }
-          for c in $(git rev-list $RANGE); do
+          # Listed first, on its own: a failing rev-list inside the for list
+          # would not stop the step, the loop would run zero times and the
+          # check would pass having checked nothing.
+          commits=$(git rev-list $RANGE)
+          echo "Checking $(printf '%s\n' "$commits" | grep -c . || true) commit(s)"
+          for c in $commits; do
             s=${c:0:8}
             git log -1 --format='%B%n%an%n%ae%n%cn%n%ce' "$c" | grep -qiE -- "$PATTERN" \
               && hit "commit $s: the message, author or committer matches"
