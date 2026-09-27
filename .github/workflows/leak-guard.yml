@@ -1,0 +1,102 @@
+# The server-side copy of the local git hooks: a commit that skipped them
+# (--no-verify, a fresh clone, another machine, an edit on github.com) still
+# can't bring a secret or a forbidden name into main. Two checks run on the
+# commits a push or PR introduces, never on existing history:
+#   - gitleaks, for credentials;
+#   - LEAK_GUARD_PATTERN, a case-insensitive grep -E pattern kept in a repo
+#     secret, because a pattern written here would put the words in the repo.
+#     It covers added lines, file names, commit messages, author and committer,
+#     and the PR's title and body.
+name: Leak Guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # edited: a PR title or body change reruns the name check.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0 so the base..head range below has both endpoints.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Pick the commits to check
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ZERO=0000000000000000000000000000000000000000
+          if [ -n "${PR_HEAD:-}" ]; then
+            base="$PR_BASE"; head="$PR_HEAD"
+          else
+            base="$BEFORE"; head="$AFTER"
+          fi
+          # With no usable base, check just the new tip.
+          if [ -z "$base" ] || [ "$base" = "$ZERO" ]; then
+            range="-1 $head"
+          else
+            range="$base..$head"
+          fi
+          echo "RANGE=$range" >> "$GITHUB_ENV"
+          echo "Checking: $range"
+
+      - name: gitleaks
+        run: |
+          set -euo pipefail
+          v=8.30.1
+          f="gitleaks_${v}_linux_x64.tar.gz"
+          curl -fsSLo "$f" "https://github.com/gitleaks/gitleaks/releases/download/v${v}/${f}"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $f" | sha256sum -c -
+          tar -xzf "$f" gitleaks
+          # --redact: a finding's value never reaches the log.
+          ./gitleaks git . --log-opts="$RANGE" --redact --no-banner --exit-code 1 -v
+
+      - name: Forbidden names
+        env:
+          PATTERN: ${{ secrets.LEAK_GUARD_PATTERN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PATTERN:-}" ]; then
+            # GitHub gives no secrets to a PR from a fork; main's push run checks it after merge.
+            if [ "${FORK:-}" = "true" ]; then
+              echo "::warning::LEAK_GUARD_PATTERN is not available to fork PRs; skipped"
+              exit 0
+            fi
+            echo "::error::the LEAK_GUARD_PATTERN secret is not set"
+            exit 1
+          fi
+          # Report where, never the matching text: the log is public.
+          bad=0
+          hit() { echo "::error::$1"; bad=1; }
+          for c in $(git rev-list $RANGE); do
+            s=${c:0:8}
+            git log -1 --format='%B%n%an%n%ae%n%cn%n%ce' "$c" | grep -qiE -- "$PATTERN" \
+              && hit "commit $s: the message, author or committer matches"
+            git show --format= --name-only "$c" | grep -qiE -- "$PATTERN" \
+              && hit "commit $s: a file name matches"
+            n=$(git show --format= -U0 --no-color "$c" | grep -E '^\+' | grep -v '^+++' | grep -ciE -- "$PATTERN" || true)
+            [ "$n" -gt 0 ] && hit "commit $s: $n added line(s) match"
+          done
+          printf '%s\n%s\n' "${PR_TITLE:-}" "${PR_BODY:-}" | grep -qiE -- "$PATTERN" \
+            && hit "the PR title or body matches"
+          [ "$bad" -eq 0 ] && echo "OK: nothing matches"
+          exit "$bad"
