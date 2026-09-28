@@ -20,9 +20,10 @@
 //   - store.go: jobs.json, beside grants.json in jit's own directory, which no
 //     sandbox is ever given. Never in a project, for the same reason.
 //   - fingerprint.go: a hash of every file the job could run, taken at
-//     approval and re-taken before every run. A script, a library in its
-//     .venv, or the profile manifest changed after approval stops the job
-//     until the human looks. The executable is hashed too, wherever it lives.
+//     approval and re-taken before every run. A script or a library in its
+//     .venv changed after approval stops the job until the human looks
+//     (the agent leaves profile manifests out of that comparison: a run
+//     never reads them). The executable is hashed too, wherever it lives.
 //   - interp.go and libs.go: what the program loads from OUTSIDE the folder,
 //     fingerprinted with it: a Python's whole installation and the folders
 //     its .pth files add, the places Node searches for packages, and the

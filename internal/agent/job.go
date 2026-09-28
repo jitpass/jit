@@ -639,9 +639,11 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 		LastRefusal: j.LastRefusal, LastHidden: j.LastHiddenSum,
 		ProfileGlobal: j.Profile != "" && j.ProfileRoot == "", ProfileRoot: j.ProfileRoot,
 	}
-	rotated := s.rotatedSecrets(j)
+	rotated, gone := s.rotatedSecrets(j)
 	for _, sec := range j.Secrets {
-		st.Secrets = append(st.Secrets, JobSecretStatus{Var: sec.Var, Path: sec.Path, Shown: sec.Shown, Rotated: rotated[sec.Path]})
+		st.Secrets = append(st.Secrets, JobSecretStatus{
+			Var: sec.Var, Path: sec.Path, Shown: sec.Shown, Rotated: rotated[sec.Path], Gone: gone[sec.Path],
+		})
 	}
 	if len(rotated) > 0 {
 		st.State = JobRotated
@@ -680,7 +682,26 @@ func (s *Server) jobChanges(j *job.Job) []job.Change {
 	if err != nil {
 		return []job.Change{{Path: j.Dir, Kind: job.Removed}}
 	}
-	return s.libManifests().Diff(j.Fingerprint, now)
+	return withoutProfileManifests(s.libManifests().Diff(j.Fingerprint, now))
+}
+
+// profileManifests is where a project keeps its jit profiles, relative to
+// the job's folder. A job never reads them when it runs: it carries the
+// secret paths it was approved with (TestJobRunIgnoresAProfileRemappedAfter
+// Approval), and jit itself rewrites them (vault move-out, move-in). So an
+// edit there changes nothing a run does, and stopped jobs for nothing.
+// Filtered from the comparison rather than the fingerprint, so a job
+// approved before this still matches.
+const profileManifests = ".jit/profiles/"
+
+func withoutProfileManifests(changes []job.Change) []job.Change {
+	kept := changes[:0]
+	for _, ch := range changes {
+		if !strings.HasPrefix(filepath.ToSlash(ch.Path), profileManifests) {
+			kept = append(kept, ch)
+		}
+	}
+	return kept
 }
 
 // jobProgram is what j starts, as approval resolved it.
@@ -689,20 +710,25 @@ func jobProgram(j *job.Job) job.Program {
 }
 
 // rotatedSecrets maps each secret path whose wrapped bytes no longer match
-// approval, or that is gone, to true. Without OnWrappedDEK nothing can be
-// checked, and a run then fails at unwrap instead: closed either way.
-func (s *Server) rotatedSecrets(j *job.Job) map[string]bool {
-	out := map[string]bool{}
+// approval to true, and separately each that is gone from the vault. A
+// rotated secret stops the job; a gone one is left out of its runs. Without
+// OnWrappedDEK nothing can be checked, and a run then fails at unwrap
+// instead: closed either way.
+func (s *Server) rotatedSecrets(j *job.Job) (rotated, gone map[string]bool) {
+	rotated, gone = map[string]bool{}, map[string]bool{}
 	if s.OnWrappedDEK == nil {
-		return out
+		return rotated, gone
 	}
 	for _, sec := range j.Secrets {
 		wrapped, _, err := s.OnWrappedDEK(sec.Path)
-		if err != nil || wrappedDigest(wrapped) != sec.DeviceDigest {
-			out[sec.Path] = true
+		switch {
+		case err != nil:
+			gone[sec.Path] = true
+		case wrappedDigest(wrapped) != sec.DeviceDigest:
+			rotated[sec.Path] = true
 		}
 	}
-	return out
+	return rotated, gone
 }
 
 func (s *Server) runJob(name string, c *caller) Response {
@@ -750,17 +776,25 @@ func (s *Server) runJob(name string, c *caller) Response {
 	if s.OnWrappedDEK == nil {
 		return Response{OK: false, Error: "job_run: this service cannot read the vault's wrapped keys"}
 	}
-	current := make([][]byte, len(j.Secrets))
-	for i, sec := range j.Secrets {
+	// A secret gone from the vault is left out of this run, not a reason
+	// to refuse it: the job can only get less than was approved, never
+	// more. A rotated one is a different value, and still stops the job.
+	var current [][]byte
+	var present []job.Secret
+	var gone []string
+	for _, sec := range j.Secrets {
 		wrapped, _, err := s.OnWrappedDEK(sec.Path)
 		if err != nil {
-			return s.refuseJob(&j, c, requester, fmt.Sprintf("%s is no longer in the vault", sec.Var))
+			gone = append(gone, sec.Var)
+			continue
 		}
 		if wrappedDigest(wrapped) != sec.DeviceDigest {
 			return s.refuseJob(&j, c, requester, fmt.Sprintf("%s was rotated since you approved it", sec.Var))
 		}
-		current[i] = wrapped
+		present = append(present, sec)
+		current = append(current, wrapped)
 	}
+	j.Secrets = present
 
 	deks := map[string][]byte{}
 	defer func() {
@@ -853,7 +887,11 @@ func (s *Server) runJob(name string, c *caller) Response {
 	if j.Ask == job.AskNever {
 		how = "unasked"
 	}
-	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden), "")
+	detail := fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden)
+	if len(gone) > 0 {
+		detail += ", without " + strings.Join(gone, ", ") + " (no longer in the vault)"
+	}
+	s.recordJobEvent(KindUse, OpJobRun, c, &j, detail, "")
 	return Response{OK: true, JobResult: &result}
 }
 

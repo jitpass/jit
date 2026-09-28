@@ -1477,3 +1477,81 @@ func TestANeverJobRemovedWhileItsKeyOpensDoesNotRun(t *testing.T) {
 		t.Fatalf("the job's key was not closed after the refused run (%d handed out)", len(store.handed))
 	}
 }
+
+// A secret removed from the vault after approval leaves the job with less
+// than was approved, never more: the job runs without it and stays ready.
+// It used to stop the job until approved again (reported 2026-09-28: a value
+// moved out of the vault blocked every AI job that named it).
+func TestJobRunLeavesOutASecretGoneFromTheVault(t *testing.T) {
+	r := newJobRig(t)
+	second, _ := seal(grantTestMEK, bytes.Repeat([]byte{0x0b}, 32), []byte("mcp"))
+	r.vault["reports/REPORT_WORKSPACE_ID"] = second
+	r.sources = append(r.sources, JobSecretSource{Var: "REPORT_WORKSPACE_ID", Path: "reports/REPORT_WORKSPACE_ID", Wrapped: second, Class: "mcp"})
+	if _, err := r.c.JobAllow("guest-report", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	delete(r.vault, "reports/REPORT_WORKSPACE_ID")
+	r.mu.Unlock()
+
+	jobs, err := r.c.JobList()
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("JobList: %v %v", jobs, err)
+	}
+	if jobs[0].State != JobReady || jobs[0].Stopped {
+		t.Fatalf("state %q stopped %v: a gone secret must not stop the job", jobs[0].State, jobs[0].Stopped)
+	}
+	var gone []string
+	for _, sec := range jobs[0].Secrets {
+		if sec.Gone {
+			gone = append(gone, sec.Var)
+		}
+	}
+	if len(gone) != 1 || gone[0] != "REPORT_WORKSPACE_ID" {
+		t.Fatalf("gone = %v, want [REPORT_WORKSPACE_ID]", gone)
+	}
+
+	if _, err := r.c.JobRun("guest-report"); err != nil {
+		t.Fatalf("JobRun without the removed secret: %v", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.sources[0].Var // the rig's own secret, still in the vault
+	if len(r.ran) != 1 || len(r.ran[0].Secrets) != 1 || r.ran[0].Secrets[0].Var != kept {
+		t.Fatalf("the run carried %+v, want only %s", r.ran, kept)
+	}
+}
+
+// A profile manifest in the job's folder is never read by a run, and jit
+// rewrites it itself (vault move-out): editing one must not stop the job,
+// while an edit to anything the job does run still does.
+func TestJobRunIgnoresProfileManifestEdits(t *testing.T) {
+	r := newJobRig(t)
+	manifests := filepath.Join(r.dir, ".jit", "profiles")
+	if err := os.MkdirAll(manifests, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(manifests, "other.yaml")
+	if err := os.WriteFile(other, []byte("a: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobAllow("guest-report", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("a: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifests, "new.yaml"), []byte("b: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("guest-report"); err != nil {
+		t.Fatalf("a profile manifest edit stopped the job: %v", err)
+	}
+	script := r.spec().Argv[1] // the rig's own script
+	if err := os.WriteFile(filepath.Join(r.dir, script), []byte("print('changed')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("guest-report"); err == nil {
+		t.Fatal("an edit to the job's own script no longer stops it")
+	}
+}
