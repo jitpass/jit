@@ -12,7 +12,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/jitpass/jit/internal/pointerfile"
 )
@@ -430,6 +432,7 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 		for _, s := range root.skip {
 			skip[filepath.Join(dir, s)] = true
 		}
+		var files []cacheFile
 		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
@@ -458,52 +461,122 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 				})
 				return nil
 			}
-			data, rerr := readAgentCacheFile(path)
-			if rerr != nil {
-				return nil // unreadable — skip, never fail the scan
-			}
-			first, count, named := index.findAll(data)
-			// No early return when the exact pass finds nothing: the pattern
-			// sweep below still has to see the file — after a migrate the
-			// exact pass has no needles at all, and that is precisely when the
-			// sweep is the only thing that can report a copy.
-			//
-			// Binary content has no meaningful line number; an offset into a
-			// SQLite page would be a coordinate the reader cannot use.
-			textual := !bytes.Contains(headOf(data), []byte{0})
-			// Iterated over pins, not over the map: Go randomises map order,
-			// and scan.go's contract is that findings come out in a stable
-			// order so NDJSON is byte-comparable across runs.
-			reportedHere := map[string]bool{}
-			for idx := range pins {
-				at, hit := first[idx]
-				if !hit {
-					continue
-				}
-				if pins[idx].vault != nil {
-					out = append(out, cfg.vaultCopyFinding(path, root.label, *pins[idx].vault, data, at, count[idx], textual))
-					reportedHere[pins[idx].value] = true
-					continue
-				}
-				f := cfg.agentCachedSecretFinding(
-					path, root.label, pins[idx], data, at, count[idx], textual)
-				f.AssignedName = named[idx]
-				out = append(out, f)
-				reportedHere[pins[idx].value] = true
-			}
-			// The vendor-pattern sweep: a copy the exact-string pass cannot
-			// reach because its origin is already protected, found by its
-			// shape instead (agentcachepatterns.go). Textual files only — a
-			// binary store is the exact pass's territory, above. A value the
-			// exact pass just reported here is skipped, so a copy whose origin
-			// is still in plaintext stays one finding, not two.
-			if textual {
-				out = append(out, cfg.agentCachePatternFindings(path, root.label, data, reportedHere)...)
-			}
+			files = append(files, cacheFile{path: path, label: root.label, size: info.Size()})
 			return nil
 		})
+		// Every core, one root at a time so the progress label stays true.
+		// Each file's findings land in its own slot and are appended in walk
+		// order: scan.go's contract is that findings come out in a stable order
+		// so NDJSON is byte-comparable across runs.
+		found := make([][]Finding, len(files))
+		forEachCacheFile(files, func(i int) {
+			found[i] = cfg.cacheFileFindings(files[i], index, pins)
+		})
+		for _, f := range found {
+			out = append(out, f...)
+		}
 	}
 	return out, failures
+}
+
+type cacheFile struct {
+	path, label string
+	size        int64
+}
+
+// cacheBytesInFlight bounds the file content held at once across workers:
+// each file may be up to maxAgentCacheFileSize, and one per core of those
+// would be most of a GiB. A single file larger than the budget still runs,
+// alone.
+const cacheBytesInFlight = 256 << 20
+
+// forEachCacheFile calls fn(i) for every file on runtime.NumCPU() workers.
+// The cache pass was one file at a time on one core, and its matching is
+// CPU-bound: 6.4 s on one core, 0.8 s on twelve (measured 2026-09-28, 523 MB
+// of transcripts). fn must write only its own slot.
+func forEachCacheFile(files []cacheFile, fn func(i int)) {
+	var (
+		mu       sync.Mutex
+		room     = sync.NewCond(&mu)
+		inFlight int64
+		wg       sync.WaitGroup
+	)
+	next := make(chan int)
+	for range runtime.NumCPU() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				need := min(files[i].size, cacheBytesInFlight)
+				mu.Lock()
+				for inFlight > 0 && inFlight+need > cacheBytesInFlight {
+					room.Wait()
+				}
+				inFlight += need
+				mu.Unlock()
+				fn(i)
+				mu.Lock()
+				inFlight -= need
+				room.Broadcast()
+				mu.Unlock()
+			}
+		}()
+	}
+	for i := range files {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+}
+
+// cacheFileFindings is one cache file's findings: the exact copies of pins,
+// then the vendor-pattern sweep. Reads shared state only, so it runs on many
+// files at once.
+func (cfg Config) cacheFileFindings(file cacheFile, index *substrIndex, pins []cacheNeedle) []Finding {
+	path := file.path
+	data, err := readAgentCacheFile(path)
+	if err != nil {
+		return nil // unreadable — skip, never fail the scan
+	}
+	var out []Finding
+	first, count, named := index.findAll(data)
+	// No early return when the exact pass finds nothing: the pattern
+	// sweep below still has to see the file — after a migrate the
+	// exact pass has no needles at all, and that is precisely when the
+	// sweep is the only thing that can report a copy.
+	//
+	// Binary content has no meaningful line number; an offset into a
+	// SQLite page would be a coordinate the reader cannot use.
+	textual := !bytes.Contains(headOf(data), []byte{0})
+	// Iterated over pins, not over the map: Go randomises map order,
+	// and scan.go's contract is that findings come out in a stable
+	// order so NDJSON is byte-comparable across runs.
+	reportedHere := map[string]bool{}
+	for idx := range pins {
+		at, hit := first[idx]
+		if !hit {
+			continue
+		}
+		if pins[idx].vault != nil {
+			out = append(out, cfg.vaultCopyFinding(path, file.label, *pins[idx].vault, data, at, count[idx], textual))
+			reportedHere[pins[idx].value] = true
+			continue
+		}
+		f := cfg.agentCachedSecretFinding(path, file.label, pins[idx], data, at, count[idx], textual)
+		f.AssignedName = named[idx]
+		out = append(out, f)
+		reportedHere[pins[idx].value] = true
+	}
+	// The vendor-pattern sweep: a copy the exact-string pass cannot
+	// reach because its origin is already protected, found by its
+	// shape instead (agentcachepatterns.go). Textual files only — a
+	// binary store is the exact pass's territory, above. A value the
+	// exact pass just reported here is skipped, so a copy whose origin
+	// is still in plaintext stays one finding, not two.
+	if textual {
+		out = append(out, cfg.agentCachePatternFindings(path, file.label, data, reportedHere)...)
+	}
+	return out
 }
 
 // headOf returns the first block of data, for the binary sniff.
