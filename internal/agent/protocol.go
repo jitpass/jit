@@ -873,6 +873,11 @@ type SessionEvent struct {
 	// Cause's words: JobOutcomeStop, JobOutcomeStillStopped, JobOutcomeSkip
 	// or JobOutcomePersistingSkip. Empty on every other event.
 	JobOutcome string `json:"job_outcome,omitempty"`
+	// Expected is set on a decoy read in `jit audit`'s output, never in the
+	// stored history: the reader is one the user marked expected (`jit
+	// decoys expect`), so JitPass counts it apart. It changes what is said
+	// about the read, never what was served.
+	Expected bool `json:"expected,omitempty"`
 }
 
 // The job outcomes (SessionEvent.JobOutcome, JobStatus.Outcome).

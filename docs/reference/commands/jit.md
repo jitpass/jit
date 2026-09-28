@@ -25,6 +25,7 @@ jit [flags]
 * [jit cargo-credential](jit_cargo-credential.md)	 - Implement cargo's credential-provider protocol for a migrated registry token
 * [jit clisso-capture](jit_clisso-capture.md)	 - Run clisso, capturing minted AWS credentials into the vault
 * [jit completion](jit_completion.md)	 - Generate the autocompletion script for the specified shell
+* [jit decoys](jit_decoys.md)	 - Say which programs are expected to read protected files
 * [jit docker-credential](jit_docker-credential.md)	 - Implement Docker's credential-helper protocol for migrated registry logins
 * [jit doctor](jit_doctor.md)	 - One-shot health check: profiles, secrets, service, backup, and wrap shims
 * [jit export](jit_export.md)	 - Print shell export statements for a profile's secrets
