@@ -61,3 +61,21 @@ func TestVaultListUsersFindsAProjectOutsideTheCurrentFolder(t *testing.T) {
 		t.Fatalf("used_by = %v, want [mcp-tickets]", got[0].UsedBy)
 	}
 }
+
+// The sheet splits entries by name before any Touch ID: a secret-shaped
+// name is told apart from a setting's without reading a value.
+func TestVaultListSaysWhichNamesLookSecret(t *testing.T) {
+	for name, want := range map[string]bool{
+		"billing/BILLING_CLIENT_SECRET": true,
+		"billing/BILLING_API_TOKEN":     true,
+		"billing/BILLING_API_KEY":       true,
+		"billing/BILLING_CLIENT_ID":     false,
+		"billing/BILLING_URL":           false,
+		"billing/BILLING_SCOPES":        false,
+		"billing/SERVICE_USER_ID":       false,
+	} {
+		if got := nameLooksSecret(name); got != want {
+			t.Errorf("%s: name_looks_secret = %v, want %v", name, got, want)
+		}
+	}
+}

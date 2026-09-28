@@ -172,3 +172,22 @@ func TestMigrateSettingsDryRunNeedsNoIndex(t *testing.T) {
 		t.Error("a real run with an unreadable index succeeded")
 	}
 }
+
+// A name that says credential stays even when its value reads as a setting:
+// the app shows it as staying before anything is read (name_looks_secret).
+func TestMigrateSettingsNeverMovesACredentialName(t *testing.T) {
+	r := newMoveRig(t)
+	meta := vault.Meta{Class: vault.ClassDotenv}
+	if err := r.v.SetWithMeta("billing/BILLING_API_TOKEN", []byte("https://billing.example.com/token"), meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.manifest, []byte("BILLING_API_TOKEN: billing/BILLING_API_TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := execMigrateSettings(t, "--yes"); err != nil {
+		t.Fatalf("migrate settings: %v\n%s", err, out)
+	}
+	if ok, _ := r.v.Exists("billing/BILLING_API_TOKEN"); !ok {
+		t.Fatal("a value named like a token left the vault")
+	}
+}

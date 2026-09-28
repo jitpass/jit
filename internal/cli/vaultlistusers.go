@@ -4,6 +4,9 @@
 package cli
 
 import (
+	"path"
+
+	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/profile"
 )
@@ -57,4 +60,11 @@ func discoverSecretUsers(root, cwd string) map[string][]vaultSecretUser {
 		}
 	}
 	return out
+}
+
+// nameLooksSecret is whether the vault path's variable is named like a
+// credential (audit.NameSaysCredential): a URL-shaped name is not, since
+// only its value can say whether it embeds one.
+func nameLooksSecret(vaultPath string) bool {
+	return audit.NameSaysCredential(path.Base(vaultPath))
 }

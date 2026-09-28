@@ -166,6 +166,12 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 		}
 		result.Read++
 		class := audit.ClassifyEnvVar(path.Base(c.path), string(value))
+		// A name that says credential never moves out here, whatever its
+		// value looks like: the app shows these as staying before anything
+		// is read (vault list's name_looks_secret), and that has to hold.
+		if class == audit.EnvVarSetting && audit.NameSaysCredential(path.Base(c.path)) {
+			class = audit.EnvVarCheck
+		}
 		if classes != nil {
 			classes.Set(c.path, string(class))
 		}

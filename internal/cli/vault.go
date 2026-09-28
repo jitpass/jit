@@ -117,6 +117,11 @@ type vaultSecretJSON struct {
 	// secret, with the project it lives in, and every pointer file. Its
 	// profile names are in UsedBy too.
 	Users []vaultSecretUser `json:"users,omitempty"`
+	// NameLooksSecret says the variable's NAME alone names a credential
+	// (JAMF_CLIENT_SECRET yes; JAMF_CLIENT_ID, JAMF_URL no), with no value
+	// read: audit.NameSaysCredential. It lets the app show, before any
+	// Touch ID, which entries a settings cleanup leaves in the vault.
+	NameLooksSecret bool `json:"name_looks_secret,omitempty"`
 	// Scan is what the scan said of the value when it went into the vault:
 	// "secret", "check" or "setting" (the user sent a setting in), from the
 	// class index beside the vault. Omitted when unknown: vaulted before the
@@ -1415,19 +1420,20 @@ var vaultListCmd = &cobra.Command{
 					}
 				}
 				out.Secrets = append(out.Secrets, vaultSecretJSON{
-					UsedBy:         usedBy,
-					Users:          users[p],
-					Path:           p,
-					Version:        info.Version,
-					Class:          info.Class,
-					GroupID:        info.GroupID,
-					Origin:         info.Origin,
-					OriginSeenUnix: info.OriginSeenUnix,
-					ExpiresUnix:    info.ExpiresUnix,
-					CreatedUnix:    info.CreatedUnix,
-					UpdatedUnix:    info.UpdatedUnix,
-					Storage:        info.Storage,
-					Scan:           classOf(classes, p),
+					UsedBy:          usedBy,
+					Users:           users[p],
+					NameLooksSecret: nameLooksSecret(p),
+					Path:            p,
+					Version:         info.Version,
+					Class:           info.Class,
+					GroupID:         info.GroupID,
+					Origin:          info.Origin,
+					OriginSeenUnix:  info.OriginSeenUnix,
+					ExpiresUnix:     info.ExpiresUnix,
+					CreatedUnix:     info.CreatedUnix,
+					UpdatedUnix:     info.UpdatedUnix,
+					Storage:         info.Storage,
+					Scan:            classOf(classes, p),
 				})
 			}
 			return writeJSON(cmd.OutOrStdout(), out)

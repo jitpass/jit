@@ -114,6 +114,37 @@ func LooksLikeSecretKey(name string) bool {
 	return false
 }
 
+// credentialNameMarkers are the markers of LooksLikeSecretKey that name a
+// credential outright. The others there ("URL", "CONNECTION", "DSN",
+// "AUTH") mark names whose value MAY embed one, a connection string, so
+// only the value can tell; they are left out here.
+var credentialNameMarkers = []string{"KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PASS", "CREDENTIAL", "PWD", "PRIVATE"}
+
+// NameSaysCredential reports whether a variable's name alone says it holds a
+// credential (JAMF_CLIENT_SECRET, NOTION_API_KEY), with no settings rule
+// excusing it (a client ID, a public build variable). A URL-shaped name
+// (JAMF_URL, DATABASE_URL) is not one: its value decides. For display
+// before any value is read; ClassifyEnvVar stays the verdict.
+func NameSaysCredential(name string) bool {
+	if NonSecretNameReason(name) != "" {
+		return false
+	}
+	upper := strings.ToUpper(name)
+	for _, marker := range credentialNameMarkers {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	for _, segment := range strings.FieldsFunc(upper, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if segment == "BEARER" {
+			return true
+		}
+	}
+	return false
+}
+
 // publicVarPrefixes are build-tool prefixes whose entire documented purpose is
 // to mark a variable as SAFE TO SHIP TO A BROWSER. The bundler inlines these
 // into the client JavaScript at build time, so a value behind one of them is
