@@ -602,3 +602,26 @@ func TestScanEnvFilesNothingToMigrate(t *testing.T) {
 		t.Errorf("evidence %q does not say why jit cannot act", f.Evidence)
 	}
 }
+
+// `export KEY=value` is a dotenv line (python-dotenv and godotenv both read
+// it, and migrate vaults it), so scan must read it too. It did not: a file
+// of exported secrets counted "0 plaintext variables", and once an env file
+// with no variable stopped being a finding it was not reported at all.
+func TestScanEnvFilesReadsExportLines(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".env"), `export BILLING_API_TOKEN=FAKEjdsiPrdToXFDUxPZm8L49qWYTWnVz0Cji2IbjxHxrpx6WBIgZZbtqE1rS6KY8be0KcY
+  export   BILLING_URL=https://billing.example.com
+# export BILLING_OLD_TOKEN=gone
+`)
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: an exported secret is still a secret on disk", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != SeverityHigh || !strings.Contains(f.Evidence, "BILLING_API_TOKEN") {
+		t.Errorf("severity %q, evidence %q: want High naming BILLING_API_TOKEN", f.Severity, f.Evidence)
+	}
+}
