@@ -113,6 +113,10 @@ type vaultSecretJSON struct {
 	// vault rm`'s warning make. Omitted when nothing references it, so a
 	// delete dialog can say "used by wrap-gh" before the user confirms.
 	UsedBy []string `json:"used_by,omitempty"`
+	// Users is set by --users: every profile anywhere that names the
+	// secret, with the project it lives in, and every pointer file. Its
+	// profile names are in UsedBy too.
+	Users []vaultSecretUser `json:"users,omitempty"`
 	// Scan is what the scan said of the value when it went into the vault:
 	// "secret", "check" or "setting" (the user sent a setting in), from the
 	// class index beside the vault. Omitted when unknown: vaulted before the
@@ -1386,6 +1390,10 @@ var vaultListCmd = &cobra.Command{
 			// profile is skipped, never an error): prompt-free plain
 			// files, so the snapshot can afford them on every list.
 			refs := referencesForPaths(root, cwd, secrets)
+			var users map[string][]vaultSecretUser
+			if vaultListUsers {
+				users = discoverSecretUsers(root, cwd)
+			}
 			// Advisory, like Scan itself: an unreadable index leaves every
 			// class unknown rather than failing the listing.
 			classes, cerr := settings.LoadClasses(root)
@@ -1401,8 +1409,14 @@ var vaultListCmd = &cobra.Command{
 						usedBy = append(usedBy, r.ProfileName)
 					}
 				}
+				for _, u := range users[p] {
+					if u.Profile != "" && !slices.Contains(usedBy, u.Profile) {
+						usedBy = append(usedBy, u.Profile)
+					}
+				}
 				out.Secrets = append(out.Secrets, vaultSecretJSON{
 					UsedBy:         usedBy,
+					Users:          users[p],
 					Path:           p,
 					Version:        info.Version,
 					Class:          info.Class,
@@ -3069,6 +3083,7 @@ func init() {
 	vaultListCmd.Flags().StringVar(&vaultListFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultListCmd.Flags().BoolVar(&vaultListAll, "all", false, "also list jit migrate's encrypted file backups ("+vault.BackupPathPrefix+"...)")
 	vaultListCmd.Flags().BoolVarP(&vaultListLong, "long", "l", false, "show each secret's class and last-updated age (terminal output only)")
+	vaultListCmd.Flags().BoolVar(&vaultListUsers, "users", false, "with --format json: find every profile that uses each secret, in any project folder (slower: it searches your home folder)")
 	vaultListCmd.Flags().StringVar(&vaultListBy, "by", "path", `group secrets by: "path" (default), "origin" (source file), or "group" (import batch)`)
 	vaultExportCmd.Flags().BoolVar(&vaultExportStdin, "stdin", false, "read the passphrase from stdin instead of prompting (no confirmation double-entry)")
 	vaultImportCmd.Flags().BoolVar(&vaultImportStdin, "stdin", false, "read the passphrase from stdin instead of prompting")
