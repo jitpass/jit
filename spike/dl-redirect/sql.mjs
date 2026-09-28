@@ -30,8 +30,43 @@ const INFRA = [
   "Amazon", "Google", "Microsoft", "DigitalOcean", "Hetzner", "OVH", "Linode",
   "GitHub", "Cloudflare", "Fastly", "Akamai", "Oracle", "Alibaba", "Scaleway",
   "Vultr", "Contabo", "Datacamp", "Choopa", "Leaseweb",
+  // Added 23 Sep 2026. Smaller VPS and colo resellers, every one of them seen
+  // pulling a release in the week of the 17th. They are the reason this list
+  // can never be finished by thinking about it: none is a name you would
+  // guess, and each was found by reading a row. Add to it when a new one shows
+  // up in `networks`, and expect that to keep happening.
+  "Wowrack", "GTHost", "HostRoyale", "Packethub", "Evocative", "Web2Objects",
+  "Transip", "COLLYER QUAY", "Smart Technology", "Web2Object",
 ];
-const HUMAN = INFRA.map((o) => `blob8 NOT LIKE '%${o}%'`).join("\n    AND ");
+// Hosting reverse-DNS. `asn_org` only names companies big enough to own an
+// autonomous system, so a VPS reseller's customers arrive under names INFRA
+// will never list -- Wowrack, GTHost, Packethub, Evocative, HostRoyale. The
+// PTR record is what actually says "this is a rented machine".
+//
+// Measured on the week of 17 Sep 2026: asn_org alone cleared 17 of 36
+// datacenter pulls; adding these cleared all 36 and left the 11 real ones.
+const INFRA_PTR = [
+  "amazonaws.com", "googleusercontent.com", "compute.internal",
+  "search.msn.com", "datapacket.com", "colo.transip.net", "intel-port",
+  ".ovh.net", "ip-51-75", "ip-54-39", "vps", "hosted-by", "servers.com",
+  "contabo", "hetzner", "linode", "digitalocean", "vultr", "scaleway",
+  "leaseweb", "choopa", "quickpacket", "wowrack", "gthost", "hostroyale",
+];
+
+// Three independent signals, because each one alone misses a different half:
+// asn_org misses VPS resellers, ptr_host misses networks with no PTR on file,
+// and bot_kind misses anything that spoofs a browser UA. A row has to look
+// human to all three.
+//
+// bot_kind is compared against the bot values rather than `= 'none'` on
+// purpose: rows written before 23 Sep 2026 carry "" for it, and those are not
+// bots, they are rows from before the question could be asked. Excluding them
+// would silently drop the launch week.
+const HUMAN = [
+  ...INFRA.map((o) => `blob8 NOT LIKE '%${o}%'`),
+  ...INFRA_PTR.map((h) => `blob12 NOT LIKE '%${h}%'`),
+  "blob14 NOT IN ('crawler', 'headless', 'tool')",
+].join("\n    AND ");
 
 // visitor_id (blob10) was appended to the schema on 18 Aug 2026 and only
 // reached every row from the 19th. Earlier rows carry "", and Analytics Engine

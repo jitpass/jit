@@ -20,8 +20,10 @@
 //
 // What gets logged, and deliberately nothing more:
 //   client class (brew | curl | jit-upgrade | browser | other), tag, asset,
-//   country, Cloudflare colo, and a salted hash of the IP. NO RAW IP, NO full
-//   user-agent string, NO cookies.
+//   country, Cloudflare colo, a salted hash of the IP, the user-agent's
+//   leading product token ("curl/8.7.1", "Mozilla") and what that UA admits to
+//   being (crawler | headless | tool | none). NO RAW IP, NO full user-agent
+//   string, NO cookies.
 //   The privacy story must still survive being read aloud: "we count downloads
 //   by client type and country, and we can tell two downloads apart without
 //   knowing who either one is." The hash exists because a download count that
@@ -77,6 +79,47 @@ function classifyUA(ua) {
 // When it still does not parse, say so in the log. We never store the full UA,
 // so a silent "" is unfalsifiable: it looks the same whether the client was
 // curl (correct) or a brew format we cannot read (a bug).
+// The leading product token of a user-agent and nothing after it:
+// "curl/8.7.1", "Homebrew/4.3.8", "Go-http-client/2.0". Everything a browser
+// prints after "Mozilla/5.0" is the fingerprinting half, so it stops here and
+// is never written anywhere. "Mozilla/5.0" itself collapses to "Mozilla": the
+// version is a fossil every browser sends identically.
+function productOf(ua) {
+  if (!ua) return "(empty)";
+
+  const first = ua.trim().split(/[\s(]/)[0];
+  if (!first) return "(empty)";
+  if (first.startsWith("Mozilla/")) return "Mozilla";
+
+  return first.slice(0, 64);
+}
+
+// Declares itself a bot. "bot/" catches the classic "Googlebot/2.1" and
+// "Twitterbot/1.0" shape without also catching Android device names like
+// CUBOT, which a bare /bot/ would.
+const CRAWLER =
+  /bot\/|\b(?:crawler|spider|slurp)\b|googlebot|bingbot|msnbot|yandex|baiduspider|duckduckbot|facebookexternalhit|applebot|petalbot|semrushbot|ahrefsbot|mj12bot|dotbot|bytespider|gptbot|claudebot|ccbot|perplexitybot|amazonbot|archive\.org_bot|feedfetcher|slackbot|discordbot|telegrambot|twitterbot|linkedinbot|whatsapp|embedly|pinterest|nutch|heritrix|zgrab|masscan|censys|shodan|internet-measurement|expanse|paloaltonetworks\.com|leakix|netcraft|scanner/i;
+
+// A real browser engine being driven by something.
+const HEADLESS = /headless|phantomjs|puppeteer|playwright|selenium|chrome-lighthouse/i;
+
+// Generic HTTP libraries: scrapers, mirrors and someone's script. curl, Wget
+// and Homebrew are deliberately absent -- they are how people actually install
+// jit, and `client` already separates them.
+const TOOL =
+  /go-http-client|python-requests|python-urllib|aiohttp|httpx|scrapy|okhttp|java\/|apache-httpclient|libwww|lwp::|axios|node-fetch|got\/|guzzle|postman|insomnia|aria2|httpie/i;
+
+// What the user-agent admits to being. Self-reported, so this is a floor and
+// never a ceiling: the 12 Google Cloud pulls of 17 Sep 2026 all sent a real
+// Chrome UA and are "none" here. ptr_host is what gave those away.
+function botKindOf(ua) {
+  if (!ua) return "none";
+  if (CRAWLER.test(ua)) return "crawler";
+  if (HEADLESS.test(ua)) return "headless";
+  if (TOOL.test(ua)) return "tool";
+  return "none";
+}
+
 function platformFromUA(ua, client) {
   const s = ua || "";
   const brew = /Homebrew\/([\d.]+)/.exec(s);
@@ -130,6 +173,11 @@ export default {
 
     const ua = request.headers.get("user-agent") || "";
     const client = classifyUA(ua);
+    // `client` answers "how was this fetched"; these two answer "by what, and
+    // does it admit to being a robot". Both derive from the UA and neither
+    // keeps it -- see schema.mjs for why the full string still never lands.
+    const uaProduct = productOf(ua);
+    const botKind = botKindOf(ua);
     const { brewVersion, arch, os } = platformFromUA(ua, client);
     const country = (request.cf && request.cf.country) || "??";
     const colo = (request.cf && request.cf.colo) || "??";
@@ -147,11 +195,11 @@ export default {
     // every download 500'd — counting took the redirect down. Nothing in
     // this block may prevent the 302.
     try {
-      console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo} arch=${arch} os=${os} asn=${asnOrg}`);
+      console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo} arch=${arch} os=${os} asn=${asnOrg} ua=${uaProduct} bot=${botKind}`);
       if (env.DL_STATS) {
         // Column order and meaning both live in schema.mjs, which `./sql.mjs`
         // reads to generate queries with real headers.
-        const view = { client, tag, asset, country, os, arch, brewVersion, asnOrg, colo };
+        const view = { client, tag, asset, country, os, arch, brewVersion, asnOrg, colo, uaProduct, botKind };
         ctx.waitUntil(record(env, view, request.headers.get("cf-connecting-ip")));
       }
     } catch (e) {
