@@ -21,7 +21,7 @@ Before pushing, the full gate CI applies:
 gofmt -l ./cmd ./internal                          # must print nothing (spike/ is exempt)
 go vet ./...
 go mod verify && go mod tidy                       # go.mod/go.sum must not drift
-staticcheck ./...                                  # honnef.co/go/tools/cmd/staticcheck@v0.7.0
+staticcheck ./...                                  # honnef.co/go/tools/cmd/staticcheck@v0.8.1
 govulncheck ./...                                  # golang.org/x/vuln/cmd/govulncheck@v1.6.0
 gosec -exclude-generated ./...                     # github.com/securego/gosec/v2/cmd/gosec@v2.28.0
 ```
