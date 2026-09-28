@@ -87,10 +87,13 @@ func isJitPointerContent(path string) bool {
 	return strings.HasPrefix(scanner.Text(), pointerFileHeaderPrefix)
 }
 
-// envLinePattern matches `KEY=value` or `# KEY=value` (commented out).
+// envLinePattern matches `KEY=value` or `# KEY=value` (commented out),
+// each with dotenv's optional `export ` before the key: migrate reads that
+// prefix (envExportPrefix in internal/migrate), so scan must too, or a
+// file of exported secrets counts no variables and is never reported.
 // Group 1 is the optional leading "#" (non-empty means commented), group 2
 // is the key, group 3 is the raw value.
-var envLinePattern = regexp.MustCompile(`^\s*(#\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$`)
+var envLinePattern = regexp.MustCompile(`^\s*(#\s*)?(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$`)
 
 // ScanEnvFiles implements RFC.md §4 category 2: presence and location of
 // .env files. Findings are file-level (RFC's literal wording — "presence
