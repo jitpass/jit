@@ -177,10 +177,14 @@ mistakes, not a boundary; the boundary is the human reading the command.
 1. Load the job. Refuse if missing.
 2. **Fingerprint.** Recompute; refuse on any difference, naming the first
    changed paths: *"list_guest_users.py changed since you approved it."*
-   The job goes to the **Changed** state until re-approved.
+   The job goes to the **Changed** state until re-approved. Profile
+   manifests (`.jit/profiles/`) are left out of the comparison: a run never
+   reads them, and jit rewrites them itself (2026-09-28, below).
 3. **Secrets.** `each-time`: disclosed Touch ID naming the caller and the
    job. `never`: open the DEKs with the job key. A rotated secret (hash
-   mismatch) refuses the run and marks the job, as standing grants do.
+   mismatch) refuses the run and marks the job, as standing grants do. A
+   secret gone from the vault is left out of the run instead (2026-09-28,
+   below).
 4. **Mounts.** The same swap `jit run` does (`mount.SwapToPointer`) for the
    folder's mounts, for the run's lifetime. The notion script calls
    `load_dotenv(".env")`; the pointer file keeps that harmless.
@@ -733,6 +737,34 @@ Python job's `jobs.json` entry stays under 8 KB and does not grow with its
 installation (2,000 more library files add 3 bytes); a per-file approval
 stops as older; and manifests are private, shared and pruned with the last
 job that names them.
+
+## Decided 2026-09-28: less than approved does not stop a job
+
+Reported: removing a value from the vault (or `vault move-out`, which moves
+it into plain settings) stopped every AI job whose profile named it, until
+approved again, though most scripts never read that variable. Measured in
+the job rig: removing one of a job's two secrets put it in Rotated, then
+Changed with no file changed, and the review sheet said the folder was back
+as approved. Editing another profile's manifest in the job's folder stopped
+it too.
+
+- **A secret gone from the vault is left out of the run**, and the job stays
+  Ready. The run can only receive less than the human approved, never more,
+  so there is nothing new to consent to. `job_list` marks the secret `gone`;
+  the run's audit line names what it ran without. A **rotated** secret, a
+  different value, still stops the job.
+- **`.jit/profiles/` is left out of the comparison.** A run carries the paths
+  it was approved with and never reads a manifest
+  (`TestJobRunIgnoresAProfileRemappedAfterApproval`), and jit rewrites
+  manifests itself. Filtered from the diff rather than skipped by the
+  fingerprint, so jobs approved before this still match. Every other file in
+  the folder, `.env` included, still stops the job.
+- A job already stopped for either reason stays stopped until approved
+  again: stops are sticky, and this changes what stops a job, not what
+  clears one.
+
+Tests: `TestJobRunLeavesOutASecretGoneFromTheVault`,
+`TestJobRunIgnoresProfileManifestEdits` (both fail on the code before).
 
 ## Open decisions
 

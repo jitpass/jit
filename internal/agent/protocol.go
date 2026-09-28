@@ -692,6 +692,9 @@ type JobSecretStatus struct {
 	Path    string `json:"path"`
 	Shown   bool   `json:"shown,omitempty"`
 	Rotated bool   `json:"rotated,omitempty"`
+	// Gone: no longer in the vault. The job runs without it; only a
+	// rotated secret stops it.
+	Gone bool `json:"gone,omitempty"`
 }
 
 // JobStatus.State values.
