@@ -79,3 +79,14 @@ func TestVaultListSaysWhichNamesLookSecret(t *testing.T) {
 		}
 	}
 }
+
+// false is written, not left out: an absent field means an older jit.
+func TestNameLooksSecretIsAlwaysInTheJSON(t *testing.T) {
+	data, err := json.Marshal(vaultSecretJSON{Path: "billing/BILLING_URL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"name_looks_secret":false`)) {
+		t.Fatalf("name_looks_secret missing when false: %s", data)
+	}
+}

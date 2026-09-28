@@ -121,7 +121,9 @@ type vaultSecretJSON struct {
 	// (JAMF_CLIENT_SECRET yes; JAMF_CLIENT_ID, JAMF_URL no), with no value
 	// read: audit.NameSaysCredential. It lets the app show, before any
 	// Touch ID, which entries a settings cleanup leaves in the vault.
-	NameLooksSecret bool `json:"name_looks_secret,omitempty"`
+	// Always present, false included: its absence is how the app tells an
+	// older jit, which judged no names, from a name judged not a secret.
+	NameLooksSecret bool `json:"name_looks_secret"`
 	// Scan is what the scan said of the value when it went into the vault:
 	// "secret", "check" or "setting" (the user sent a setting in), from the
 	// class index beside the vault. Omitted when unknown: vaulted before the
