@@ -73,6 +73,14 @@ func TestVaultListSaysWhichNamesLookSecret(t *testing.T) {
 		"billing/BILLING_URL":           false,
 		"billing/BILLING_SCOPES":        false,
 		"billing/SERVICE_USER_ID":       false,
+		"billing/APIKEY":                true,
+		"billing/DB_PASSWORD":           true,
+		"billing/OAUTH_TOKEN_URL":       false,
+		"billing/KEYCLOAK_URL":          false,
+		"billing/COMPASS_API_URL":       false,
+		"billing/PRIVATE_REGISTRY_URL":  false,
+		"billing/KEYCLOAK_REALM":        false,
+		"billing/COMPASS_MODE":          false,
 	} {
 		if got := nameLooksSecret(name); got != want {
 			t.Errorf("%s: name_looks_secret = %v, want %v", name, got, want)

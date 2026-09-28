@@ -114,32 +114,45 @@ func LooksLikeSecretKey(name string) bool {
 	return false
 }
 
-// credentialNameMarkers are the markers of LooksLikeSecretKey that name a
-// credential outright. The others there ("URL", "CONNECTION", "DSN",
-// "AUTH") mark names whose value MAY embed one, a connection string, so
-// only the value can tell; they are left out here.
-var credentialNameMarkers = []string{"KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PASS", "CREDENTIAL", "PWD", "PRIVATE"}
+// connectionNameMarkers are the markers of secretKeyMarkers that mark a name
+// whose value MAY embed a credential (a connection string, an auth URL)
+// rather than naming one: only the value can tell.
+var connectionNameMarkers = map[string]bool{"URL": true, "CONNECTION": true, "DSN": true, "AUTH": true}
+
+// locationSuffixes end a name that says where something is, not what it
+// holds: OAUTH_TOKEN_URL, KEYCLOAK_URL, VAULT_ENDPOINT.
+var locationSuffixes = map[string]bool{"URL": true, "URI": true, "ENDPOINT": true, "HOST": true, "HOSTNAME": true}
 
 // NameSaysCredential reports whether a variable's name alone says it holds a
-// credential (JAMF_CLIENT_SECRET, NOTION_API_KEY), with no settings rule
-// excusing it (a client ID, a public build variable). A URL-shaped name
-// (JAMF_URL, DATABASE_URL) is not one: its value decides. For display
-// before any value is read; ClassifyEnvVar stays the verdict.
+// credential (JAMF_CLIENT_SECRET, NOTION_API_KEY, APIKEY), with no settings
+// rule excusing it (a client ID, a public build variable). A name ending in
+// a location (JAMF_URL, OAUTH_TOKEN_URL) is not one: its value decides. The
+// markers are secretKeyMarkers less connectionNameMarkers, matched as a
+// whole word of the name or the end of one ("APIKEY"), so KEYCLOAK and
+// COMPASS do not match. For display before any value is read;
+// ClassifyEnvVar stays the verdict.
 func NameSaysCredential(name string) bool {
 	if NonSecretNameReason(name) != "" {
 		return false
 	}
-	upper := strings.ToUpper(name)
-	for _, marker := range credentialNameMarkers {
-		if strings.Contains(upper, marker) {
+	words := strings.FieldsFunc(strings.ToUpper(name), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(words) == 0 || locationSuffixes[words[len(words)-1]] {
+		return false
+	}
+	for _, word := range words {
+		if word == "BEARER" {
 			return true
 		}
-	}
-	for _, segment := range strings.FieldsFunc(upper, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
-		if segment == "BEARER" {
-			return true
+		for _, marker := range secretKeyMarkers {
+			if connectionNameMarkers[marker] {
+				continue
+			}
+			// "PASS" only whole: as an ending it is COMPASS, BYPASS.
+			if word == marker || (marker != "PASS" && strings.HasSuffix(word, marker)) {
+				return true
+			}
 		}
 	}
 	return false
