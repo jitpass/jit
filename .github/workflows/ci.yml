@@ -114,7 +114,7 @@ jobs:
       - name: Install staticcheck
         # Pinned for the same reason gosec is, below: a floating @latest lets an
         # upstream release change CI results under a commit that touched none of it.
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
 
       - name: staticcheck
         run: staticcheck ./...
