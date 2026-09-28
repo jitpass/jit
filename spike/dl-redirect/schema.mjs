@@ -57,6 +57,33 @@ export const BLOBS = [
   // company" -- it means "nothing on record", which is the common case.
   ["netblock_org", (v) => v.netblockOrg],
   ["ptr_host", (v) => v.ptrHost],
+  // Appended 23 Sep 2026. NOT the full user-agent -- the closing note below
+  // still holds. What lands here is the leading product token only:
+  // "curl/8.7.1", "Homebrew/4.3.8", "Go-http-client/2.0". Everything a browser
+  // prints after "Mozilla/5.0" (platform, engine, Chrome build) is the part
+  // that fingerprints a person, and it never leaves the Worker. "Mozilla/5.0"
+  // itself collapses to "Mozilla" because the 5.0 has meant nothing since
+  // Netscape. "(empty)" is a request that sent no UA, which is its own signal.
+  ["ua_product", (v) => v.uaProduct],
+  // Why `client` was not enough: classifyUA maps every Mozilla-bearing UA to
+  // "browser", and Bingbot, GPTBot and every scraper on the internet sends
+  // one. In the week of 17 Sep 2026 that put 36 datacenter pulls in the same
+  // bucket as 11 real people.
+  //
+  // This column records what the UA ADMITS to: "crawler" (declares itself a
+  // bot), "headless" (a driven browser), "tool" (a generic HTTP library --
+  // scrapers and mirrors), or "none". curl, Wget and Homebrew are deliberately
+  // NOT "tool": they are documented install paths for jit, and `client`
+  // already tells them apart.
+  //
+  // "" means the row predates this column, NOT "not a bot" -- the same trap
+  // visitor_id documents above. A query counting humans must say
+  // `bot_kind = 'none'`, never `bot_kind = ''`.
+  //
+  // A user-agent is self-reported, so this is a floor and never a ceiling. It
+  // does not catch a scanner sending a real Chrome UA from a cloud IP; that is
+  // what ptr_host and asn_org are for, and sql.mjs filters on all three.
+  ["bot_kind", (v) => v.botKind],
 ];
 
 // Always 1. Rows are the unit; `SUM(_sample_interval)` is the honest count
