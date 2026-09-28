@@ -6,6 +6,7 @@ package audit
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"regexp/syntax"
 	"sort"
 	"strings"
@@ -79,6 +80,13 @@ type patternNeedle struct {
 type patternLeadIndex struct {
 	needles []patternNeedle
 	byFirst [256][]int
+	// leadAt[p] is lead pattern p compiled as \A(?s:.)(?:expr), run from the
+	// byte before a hit so `\b` still sees it; leadAtStart[p] is \A(?:expr)
+	// for a hit at offset 0. Anchoring is the sweep's cost: an unanchored
+	// regex over the whole window per hit was 70% of a 50 s scan (measured
+	// 2026-09-28, 522 MB of transcripts: 45.5 s unanchored, 6.2 s anchored,
+	// the same tokens).
+	leadAt, leadAtStart []*regexp.Regexp
 }
 
 var (
@@ -116,12 +124,20 @@ func patternLeads(tp tokenPattern) (lits []string, anchor bool) {
 }
 
 func buildPatternLeadIndex() *patternLeadIndex {
-	idx := &patternLeadIndex{}
+	idx := &patternLeadIndex{
+		leadAt:      make([]*regexp.Regexp, len(knownTokenPatterns)),
+		leadAtStart: make([]*regexp.Regexp, len(knownTokenPatterns)),
+	}
 	for i, tp := range knownTokenPatterns {
 		if !sweptByPattern(tp) {
 			continue
 		}
 		lits, anchor := patternLeads(tp)
+		if !anchor {
+			expr := tp.pattern.String()
+			idx.leadAt[i] = regexp.MustCompile(`\A(?s:.)(?:` + expr + `)`)
+			idx.leadAtStart[i] = regexp.MustCompile(`\A(?:` + expr + `)`)
+		}
 		for _, l := range lits {
 			idx.byFirst[l[0]] = append(idx.byFirst[l[0]], len(idx.needles))
 			idx.needles = append(idx.needles, patternNeedle{lit: l, pattern: i, anchor: anchor})
@@ -272,7 +288,12 @@ func (x *patternLeadIndex) matches(data []byte) []FileToken {
 			continue
 		}
 		tp := knownTokenPatterns[n.pattern]
-		lo, hi := matchAround(data, tp, c.at, n.anchor)
+		var lo, hi int
+		if n.anchor {
+			lo, hi = matchContaining(data, tp, c.at)
+		} else {
+			lo, hi = x.matchAt(data, n.pattern, c.at)
+		}
 		if lo < 0 {
 			continue
 		}
@@ -313,15 +334,37 @@ func (x *patternLeadIndex) matches(data []byte) []FileToken {
 	return out
 }
 
-// matchAround runs tp's regex on a window around at and returns the absolute
-// span of the match that covers it, or lo = -1 when none does. A lead match
-// must START at at (the lead is the match's first bytes); an anchor match
-// must contain at.
-func matchAround(data []byte, tp tokenPattern, at int, anchor bool) (lo, hi int) {
-	wlo, whi := at-1, at+leadWindow
-	if anchor {
-		wlo, whi = at-anchorWindow, at+anchorWindow
+// matchAt returns the span of lead pattern p's match that starts at at, or
+// lo = -1 when none does. A match that runs to the window's edge may be cut
+// short (a `\b` holds at end-of-input), so it is retried in a wider window,
+// up to the longest token this sweep will believe in.
+func (x *patternLeadIndex) matchAt(data []byte, p, at int) (lo, hi int) {
+	re, from := x.leadAt[p], at-1
+	if at == 0 {
+		re, from = x.leadAtStart[p], 0
 	}
+	whi := at + leadWindow
+	for {
+		if whi > len(data) {
+			whi = len(data)
+		}
+		m := re.FindIndex(data[from:whi])
+		if m == nil {
+			return -1, -1
+		}
+		e := from + m[1]
+		if e == whi && whi < len(data) && whi-at < maxPatternMatch {
+			whi = at + (whi-at)*4
+			continue
+		}
+		return at, e
+	}
+}
+
+// matchContaining runs an anchor pattern's regex on a window around at and
+// returns the absolute span of the match that contains at, or lo = -1.
+func matchContaining(data []byte, tp tokenPattern, at int) (lo, hi int) {
+	wlo, whi := at-anchorWindow, at+anchorWindow
 	for {
 		if wlo < 0 {
 			wlo = 0
@@ -332,16 +375,9 @@ func matchAround(data []byte, tp tokenPattern, at int, anchor bool) (lo, hi int)
 		grew := false
 		for _, m := range tp.pattern.FindAllIndex(data[wlo:whi], -1) {
 			s, e := wlo+m[0], wlo+m[1]
-			if anchor {
-				if s > at || at >= e {
-					continue
-				}
-			} else if s != at {
+			if s > at || at >= e {
 				continue
 			}
-			// A match that runs to the window's edge may be cut short (a
-			// `\b` holds at end-of-input). Widen and look again, up to the
-			// longest token this sweep will believe in.
 			if e == whi && whi < len(data) && whi-at < maxPatternMatch {
 				grew = true
 				break
