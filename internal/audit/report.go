@@ -535,6 +535,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if summary.Deep {
 		fmt.Fprint(w, deepScanLine(summary))
 	}
+	fmt.Fprint(w, reviewedLine(summary))
 	if len(summary.DegradedScanners) > 0 {
 		yellowBold := style.WarnBold
 		noun := "categories"

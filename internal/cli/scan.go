@@ -43,6 +43,9 @@ func newAuditConfig() (audit.Config, error) {
 	}
 	cfg.K8sMigratable = k8sMigratableForScan
 	cfg.StreamlitMigratable = streamlitMigratableForScan
+	// Every scan surface leaves out what the user marked reviewed, so
+	// scan, migrate's plan and first-run cannot disagree about it.
+	cfg.Reviewed = loadScanReviews(os.Stderr)
 	return cfg, nil
 }
 
