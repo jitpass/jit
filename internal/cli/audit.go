@@ -419,6 +419,7 @@ var auditCmd = &cobra.Command{
 
 		if auditFormat == "json" {
 			keptCmds, keptEvents := filterSources(commands, events, filter, auditLimit)
+			tagExpected(root, keptEvents)
 			return writeJSON(out, auditJSON{Commands: keptCmds, AuthEvents: keptEvents})
 		}
 
