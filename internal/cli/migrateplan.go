@@ -416,7 +416,12 @@ func printPlanExtras(w io.Writer, home string, e *planExtras) {
 		for _, edit := range e.cacheEdits {
 			item := displayPath(home, edit.Path)
 			items = append(items, item)
-			annotations[item] = countWord(edit.Occurrences, "copy", "copies")
+			// Which variable, on which line — never a bare count the
+			// reader cannot check against the file.
+			annotations[item] = copySummary(edit.Copies)
+			if annotations[item] == "" {
+				annotations[item] = countWord(edit.Occurrences, "copy", "copies")
+			}
 		}
 		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(e.cacheEdits), "AI agent cache file", "AI agent cache files")+" "+glyphAction+" copies of the values above are redacted in place (backed up encrypted first)",

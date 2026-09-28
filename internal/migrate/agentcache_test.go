@@ -99,6 +99,67 @@ func TestCleanAgentCachesRedactsFileHistoryCopy(t *testing.T) {
 	if got.Edited[0].BackupPath == "" {
 		t.Error("no encrypted backup recorded, so undo has nothing to restore")
 	}
+	if c := got.Edited[0].Copies; len(c) != 1 || c[0].Var != "STRIPE_KEY" || c[0].Line != 1 {
+		t.Errorf("copies = %+v, want STRIPE_KEY on line 1", c)
+	}
+}
+
+// A sweep's report must say which secret sits on which line of which file —
+// a count per file is a fact the reader cannot check. Two variables, one of
+// them twice, on known lines; the preview and the real run name the same
+// copies, and a binary store names the variable with no line at all.
+func TestAgentCacheCopiesNameVariableAndLine(t *testing.T) {
+	home := t.TempDir()
+	const dbURL = "postgres://app:Qm7vXz2pLk9sR4tY@db.internal:5432/prod"
+	transcript := filepath.Join(home, ".claude", "projects", "p", "t.jsonl")
+	writeCacheTree(t, transcript,
+		"line one\n"+
+			"{\"text\":\"key "+cacheKey+"\"}\n"+
+			"line three\n"+
+			"{\"text\":\""+dbURL+"\"}\n"+
+			"{\"text\":\"again "+cacheKey+"\"}\n")
+	db := filepath.Join(home, ".local", "share", "opencode", "sessions.db")
+	writeCacheTree(t, db, "SQLite format 3\x00\x00"+cacheKey+"\x00"+cacheKey+"\x00")
+
+	secrets := []AgentCacheSecret{
+		{Value: cacheKey, Var: "STRIPE_KEY"},
+		{Value: dbURL, Var: "DATABASE_URL"},
+	}
+	want := []AgentCacheCopy{{Var: "STRIPE_KEY", Line: 2}, {Var: "DATABASE_URL", Line: 4}, {Var: "STRIPE_KEY", Line: 5}}
+
+	preview, err := PreviewAgentCaches(home, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Edited) != 1 || !equalCopies(preview.Edited[0].Copies, want) {
+		t.Errorf("preview copies = %+v, want %+v", preview.Edited, want)
+	}
+
+	got, err := CleanAgentCaches(newTestVault(t), home, secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Edited) != 1 || !equalCopies(got.Edited[0].Copies, want) {
+		t.Errorf("clean copies = %+v, want %+v", got.Edited, want)
+	}
+	if len(got.Skipped) != 1 {
+		t.Fatalf("skipped = %+v, want the binary store alone", got.Skipped)
+	}
+	if c := got.Skipped[0].Copies; !equalCopies(c, []AgentCacheCopy{{Var: "STRIPE_KEY"}, {Var: "STRIPE_KEY"}}) {
+		t.Errorf("binary skip copies = %+v, want STRIPE_KEY twice with no line", c)
+	}
+}
+
+func equalCopies(a, b []AgentCacheCopy) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // A length-changing splice inside a SQLite page invalidates the offsets around

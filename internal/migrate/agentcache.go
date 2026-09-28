@@ -65,12 +65,23 @@ type AgentCacheSecret struct {
 	Var   string
 }
 
+// AgentCacheCopy is one occurrence of one vaulted secret inside a cache
+// file: which vault variable, and on which line. A report that cannot say
+// "STRIPE_KEY, line 12" is a count the reader cannot check, so every edit and
+// every skip carries its copies in file order. Line is 1-based; it is 0 only
+// for a binary store, where a line number would describe nothing.
+type AgentCacheCopy struct {
+	Var  string
+	Line int
+}
+
 // AgentCacheEdit is one cache file jit rewrote.
 type AgentCacheEdit struct {
 	Path        string
 	Agent       string
 	Area        string
 	Occurrences int
+	Copies      []AgentCacheCopy
 	BackupPath  string
 }
 
@@ -95,6 +106,7 @@ type AgentCacheSkip struct {
 	Area   string
 	Reason string
 	Kind   SkipKind
+	Copies []AgentCacheCopy
 }
 
 // LiveSkips counts the copies left only because a session was live — the ones
@@ -296,13 +308,14 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		return out, nil
 	}
 
-	note := func(path, reason string, kind SkipKind) {
+	note := func(path, reason string, kind SkipKind, copies []AgentCacheCopy) {
 		out.Skipped = append(out.Skipped, AgentCacheSkip{
 			Path:   path,
 			Agent:  audit.AgentLabelForPath(home, path),
 			Area:   audit.AgentCacheArea(home, path),
 			Reason: reason,
 			Kind:   kind,
+			Copies: copies,
 		})
 	}
 
@@ -335,11 +348,12 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 			head = head[:512]
 		}
 		if bytes.IndexByte(head, 0) >= 0 {
-			note(path, "a binary store; rewriting it would corrupt the file", SkipBinary)
+			note(path, "a binary store; rewriting it would corrupt the file", SkipBinary, spanCopies(data, spans, false))
 			return nil
 		}
+		copies := spanCopies(data, spans, true)
 		if err := refuseMultiplyLinked(info, path); err != nil {
-			note(path, "it has more than one hard link, so rewriting one name would leave the credential readable through the other", SkipHardLink)
+			note(path, "it has more than one hard link, so rewriting one name would leave the credential readable through the other", SkipHardLink, copies)
 			return nil
 		}
 		if !apply {
@@ -348,6 +362,7 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 				Agent:       audit.AgentLabelForPath(home, path),
 				Area:        audit.AgentCacheArea(home, path),
 				Occurrences: len(spans),
+				Copies:      copies,
 			})
 			return nil
 		}
@@ -362,7 +377,7 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		// reader identification explains and audits, it never decides.
 		after, err := os.Lstat(path)
 		if err != nil || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
-			note(path, "the agent wrote to it while jit was working; left alone", SkipLive)
+			note(path, "the agent wrote to it while jit was working; left alone", SkipLive, copies)
 			return nil
 		}
 
@@ -378,6 +393,7 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 			Agent:       audit.AgentLabelForPath(home, path),
 			Area:        audit.AgentCacheArea(home, path),
 			Occurrences: len(spans),
+			Copies:      copies,
 			BackupPath:  backupPath,
 		})
 		return nil
@@ -421,6 +437,26 @@ func agentNeedleSpans(data []byte, needles []AgentCacheSecret) []agentSpan {
 	}
 	sort.Slice(spans, func(a, b int) bool { return spans[a].start < spans[b].start })
 	return spans
+}
+
+// spanCopies names each span: the vault variable it belongs to and, for a
+// textual file, the 1-based line it sits on. Spans arrive in file order, so
+// the newline count runs forward once over the file instead of once per
+// span. A binary store gets no line — an offset into a SQLite page is not a
+// place a reader can open the file at.
+func spanCopies(data []byte, spans []agentSpan, textual bool) []AgentCacheCopy {
+	out := make([]AgentCacheCopy, 0, len(spans))
+	line, prev := 1, 0
+	for _, s := range spans {
+		c := AgentCacheCopy{Var: s.varName}
+		if textual {
+			line += bytes.Count(data[prev:s.start], []byte{'\n'})
+			prev = s.start
+			c.Line = line
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // spliceAgentSpans copies data forward, replacing each credential span with a
