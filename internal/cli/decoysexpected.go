@@ -85,6 +85,25 @@ func saveExpectedReaders(root string, list expectedReaders) error {
 	return os.Rename(tmp, expectedReadersPath(root))
 }
 
+// runsAnyScript are the programs whose name says nothing about what they
+// run: interpreters, shells and launchers. Marking `python3` expected would
+// hide `python3 anything.py`, the read decoys exist to catch, so jit
+// refuses them. Matched on the executable's name, any version suffix off.
+var runsAnyScript = map[string]bool{
+	"python": true, "node": true, "nodejs": true, "deno": true, "bun": true, "ruby": true, "perl": true,
+	"php": true, "java": true, "osascript": true, "sh": true, "bash": true, "zsh": true, "fish": true,
+	"dash": true, "ksh": true, "tcsh": true, "csh": true, "env": true, "uv": true, "uvx": true, "npx": true,
+	"npm": true, "pnpm": true, "yarn": true, "pipx": true, "pip": true, "bundle": true, "rake": true,
+}
+
+// runsScripts is whether program is one of runsAnyScript: its base name
+// with trailing version digits and dots taken off (python3.14, node22).
+func runsScripts(program string) bool {
+	name := strings.ToLower(filepath.Base(program))
+	name = strings.TrimRight(name, "0123456789.")
+	return runsAnyScript[name]
+}
+
 // readerMatches is whether a `by` command line is this program: the
 // executable exactly, or followed by its arguments. A path may hold
 // spaces ("/Applications/Some Editor.app/…"), so no splitting on them.
@@ -109,7 +128,9 @@ func labelForm(path string) string {
 
 // isExpected is whether a decoy read matches a mark.
 func (l expectedReaders) isExpected(ev agent.SessionEvent) bool {
-	if ev.Kind != "serve" || ev.Op == "real" {
+	// A reader jit only guessed (ByLikely: carried over from an earlier
+	// read) is not the program the mark names, so it is never expected.
+	if ev.Kind != "serve" || ev.Op == "real" || ev.ByLikely {
 		return false
 	}
 	for _, m := range l.Expected {
@@ -184,6 +205,9 @@ var decoysExpectCmd = &cobra.Command{
 		root, list, err := openExpected()
 		if err != nil {
 			return fmt.Errorf("jit decoys expect: %w", err)
+		}
+		if runsScripts(args[0]) {
+			return fmt.Errorf("jit decoys expect: %s runs any script it is given, so marking it expected would hide every script's reads; nothing marked", filepath.Base(args[0]))
 		}
 		mark := expectedReader{Program: args[0], SinceUnix: time.Now().Unix()}
 		if decoysFile != "" {

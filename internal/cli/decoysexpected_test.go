@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -78,5 +79,37 @@ func TestDecoysExpectAndUnexpectRoundTrip(t *testing.T) {
 	}
 	if got := run("decoys", "unexpect", "/usr/bin/editor"); len(got.Expected) != 0 {
 		t.Fatalf("unexpect with no file removes every mark: %+v", got)
+	}
+}
+
+// An interpreter's name says nothing about what it runs: marking python3
+// expected would hide every script's decoy reads. jit refuses those, and a
+// reader it only guessed is never expected.
+func TestExpectedRefusesInterpretersAndGuessedReaders(t *testing.T) {
+	for _, p := range []string{"/usr/bin/python3", "/opt/homebrew/bin/python3.14", "/usr/local/bin/node22", "/bin/bash", "/opt/homebrew/Cellar/uv/0.12.18/bin/uv"} {
+		if !runsScripts(p) {
+			t.Errorf("%s: can be marked, want refused", p)
+		}
+	}
+	for _, p := range []string{"/Applications/Some Editor.app/Contents/MacOS/Some Editor", "/usr/bin/backupd", "/usr/local/bin/shellcheck"} {
+		if runsScripts(p) {
+			t.Errorf("%s: refused, want markable", p)
+		}
+	}
+	list := expectedReaders{Expected: []expectedReader{{Program: "/usr/bin/backupd"}}}
+	guessed := agent.SessionEvent{Kind: "serve", Op: "decoy", By: "/usr/bin/backupd", ByLikely: true, Labels: []string{"~/w/.env"}}
+	if list.isExpected(guessed) {
+		t.Error("a guessed reader was tagged expected")
+	}
+
+	withFixtureHome(t)
+	t.Cleanup(func() { decoysFormat, decoysFile = "text", "" })
+	decoysFormat, decoysFile = "text", ""
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"decoys", "expect", "/usr/bin/python3"})
+	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "runs any script") {
+		t.Fatalf("marking python3: %v", err)
 	}
 }
