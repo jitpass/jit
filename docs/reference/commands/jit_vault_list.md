@@ -36,6 +36,7 @@ jit vault list [flags]
       --by string       group secrets by: "path" (default), "origin" (source file), or "group" (import batch) (default "path")
       --format string   output format: "text" (default) or "json" (default "text")
   -l, --long            show each secret's class and last-updated age (terminal output only)
+      --users           with --format json: find every profile that uses each secret, in any project folder (slower: it searches your home folder)
 ```
 
 ### Options inherited from parent commands
