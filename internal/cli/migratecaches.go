@@ -165,9 +165,10 @@ func renderAgentCleanupPlan(w io.Writer, home string, c migrate.AgentCacheCleanu
 			countWord(copies, "copy", "copies"), countWord(len(c.Edited), "file", "files"))
 		for _, agent := range sortedAgents(c.Edited) {
 			fmt.Fprintf(w, "    %-14s %s\n", agent, agentAreaBreakdown(editsByAgentArea(c.Edited), agent))
+			renderAgentCopyRows(w, home, c.Edited, agent)
 		}
 	}
-	renderAgentSkips(w, c)
+	renderAgentSkips(w, home, c)
 }
 
 // renderAgentCleanupResult prints what a sweep DID. Green for what was
@@ -179,6 +180,7 @@ func renderAgentCleanupResult(w io.Writer, home string, c migrate.AgentCacheClea
 			countWord(c.Occurrences(), "copy", "copies"))
 		for _, agent := range sortedAgents(c.Edited) {
 			fmt.Fprintf(w, "    %-14s %s\n", agent, agentAreaBreakdown(editsByAgentArea(c.Edited), agent))
+			renderAgentCopyRows(w, home, c.Edited, agent)
 		}
 		// Naming the files, because undo cannot find them on its own. These
 		// are separate paths from the one the user migrated, and
@@ -193,7 +195,7 @@ func renderAgentCleanupResult(w io.Writer, home string, c migrate.AgentCacheClea
 		fmt.Fprint(w, "    "+cPath.Sprint(glyphAction)+" ")
 		fmt.Fprintln(w, cPath.Sprint(agentCleanupUndoCommand(home, c.Edited)))
 	}
-	renderAgentSkips(w, c)
+	renderAgentSkips(w, home, c)
 }
 
 // maxNamedCleanupPaths is how many paths the undo command spells out before
@@ -257,7 +259,7 @@ func agentDirsOf(paths []string) []string {
 // each with the reason in the user's terms. Amber, because every one is a copy
 // still on disk that the user has to decide about — the honest counterweight
 // to the green line above it.
-func renderAgentSkips(w io.Writer, c migrate.AgentCacheCleanup) {
+func renderAgentSkips(w io.Writer, home string, c migrate.AgentCacheCleanup) {
 	if len(c.Skipped) == 0 {
 		return
 	}
@@ -269,8 +271,101 @@ func renderAgentSkips(w io.Writer, c migrate.AgentCacheCleanup) {
 			agent = "an agent"
 		}
 		fmt.Fprintf(w, "    %-14s %s\n", agent, s.Reason)
+		renderCopyRow(w, home, s.Path, s.Copies)
 	}
 	fmt.Fprintln(w, "    "+glyphAction+" delete those files yourself, or re-run after any live session ends")
+}
+
+// renderAgentCopyRows prints, under one agent's summary line, an evidence
+// row per file: the path and which vault variable sits on which line. The
+// summary line above says "4 in edit history"; these rows are what lets the
+// reader open the file at the line and see the copy for themselves. Every
+// file is named — a row hidden behind "and 6 more" is a copy the reader
+// cannot check, and the plan is the consent for rewriting exactly these.
+func renderAgentCopyRows(w io.Writer, home string, edits []migrate.AgentCacheEdit, agent string) {
+	for _, e := range edits {
+		name := e.Agent
+		if name == "" {
+			name = "an agent"
+		}
+		if name != agent {
+			continue
+		}
+		renderCopyRow(w, home, e.Path, e.Copies)
+	}
+}
+
+// renderCopyRow is one evidence line: the file, then the copies in it.
+func renderCopyRow(w io.Writer, home, path string, copies []migrate.AgentCacheCopy) {
+	if path == "" {
+		return
+	}
+	fmt.Fprint(w, "      "+glyphBranch+" ")
+	fmt.Fprint(w, cPath.Sprint(displayPath(home, path)))
+	if summary := copySummary(copies); summary != "" {
+		fmt.Fprint(w, "  "+summary)
+	}
+	fmt.Fprintln(w)
+}
+
+// maxNamedCopyLines bounds how many line numbers one variable spells out
+// in a row before the rest collapse to a count. Four is enough to open the
+// file at the first and see the pattern; a transcript with the same token
+// on ninety lines would otherwise turn one evidence row into a paragraph.
+const maxNamedCopyLines = 4
+
+// copySummary renders a file's copies in the reader's words — "STRIPE_KEY
+// line 12, DATABASE_URL lines 75, 80" — grouped by variable in the order
+// they first appear. A copy without a line (a binary store) is named with
+// its count instead: "STRIPE_KEY ×2".
+func copySummary(copies []migrate.AgentCacheCopy) string {
+	if len(copies) == 0 {
+		return ""
+	}
+	var order []string
+	lines := map[string][]int{}
+	for _, c := range copies {
+		if _, seen := lines[c.Var]; !seen {
+			order = append(order, c.Var)
+		}
+		lines[c.Var] = append(lines[c.Var], c.Line)
+	}
+	parts := make([]string, 0, len(order))
+	for _, v := range order {
+		parts = append(parts, v+lineList(lines[v]))
+	}
+	return joinList(parts)
+}
+
+// lineList is the " line 12" / " lines 12, 40" / " ×3" tail of one
+// variable's summary.
+func lineList(ls []int) string {
+	if len(ls) == 0 {
+		return ""
+	}
+	if ls[0] == 0 {
+		if len(ls) == 1 {
+			return ""
+		}
+		return fmt.Sprintf(" ×%d", len(ls))
+	}
+	word := " line "
+	if len(ls) > 1 {
+		word = " lines "
+	}
+	shown := ls
+	if len(shown) > maxNamedCopyLines {
+		shown = shown[:maxNamedCopyLines]
+	}
+	nums := make([]string, 0, len(shown))
+	for _, l := range shown {
+		nums = append(nums, fmt.Sprint(l))
+	}
+	out := word + strings.Join(nums, ", ")
+	if rest := len(ls) - len(shown); rest > 0 {
+		out += fmt.Sprintf(" and %d more", rest)
+	}
+	return out
 }
 
 // editsByAgentArea buckets edits as agent -> area -> count.
