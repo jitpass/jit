@@ -85,6 +85,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	if summary.Deep {
 		fmt.Fprint(w, deepScanLine(summary))
 	}
+	fmt.Fprint(w, reviewedLine(summary))
 	if len(summary.DegradedScanners) > 0 {
 		fmt.Fprint(w, "  ")
 		noun := "categories"

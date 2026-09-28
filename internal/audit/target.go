@@ -81,6 +81,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	// Same exclusion Scan applies; the walk above already skips excluded
 	// directories, this catches a named file or a nested one.
 	all = dropExcluded(cfg, all)
+	all, reviewed := dropReviewed(cfg, all)
 
 	// Same redundancy filter Scan applies: a targeted directory scan runs the
 	// classify halves too, so a claimed file could otherwise be reported both
@@ -96,6 +97,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	annotateRemedies(all, cfg.HomeDir, cfg.K8sMigratable, cfg.StreamlitMigratable)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
+	summary.Reviewed = reviewed
 	summary.Targets = targets
 	summary.FilesScanned = filesScanned
 	summary.ExcludedPaths = cfg.ExcludePaths

@@ -237,7 +237,7 @@ import (
 // in the same file. Counted in the ledger as one exposed secret per value
 // (the same cause_group for every copy of it); the protected count is not
 // reduced, so the score falls by the copy, not by the vaulted entry.
-const SchemaVersion = "0.24.0"
+const SchemaVersion = "0.25.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -686,6 +686,12 @@ type ScanSummary struct {
 	// vaultNeedleSet.
 	VaultConfigSkipped int `json:"vault_config_skipped,omitempty"`
 
+	// Reviewed is how many findings matched a review mark (`jit scan
+	// review`) and were left out: a key in a test file the user checked
+	// and said is not live. --unfiltered keeps them, tagged. Added in
+	// 0.25.0. See review.go.
+	Reviewed int `json:"reviewed,omitempty"`
+
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and
@@ -789,6 +795,10 @@ type Config struct {
 	// report just flagged. Same contract: read-only, prompt-free, nil
 	// keeps the optimistic pre-hook behavior.
 	StreamlitMigratable func(path string) (reason string, ok bool)
+
+	// Reviewed holds the user's review marks; a finding matching one is
+	// dropped and counted in ScanSummary.Reviewed. Nil reads no marks.
+	Reviewed *ReviewStore
 }
 
 // NewConfig builds a Config for a real run against the actual machine.

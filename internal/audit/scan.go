@@ -143,12 +143,14 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 
 	all = dropExcluded(cfg, all)
 	all = dropRedundantExposedSecrets(all)
+	all, reviewed := dropReviewed(cfg, all)
 	// Same seam, same reason: who can act on each finding (and the id that
 	// groups copies of one secret) is set once, centrally, so every renderer
 	// and consumer reads identical answers.
 	annotateRemedies(all, cfg.HomeDir, cfg.K8sMigratable, cfg.StreamlitMigratable)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
+	summary.Reviewed = reviewed
 	summary.FilesScanned = filesWalked
 	summary.ExcludedPaths = cfg.ExcludePaths
 	summary.DegradedScanners = degraded

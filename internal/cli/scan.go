@@ -244,6 +244,7 @@ var scanCmd = &cobra.Command{
 		// newProgress. --score deliberately gets it too: it runs the entire
 		// scan before printing its one line, so it's just as silent otherwise.
 		cfg.Unfiltered = scanUnfiltered
+		cfg.Reviewed = loadScanReviews(cmd)
 		excludes, excludeErr := resolveScanExcludes(scanExclude, cfg.HomeDir)
 		if excludeErr != nil {
 			return fmt.Errorf("jit scan: %w", excludeErr)
