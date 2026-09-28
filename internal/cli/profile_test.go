@@ -575,6 +575,30 @@ func TestProfileRmProjectScopeAndMissing(t *testing.T) {
 	t.Logf("not found:\n%s", out)
 }
 
+// The app's Delete Profile asks the JSON dry run first: a project profile
+// is an answer (scope, project, refused) it can word a dialog from, not an
+// error it can only print.
+func TestProfileRmDryRunJSONNamesTheProject(t *testing.T) {
+	h := newProfileHarness(t)
+	proj := filepath.Join(h.home, "code", "billing-sync")
+	writeFixtureProfile(t, proj, "billing-sync", "BILLING_URL: billing-sync/BILLING_URL\n")
+
+	out, err := h.run("", "profile", "rm", "--dry-run", "--format", "json", "billing-sync")
+	if err != nil {
+		t.Fatalf("dry run of a project profile failed: %v\n%s", err, out)
+	}
+	var got profileRmJSON
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if got.Scope != "project" || got.Project != proj || !got.Refused || got.Profile != "billing-sync" {
+		t.Errorf("dry run = %+v, want scope project, project %s, refused", got, proj)
+	}
+	if h.gestures != 0 {
+		t.Errorf("a dry run reached Touch ID")
+	}
+}
+
 // A file jit can't read might be the launcher: strict discovery refuses,
 // before any prompt and before Touch ID.
 func TestProfileRmStrictFailureRefuses(t *testing.T) {

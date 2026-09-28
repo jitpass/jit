@@ -58,7 +58,8 @@ var profileRmCmd = &cobra.Command{
 		"-y/--yes skips only the confirmation. --dry-run shows the plan and\n" +
 		"stops. With --format json it prints profile, scope, launchers,\n" +
 		"delete_secrets, keep_secrets, missing_secrets, coverage_complete,\n" +
-		"refused and error.",
+		"refused and error; for a project profile, scope \"project\", project\n" +
+		"(its folder) and refused.",
 	Example: "  jit profile rm k8s-docker-desktop\n" +
 		"  jit profile rm --dry-run --format json token",
 	Args:              requireArgs(1, 1, "a profile name (see `jit status`)"),
@@ -96,6 +97,9 @@ type profileRmJSON struct {
 	CoverageComplete bool                 `json:"coverage_complete"`
 	Refused          bool                 `json:"refused"`
 	Error            string               `json:"error,omitempty"`
+	// Project is set, with scope "project", for a project profile: it goes
+	// with its project (`jit migrate remove <project>`), so rm refuses.
+	Project string `json:"project,omitempty"`
 }
 
 func runProfileRm(cmd *cobra.Command, args []string) error {
@@ -125,7 +129,14 @@ func runProfileRm(cmd *cobra.Command, args []string) error {
 
 	manifest := globalManifestPath(home, name)
 	if manifest == "" {
-		return profileRmNotGlobal(home, root, cwd, name)
+		project := profileRmProject(home, root, cwd, name)
+		if project != "" && profileRmDryRun && profileRmFormat == "json" {
+			return writeJSON(out, profileRmJSON{
+				Profile: name, Scope: string(profile.ScopeProject), Project: project, Refused: true,
+				Launchers: []launchers.Launcher{}, DeleteSecrets: []string{}, KeepSecrets: []string{}, MissingSecrets: []string{},
+			})
+		}
+		return profileRmNotGlobal(home, project, name)
 	}
 
 	// Strict: any file jit can't read might be the one launching this
@@ -220,20 +231,30 @@ func runProfileRm(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// profileRmProject is the project a project profile named name belongs to,
+// or "" when there is none.
+func profileRmProject(home, root, cwd, name string) string {
+	// Lenient: this only chooses which answer to give.
+	m, err := launchers.Discover(launchers.Options{Home: home, Root: root, Cwd: cwd})
+	if err != nil {
+		return ""
+	}
+	for _, p := range m.ProfilesNamed(name) {
+		if p.Scope == profile.ScopeProject && p.Project != "" {
+			return p.Project
+		}
+	}
+	return ""
+}
+
 // profileRmNotGlobal is the error for a name with no global manifest: a
 // project profile goes with its project, and anything else doesn't exist.
-func profileRmNotGlobal(home, root, cwd, name string) error {
-	// Lenient: this only chooses which error to show.
-	m, err := launchers.Discover(launchers.Options{Home: home, Root: root, Cwd: cwd})
-	if err == nil {
-		for _, p := range m.ProfilesNamed(name) {
-			if p.Scope == profile.ScopeProject && p.Project != "" {
-				return &hintedError{
-					msg:  fmt.Sprintf("jit profile rm: %s is a project profile in %s; it goes with its project", name, displayPath(home, p.Project)),
-					cmd:  "jit migrate remove " + displayPath(home, p.Project),
-					note: "removes the project's profiles and secrets together",
-				}
-			}
+func profileRmNotGlobal(home, project, name string) error {
+	if project != "" {
+		return &hintedError{
+			msg:  fmt.Sprintf("jit profile rm: %s is a project profile in %s; it goes with its project", name, displayPath(home, project)),
+			cmd:  "jit migrate remove " + displayPath(home, project),
+			note: "removes the project's profiles and secrets together",
 		}
 	}
 	return fmt.Errorf("jit profile rm: no global profile named %s", name)

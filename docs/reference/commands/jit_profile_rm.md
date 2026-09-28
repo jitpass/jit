@@ -22,7 +22,8 @@ Beyond the [y/N] confirmation, deleting secrets needs a fresh Touch ID;
 -y/--yes skips only the confirmation. --dry-run shows the plan and
 stops. With --format json it prints profile, scope, launchers,
 delete_secrets, keep_secrets, missing_secrets, coverage_complete,
-refused and error.
+refused and error; for a project profile, scope "project", project
+(its folder) and refused.
 
 ```
 jit profile rm <profile> [flags]
