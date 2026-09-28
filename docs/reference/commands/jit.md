@@ -38,6 +38,7 @@ jit [flags]
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports (name the file(s) to convert)
 * [jit mount](jit_mount.md)	 - Re-point or register a project's live mounts
 * [jit profile](jit_profile.md)	 - Write, edit, and delete profile manifests
+* [jit review](jit_review.md)	 - Mark scan findings you checked as not live, so scan stops reporting them
 * [jit run](jit_run.md)	 - Execute a command with a profile's secrets injected into its environment
 * [jit scan](jit_scan.md)	 - Scan for plaintext secrets exposed on this machine (read-only)
 * [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)
@@ -47,6 +48,7 @@ jit [flags]
 * [jit uninstall](jit_uninstall.md)	 - Remove jit's service, shims, and binary (keeps your vault unless --purge)
 * [jit unlock](jit_unlock.md)	 - Unlock jit's session now (prompts Touch ID if needed)
 * [jit unmount](jit_unmount.md)	 - Reverse a live .env mount back into a plain file
+* [jit unreview](jit_unreview.md)	 - Remove review marks, so scan reports those findings again
 * [jit upgrade](jit_upgrade.md)	 - Download the latest release, verify it, and swap this binary + service onto it
 * [jit vault](jit_vault.md)	 - Manage the local encrypted secret vault
 * [jit version](jit_version.md)	 - Print jit's version (same as `jit --version`)

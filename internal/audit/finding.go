@@ -686,10 +686,10 @@ type ScanSummary struct {
 	// vaultNeedleSet.
 	VaultConfigSkipped int `json:"vault_config_skipped,omitempty"`
 
-	// Reviewed is how many findings matched a review mark (`jit scan
-	// review`) and were left out: a key in a test file the user checked
-	// and said is not live. --unfiltered keeps them, tagged. Added in
-	// 0.25.0. See review.go.
+	// Reviewed is how many findings matched a review mark (`jit review`)
+	// and were left out: a key in a test file the user checked and said
+	// is not live. Zero on --unfiltered, which keeps them, tagged. Added
+	// in 0.25.0. See review.go.
 	Reviewed int `json:"reviewed,omitempty"`
 
 	// JitProtectedCount is how many registered jit live mounts (FIFOs

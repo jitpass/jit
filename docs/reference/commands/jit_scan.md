@@ -65,6 +65,4 @@ jit scan [path...] [flags]
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
-* [jit scan review](jit_scan_review.md)	 - Mark findings you checked as not live, so scan stops reporting them
-* [jit scan unreview](jit_scan_unreview.md)	 - Remove review marks, so scan reports those findings again
 
