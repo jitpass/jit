@@ -283,11 +283,12 @@ func (s *Server) discloseChallengeFull(reasonFor func(unlocking bool) string, op
 	s.pendingChallenge = pending
 	s.mu.Unlock()
 
-	// A consent broker, when one is connected, sees the request first and
-	// may refuse it outright; only its allow (or its absence) reaches the
-	// screen. brokerConsent stamps pending with the consent id the outcome
-	// below must carry, and status keeps pointing at the same snapshot, so
-	// `jit status` during a brokered wait still explains it.
+	// A consent broker, when one is connected, is shown the request: beside
+	// the Touch ID, where its Deny withdraws the dialog, or (an older app)
+	// in front of it, where only its allow reaches the screen. Either way
+	// parkWithBrokers stamps pending with the consent id the outcome below
+	// must carry, and status keeps pointing at the same snapshot, so `jit
+	// status` during a brokered wait still explains it.
 	mek, prompted, err := s.promptOrBroker(pending, reason, true)
 
 	event := unlockEvent(op, c)

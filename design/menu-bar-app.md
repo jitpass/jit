@@ -124,6 +124,18 @@ if the app is abandoned.
    path, and it never adds authority: the app can only refuse or ask the
    human.
 
+   A broker that also sets `touch_id_follows` on `subscribe` shows each
+   request beside its Touch ID instead of in front of it
+   (`design/consent-side-panel-plan.md`). Its `pending` events carry
+   `touch_id_follows: true`; the Touch ID appears once the app sends
+   `consent_shown` (prompt-free, grants nothing) or after 250 ms; `allow`
+   is a no-op; `deny` withdraws the dialog on screen, and a finger that
+   lands after it is still refused. The ninety-second wait does not apply.
+   The mode is used only while every connected broker declared it, so an
+   older app alongside keeps the sheet-first order. The audit records a
+   Deny in the app as "denied in JitPass"; Cancel on the dialog keeps the
+   key store's own error.
+
 Nothing else in `internal/agent` changes. `internal/consent` stays pure.
 
 ## Phases and how each reverts
