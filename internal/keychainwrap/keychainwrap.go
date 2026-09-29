@@ -730,10 +730,6 @@ func realChallenge(reason string) error {
 	return goErr(C.kw_challenge(cReason))
 }
 
-// realChallengeCancel is realChallenge on a context this side holds, so a
-// closed withdraw can invalidate it while kw_challenge_ctx blocks. The
-// context is freed only after the watcher has stopped: stop returns once
-// the invalidate can no longer run.
 // challengeOnDeadContext runs the real challenge on a context invalidated
 // before it starts: what a withdrawal meets if it slips in after fetchMEK's
 // check and before the prompt. For TestHardwareChallengeWithdrawn, which
@@ -747,6 +743,10 @@ func challengeOnDeadContext(reason string) error {
 	return goErr(C.kw_challenge_ctx(cReason, ctx))
 }
 
+// realChallengeCancel is realChallenge on a context this side holds, so a
+// closed withdraw can invalidate it while kw_challenge_ctx blocks. The
+// context is freed only after the watcher has stopped: stop returns once
+// the invalidate can no longer run.
 func realChallengeCancel(reason string, withdraw <-chan struct{}) error {
 	cReason := C.CString(reason)
 	defer C.free(unsafe.Pointer(cReason))
