@@ -79,12 +79,30 @@ func consentCaller(c *caller) consent.Caller {
 // count rides in the protected head rather than the identity half — it is part
 // of the decision, not context for it, so it is never what truncation drops.
 func consentReason(req consent.Request) string {
+	return consentReasonFor(req, false)
+}
+
+// unlockAsWell marks a disclosed prompt whose approval also unlocks the vault
+// (see forceDisclosedChallengeUnlocking). It rides in the protected head, so
+// no caller-chosen length can push it out of the dialog: the human is
+// authorizing the whole vault as well. It never LEADS the sentence: a reason
+// starting "unlock the vault" means a plain unlock to everything that reads
+// one (the app's ConsentRequest.isUnlock, the consent test fixtures), and this
+// one asks for a credential first.
+const unlockAsWell = " and unlock the vault"
+
+// consentReasonFor is consentReason, with unlockAsWell after the credential
+// when the approval will also open the session.
+func consentReasonFor(req consent.Request, unlocking bool) string {
 	cc, class := req.Caller, req.Credential
 	// Built head-first, so the budget is apportioned from what the fixed part
 	// actually costs rather than from constants that have to be re-tuned every
 	// time a class name gets longer. Whatever is left over goes to the
 	// identity, which is the part that can be arbitrarily long.
 	head := fmt.Sprintf("use your %s credential", class)
+	if unlocking {
+		head += unlockAsWell
+	}
 	switch n := req.PriorRefusals; {
 	case n == 1:
 		head += " (refused once)"
@@ -234,14 +252,30 @@ func truncateHead(s string, max int) string {
 // loop could simply outlast the user. The engine's per-request backoff
 // (consent.Throttled) is what supplies the missing half — a pause rather than
 // a cached Deny, so nothing is locked out and a genuine retry still asks.
-func (s *Server) gateConsent(class string, c *caller) error {
+//
+// unlockOp is the op of the request this gate stands in front of, when that
+// request goes straight on to unlock (an unwrap does). On a locked vault the
+// one prompt then says so and its approval opens the session, instead of a
+// second Touch ID a moment later asking to unlock for the same request. ""
+// offers no unlock.
+func (s *Server) gateConsent(class string, c *caller, unlockOp string) error {
 	if s.Consent == nil || c == nil || !consent.RequiresConsent(class) {
 		return nil
+	}
+	// Settle the session first. A session that lapsed without its timer
+	// firing is collected by the first thing that looks, and collecting it
+	// clears consent (notifyPendingLock). Looking HERE puts that clear before
+	// Decide, so it neither ends this request's own approval (Decide caches
+	// nothing that a Clear overtook) nor lets a decision from the lapsed
+	// session answer this request. peekSession never extends the session.
+	if mek := s.peekSession(); mek != nil {
+		wipe(mek)
 	}
 	cc := consentCaller(c)
 	cc.DescendsFromGrant = s.descendsFromTrust(c.pid)
 	prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
-		if err := s.forceDisclosedChallenge(consentReason(req), c); err != nil {
+		reasonFor := func(unlocking bool) string { return consentReasonFor(req, unlocking) }
+		if err := s.forceDisclosedChallengeUnlocking(reasonFor, c, unlockOp); err != nil {
 			return consent.Deny, consent.Once, nil
 		}
 		return consent.Allow, consent.Session, nil
