@@ -171,11 +171,14 @@ type reviewResult struct {
 	// Skipped counts findings on a named line that a mark does not fit:
 	// ones Protect or Redact fixes.
 	Skipped int `json:"skipped,omitempty"`
+	// Missed is each FILE[:LINE] the scan found nothing on any more: the
+	// line moved or the value changed since the scan that listed it.
+	Missed []string `json:"missed,omitempty"`
 }
 
-func writeReviewResult(w io.Writer, format, verb string, entries []reviewEntry, skipped int) error {
+func writeReviewResult(w io.Writer, format, verb string, entries []reviewEntry, skipped int, missed ...string) error {
 	if format == "json" {
-		result := reviewResult{Skipped: skipped}
+		result := reviewResult{Skipped: skipped, Missed: missed}
 		if verb == "unreviewed" {
 			result.Unreviewed = entries
 		} else {
@@ -204,6 +207,11 @@ func writeReviewResult(w io.Writer, format, verb string, entries []reviewEntry, 
 			where += ":" + strconv.Itoa(*e.Line)
 		}
 		if _, err := fmt.Fprintf(w, "%s %s  %s\n", glyphDone, where, e.Label); err != nil {
+			return err
+		}
+	}
+	for _, m := range missed {
+		if _, err := fmt.Fprintf(w, "Nothing to mark on %s any more: scan again.\n", m); err != nil {
 			return err
 		}
 	}
@@ -273,6 +281,7 @@ var reviewCmd = &cobra.Command{
 		cfg.Reviewed = nil
 		now := time.Now()
 		var marked []audit.ReviewMark
+		var missed []string
 		skipped := 0
 		for _, t := range targets {
 			findings, _, err := audit.TargetedScan(cfg, []string{t.path})
@@ -300,13 +309,18 @@ var reviewCmd = &cobra.Command{
 					marked = append(marked, m)
 				}
 			}
+			// One target that moved since the scan must not cost the rest
+			// their marks: it is named in the result instead.
 			if matched == 0 {
 				where := shortPath(t.path)
 				if t.line != nil {
-					where = fmt.Sprintf("line %d of %s", *t.line, where)
+					where += ":" + strconv.Itoa(*t.line)
 				}
-				return fmt.Errorf("jit review: scan finds nothing to mark on %s", where)
+				missed = append(missed, where)
 			}
+		}
+		if len(marked) == 0 && skipped == 0 {
+			return fmt.Errorf("jit review: scan finds nothing to mark on %s", strings.Join(missed, ", "))
 		}
 		if len(marked) == 0 {
 			return fmt.Errorf("jit review: nothing there can be marked: protect, redact or rotate it (%d found)", skipped)
@@ -314,7 +328,7 @@ var reviewCmd = &cobra.Command{
 		if err := saveReviewStore(store); err != nil {
 			return fmt.Errorf("jit review: %w", err)
 		}
-		return writeReviewResult(cmd.OutOrStdout(), reviewFormat, "reviewed", reviewEntries(marked), skipped)
+		return writeReviewResult(cmd.OutOrStdout(), reviewFormat, "reviewed", reviewEntries(marked), skipped, missed...)
 	},
 }
 
