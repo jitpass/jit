@@ -101,6 +101,14 @@ type Request struct {
 	// they prompt (OpConsentList). An agent that predates it ignores the
 	// field and the stream simply never carries a pending request.
 	Broker bool `json:"broker,omitempty"`
+	// TouchIDFollows, with Broker on "subscribe", says the broker shows each
+	// request BESIDE its Touch ID instead of in front of it: it never sends
+	// an allow, only a deny or "consent_shown" (consentbroker.go). The agent
+	// uses that mode only while every connected broker declared it. An agent
+	// that predates the field ignores it, and its pending events never carry
+	// SessionEvent.TouchIDFollows, which is how the broker knows to fall back
+	// to asking first.
+	TouchIDFollows bool `json:"touch_id_follows,omitempty"`
 	// ConsentID and Decision are "consent_answer"'s arguments: the pending
 	// event's ConsentID, and DecisionAllow or DecisionDeny.
 	ConsentID string `json:"consent_id,omitempty"`
@@ -299,9 +307,16 @@ const (
 	// and answers with a Decision. "consent_list" returns the requests waiting
 	// right now (a broker that just connected re-syncs from it), prompt-free
 	// for OpHistory's reason. An "allow" only lets the agent's own Touch ID
-	// proceed; "deny" refuses without one. Neither op needs an unlock.
+	// proceed; "deny" refuses without one. Neither op needs an unlock. For a
+	// request marked TouchIDFollows, "allow" is a no-op and "deny" withdraws
+	// the Touch ID already on screen.
 	OpConsentList   = "consent_list"
 	OpConsentAnswer = "consent_answer"
+	// OpConsentShown tells the agent a request marked TouchIDFollows is on
+	// screen, so its Touch ID need not wait out shownWait. It grants
+	// nothing: at most it saves a quarter of a second. Prompt-free, like
+	// OpConsentAnswer.
+	OpConsentShown = "consent_shown"
 	// OpAuditAppend hands the application audit log one finished invocation
 	// for the agent to write, instead of the CLI appending to audit.jsonl
 	// itself. It exists for callers that can REACH the agent but cannot write
@@ -896,6 +911,11 @@ type SessionEvent struct {
 	// that answers it, so a renderer can close the one with the other.
 	// Empty on every challenge that went straight to the screen.
 	ConsentID string `json:"consent_id,omitempty"`
+	// TouchIDFollows, on a KindPending event, says the Touch ID for it is
+	// appearing now and the broker's allow is not awaited: show the request
+	// beside the dialog, offer Deny only, and send "consent_shown" once it
+	// is drawn. False on a request that waits for the broker's answer first.
+	TouchIDFollows bool `json:"touch_id_follows,omitempty"`
 	// Job names the AI job a job_allow or job_run event is about, so a broker
 	// rendering the pending request can show that job's command, folder and
 	// secrets from job_list (design/agent-jobs.md, step 4). Empty otherwise.

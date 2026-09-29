@@ -461,6 +461,9 @@ type Server struct {
 	brokerMu        sync.Mutex
 	pendingConsents map[string]*pendingConsent
 	brokerWait      time.Duration
+	// shownWait is how long a TouchIDFollows request waits for the broker's
+	// consent_shown before its Touch ID appears anyway; a field for tests.
+	shownWait time.Duration
 	// shutdown is closed exactly once by Close, so streaming connections end
 	// with the listener instead of outliving it.
 	shutdown     chan struct{}
@@ -517,6 +520,7 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		identify:        callerFromConn,
 		subscribeBuffer: defaultSubscribeBuffer,
 		brokerWait:      defaultBrokerWait,
+		shownWait:       defaultShownWait,
 		shutdown:        make(chan struct{}),
 	}
 }
@@ -742,6 +746,14 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: "consent_answer: missing consent_id"}
 		}
 		if err := s.answerConsent(req.ConsentID, req.Decision); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true}
+	case OpConsentShown:
+		if req.ConsentID == "" {
+			return Response{OK: false, Error: "consent_shown: missing consent_id"}
+		}
+		if err := s.consentShown(req.ConsentID); err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		return Response{OK: true}
