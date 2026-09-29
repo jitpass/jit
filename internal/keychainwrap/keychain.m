@@ -17,11 +17,39 @@ static char *dupNSString(NSString *s) {
     return strdup(utf8);
 }
 
+static KWResult kwChallengeWith(LAContext *ctx, const char *reason);
+
 KWResult kw_challenge(const char *reason) {
+    @autoreleasepool {
+        return kwChallengeWith([[LAContext alloc] init], reason);
+    }
+}
+
+void *kw_context_new(void) {
+    return (__bridge_retained void *)[[LAContext alloc] init];
+}
+
+void kw_context_invalidate(void *ctx) {
+    // LAContext's invalidate is documented as callable from any thread, and
+    // it takes a dialog that is up down with it (spike/consent-sync). On a
+    // context whose prompt has not started yet, the prompt fails at once.
+    [(__bridge LAContext *)ctx invalidate];
+}
+
+void kw_context_free(void *ctx) {
+    (void)(__bridge_transfer LAContext *)ctx;
+}
+
+KWResult kw_challenge_ctx(const char *reason, void *ctx) {
+    @autoreleasepool {
+        return kwChallengeWith((__bridge LAContext *)ctx, reason);
+    }
+}
+
+static KWResult kwChallengeWith(LAContext *ctx, const char *reason) {
     KWResult r = {0, NULL};
     @autoreleasepool {
         NSString *reasonStr = [NSString stringWithUTF8String:reason];
-        LAContext *ctx = [[LAContext alloc] init];
 
         __block int done = 0;
         __block BOOL approved = NO;

@@ -137,11 +137,42 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
     }
 }
 
+static SEResult seOpenWith(LAContext *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
+                           const char *reason, unsigned char **out, int *out_len, int *decrypting);
+
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
                  const char *reason, unsigned char **out, int *out_len, int *decrypting) {
     @autoreleasepool {
+        return seOpenWith([[LAContext alloc] init], tag, group, ct, ct_len, reason, out, out_len, decrypting);
+    }
+}
+
+void *se_context_new(void) {
+    return (__bridge_retained void *)[[LAContext alloc] init];
+}
+
+void se_context_invalidate(void *ctx) {
+    // Callable from any thread; takes the dialog of a decrypt that is
+    // waiting on this context down with it (spike/consent-sync, measured on
+    // a user-presence enclave key).
+    [(__bridge LAContext *)ctx invalidate];
+}
+
+void se_context_free(void *ctx) {
+    (void)(__bridge_transfer LAContext *)ctx;
+}
+
+SEResult se_open_ctx(void *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
+                     const char *reason, unsigned char **out, int *out_len, int *decrypting) {
+    @autoreleasepool {
+        return seOpenWith((__bridge LAContext *)ctx, tag, group, ct, ct_len, reason, out, out_len, decrypting);
+    }
+}
+
+static SEResult seOpenWith(LAContext *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
+                           const char *reason, unsigned char **out, int *out_len, int *decrypting) {
+    @autoreleasepool {
         *decrypting = 0;
-        LAContext *ctx = [[LAContext alloc] init];
         ctx.localizedReason = [NSString stringWithUTF8String:reason];
         OSStatus st = 0;
         SecKeyRef k = copyKey(tag, group, ctx, &st);

@@ -44,6 +44,16 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
                  const char *reason, unsigned char **out, int *out_len, int *decrypting);
 
+// se_context_new returns a retained LAContext for se_open_ctx, which is
+// se_open on that context: invalidating it from another thread
+// (se_context_invalidate) takes the open's dialog down. Free it with
+// se_context_free only once no call can still use it.
+void *se_context_new(void);
+void se_context_invalidate(void *ctx);
+void se_context_free(void *ctx);
+SEResult se_open_ctx(void *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
+                     const char *reason, unsigned char **out, int *out_len, int *decrypting);
+
 // se_list_tags returns the tag of every enclave key in group whose tag
 // starts with prefix, from attributes only (never uses a key, never
 // prompts). *tags is a malloc'd array of *count malloc'd strings.

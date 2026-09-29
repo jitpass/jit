@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"strings"
 	"unsafe"
+
+	"github.com/jitpass/jit/internal/authprompt"
 )
 
 // The statuses this package tells apart. They arrive as OSStatus, or as a
@@ -98,6 +100,13 @@ type enclave interface {
 	remove() error
 	seal(plaintext []byte) ([]byte, error)
 	open(sealed []byte, reason string) ([]byte, error)
+}
+
+// cancelableOpener is an enclave whose open can be withdrawn (openCancel):
+// the hardware. A fetch with a withdraw channel uses it when the slot's
+// enclave has it, and a plain open otherwise.
+type cancelableOpener interface {
+	openCancel(sealed []byte, reason string, withdraw <-chan struct{}) ([]byte, error)
 }
 
 // maxBytes bounds what seal and open take. The vault's MEK is 32 bytes and
@@ -191,6 +200,40 @@ func (h hardware) seal(plaintext []byte) ([]byte, error) {
 }
 
 func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
+	return h.openOn(nil, sealed, reason)
+}
+
+// openCancel is open whose dialog is taken down if withdraw closes before it
+// is answered; the failure is then authprompt.ErrWithdrawn. The context is
+// freed only after the watcher has stopped.
+func (h hardware) openCancel(sealed []byte, reason string, withdraw <-chan struct{}) ([]byte, error) {
+	ctx := C.se_context_new()
+	defer C.se_context_free(ctx)
+	stop := authprompt.Watch(withdraw, func() { C.se_context_invalidate(ctx) })
+	pt, err := h.openOn(ctx, sealed, reason)
+	withdrawn := stop()
+	if err != nil && withdrawn {
+		// A withdrawn decrypt is a cancel, whatever status Security gave
+		// it: never ErrWrongKey (openFailure's reading of a decrypt's -50),
+		// which would tell the caller the sealed bytes are bad.
+		return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w (%w)", ErrCanceled, err), true)
+	}
+	return pt, err
+}
+
+// openOnDeadContext is open on a context invalidated before it starts: what a
+// withdrawal meets if it slips in after fetchMEK's check and before the
+// decrypt. For TestHardwareOpenWithdrawn, which measures what Security does
+// with it (fail at once with no dialog, and with which status).
+func (h hardware) openOnDeadContext(sealed []byte, reason string) ([]byte, error) {
+	ctx := C.se_context_new()
+	defer C.se_context_free(ctx)
+	C.se_context_invalidate(ctx)
+	return h.openOn(ctx, sealed, reason)
+}
+
+// openOn is open on ctx, or on a context of its own when ctx is nil.
+func (h hardware) openOn(ctx unsafe.Pointer, sealed []byte, reason string) ([]byte, error) {
 	if len(sealed) == 0 || len(sealed) > maxBytes {
 		return nil, fmt.Errorf("refusing to open %d bytes", len(sealed))
 	}
@@ -201,7 +244,12 @@ func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 	var out *C.uchar
 	var n, decrypting C.int
 	n0 := C.int(len(sealed)) // #nosec G115 -- bounded by maxBytes above
-	r := C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
+	var r C.SEResult
+	if ctx != nil {
+		r = C.se_open_ctx(ctx, tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
+	} else {
+		r = C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
+	}
 	// A blob that won't decrypt is errSecParam from SecKeyCreateDecryptedData
 	// ("ECIES: Failed to aes-gcm decrypt data", TestHardwareKeyNeverAsking).
 	// Only the decryption's -50 says that: the same status from finding the

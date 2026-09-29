@@ -57,14 +57,14 @@ func TestEnsureMEKIdempotent(t *testing.T) {
 	// Read back through FRESH wrappers: fetchMEK memoizes in w.mek, so two
 	// fetches on one wrapper would compare a cached value against itself and
 	// pass vacuously. Same reasoning PromoteStagedRekeyMEK's verification uses.
-	before, err := testWrapper(noChallenge).fetchMEK("")
+	before, err := testWrapper(noChallenge).fetchMEK("", nil)
 	if err != nil {
 		t.Fatalf("fetching the MEK: %v", err)
 	}
 	if err := w.EnsureMEK(); err != nil {
 		t.Fatalf("EnsureMEK (second call, should be a no-op): %v", err)
 	}
-	after, err := testWrapper(noChallenge).fetchMEK("")
+	after, err := testWrapper(noChallenge).fetchMEK("", nil)
 	if err != nil {
 		t.Fatalf("fetching the MEK again: %v", err)
 	}
@@ -185,13 +185,13 @@ func TestWrapperFetchMEKReturnsIndependentCopies(t *testing.T) {
 	}
 
 	w := testWrapper(noChallenge)
-	first, err := w.fetchMEK("test")
+	first, err := w.fetchMEK("test", nil)
 	if err != nil {
 		t.Fatalf("fetchMEK (1st): %v", err)
 	}
 	wipe(first) // simulates a caller's defer wipe(mek) after use
 
-	second, err := w.fetchMEK("test")
+	second, err := w.fetchMEK("test", nil)
 	if err != nil {
 		t.Fatalf("fetchMEK (2nd): %v", err)
 	}
@@ -213,7 +213,7 @@ func TestCloseWipesTheCachedMEK(t *testing.T) {
 	}
 
 	w := testWrapper(noChallenge)
-	if _, err := w.fetchMEK("test"); err != nil {
+	if _, err := w.fetchMEK("test", nil); err != nil {
 		t.Fatalf("fetchMEK: %v", err)
 	}
 
@@ -250,7 +250,7 @@ func TestCloseIsIdempotentAndSafeWhenUnused(t *testing.T) {
 	w.Close()
 	w.Close()
 
-	if _, err := w.fetchMEK("test"); err == nil {
+	if _, err := w.fetchMEK("test", nil); err == nil {
 		t.Error("expected the failing challenge to still be enforced after Close")
 	}
 	w.Close()
@@ -269,10 +269,10 @@ func TestFetchAfterCloseChallengesAgain(t *testing.T) {
 	var challenges int
 	w := testWrapper(func(string) error { challenges++; return nil })
 
-	if _, err := w.fetchMEK("test"); err != nil {
+	if _, err := w.fetchMEK("test", nil); err != nil {
 		t.Fatalf("fetchMEK (1st): %v", err)
 	}
-	if _, err := w.fetchMEK("test"); err != nil {
+	if _, err := w.fetchMEK("test", nil); err != nil {
 		t.Fatalf("fetchMEK (2nd): %v", err)
 	}
 	if challenges != 1 {
@@ -281,7 +281,7 @@ func TestFetchAfterCloseChallengesAgain(t *testing.T) {
 
 	w.Close()
 
-	got, err := w.fetchMEK("test")
+	got, err := w.fetchMEK("test", nil)
 	if err != nil {
 		t.Fatalf("fetchMEK after Close: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestFetchMEKRejectsAMalformedKeychainItem(t *testing.T) {
 		t.Fatalf("setMEK: %v", err)
 	}
 
-	_, err := w.fetchMEK("test")
+	_, err := w.fetchMEK("test", nil)
 	if err == nil {
 		t.Fatal("fetchMEK accepted a 16-byte master key item; a wrong-length item must never reach the cipher")
 	}
