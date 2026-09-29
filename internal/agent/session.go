@@ -168,7 +168,7 @@ func (s *Server) discloseChallenge(reason, op, jobName string, c *caller) (*Sess
 // The disclosed prompt fetched the vault key and wiped it ("a confirmation,
 // not an unlock"), and the request then asked again to unlock. Now, when the
 // vault is locked at the moment of asking, the one prompt says so (reasonFor
-// is called with true, and adds unlockAsWell) and its approval opens the
+// is called with true, and says unlockAnd) and its approval opens the
 // session with the key it already fetched. The session it opens is exactly
 // the one the second prompt would have opened, for the same caller, so
 // nothing is authorized that the two prompts did not.

@@ -51,80 +51,42 @@ func consentCaller(c *caller) consent.Caller {
 // consentReason is the single line the human decides by. Every part is either
 // kernel-derived (the caller and its lineage) or authoritative (the class is
 // AEAD-bound into the wrap, so a caller cannot lie about it) — nothing
-// caller-reported ever reaches this prompt, unlike Request.Label.
-//
-// The decision-carrying half comes FIRST: macOS opens the sentence with "jit
-// is trying to", and "use your <class> credential" is the verb phrase that
-// completes it. The caller follows as a "for ..." clause. Two reasons, both
-// learned from screenshots of the real dialog:
-//
-//   - READING ORDER. The old shape led with the identity and ended with the
-//     credential, so the eye hit a truncated path ("…mebrew/Caskroom/
-//     claude-code/2.1.212/claude") before the one word that mattered — and
-//     the sentence "jit is trying to <path> … wants" didn't even parse. A
-//     prompt that buries its ask trains the user to stop reading, which is
-//     the exact failure mode consent exists to prevent.
-//   - LENGTH is chosen by whoever wrote the caller's filename. challengeReason
-//     has always capped its output because macOS renders the reason as one
-//     sentence in a small modal. With the fixed part first, the budget is
-//     spent on the ask before any attacker-lengthened path gets a say, so no
-//     filename can push the credential's name out of the dialog. (The
-//     BASENAME is chosen by the same person — see displayExecPath for why an
-//     oddly-located tool still shows where it lives.)
-//
-// A request that has already been refused this session says so. Repetition is
-// the whole mechanism behind prompt fatigue: the tenth identical dialog is
-// evidence that something is asking in a loop, and a prompt that renders it
-// identically to the first leaves the user nothing to notice that with. The
-// count rides in the protected head rather than the identity half — it is part
-// of the decision, not context for it, so it is never what truncation drops.
+// caller-reported ever reaches this prompt, unlike Request.Label. See
+// consentReasonFor for its shape.
 func consentReason(req consent.Request) string {
 	return consentReasonFor(req, false)
 }
 
-// unlockAsWell marks a disclosed prompt whose approval also unlocks the vault
-// (see forceDisclosedChallengeUnlocking). It rides in the protected head, so
-// no caller-chosen length can push it out of the dialog: the human is
-// authorizing the whole vault as well. It never LEADS the sentence: a reason
-// starting "unlock the vault" means a plain unlock to everything that reads
-// one (the app's ConsentRequest.isUnlock, the consent test fixtures), and this
-// one asks for a credential first.
-const unlockAsWell = " and unlock the vault"
+// unlockAnd marks a disclosed prompt whose approval also unlocks the vault
+// (see forceDisclosedChallengeUnlocking): "let terraform unlock the vault and
+// use aws". It is part of the fixed half, so no caller-chosen length can push
+// it out of the dialog: the human is authorizing the whole vault as well. It
+// never LEADS the sentence: a reason starting "unlock the vault" is a plain
+// unlock.
+const unlockAnd = unlockTheVault + " and "
 
-// consentReasonFor is consentReason, with unlockAsWell after the credential
-// when the approval will also open the session.
+// consentReasonFor is consentReason, saying unlockAnd when the approval will
+// also open the session.
+//
+// The shape is "let <who> use your <class> credential, via <launcher>": who
+// asked, then what for (Meni, 2026-09-29). The old shape led with the ask so
+// that a long path could not bury it; the name is bounded instead. The fixed
+// half is built first and the names share what is left, the caller before
+// its launcher, so nothing either of their authors chose can push the
+// credential, the unlock or a warning out of the dialog.
+//
+// With the unlock the credential is named by its one word ("use aws"): the
+// full phrase took a fourth line, and the vault is the larger half of what
+// is being approved.
 func consentReasonFor(req consent.Request, unlocking bool) string {
 	cc, class := req.Caller, req.Credential
-	// Built head-first, so the budget is apportioned from what the fixed part
-	// actually costs rather than from constants that have to be re-tuned every
-	// time a class name gets longer. Whatever is left over goes to the
-	// identity, which is the part that can be arbitrarily long.
-	head := fmt.Sprintf("use your %s credential", class)
+	const lead = "let "
+	what := fmt.Sprintf(" use your %s credential", class)
 	if unlocking {
-		head += unlockAsWell
+		what = " " + unlockAnd + "use " + class
 	}
-	switch n := req.PriorRefusals; {
-	case n == 1:
-		head += " (refused once)"
-	case n > 1:
-		head += fmt.Sprintf(" (refused %d times)", n)
-	}
-	// The honesty qualifier belongs to the protected head for the same reason
-	// the count does: "as best we can tell" changes what the answer means. It
-	// used to be appended by ConsentReaders AFTER truncating this whole
-	// string — so once the refusal count made the line long enough, the count
-	// was sliced mid-word and the user read a dangling "(…".
-	//
-	// Kept short on purpose. The obvious phrasing, "(identified by process
-	// scan)", costs 29 of the 90 runes and pushed the budget below what the
-	// launcher needs, silently dropping "via npm install" from every FIFO
-	// prompt — the weaker-identity path, where that context is worth the
-	// most.
-	if cc.Strength == consent.BestEffort {
-		head += " (identified by scan)"
-	}
-	head += " for "
-	budget := maxReasonLen - len([]rune(head))
+	flags := consentFlags(cc.Strength == consent.BestEffort, req.PriorRefusals)
+	budget := maxReasonLen - len([]rune(lead+what+flags))
 
 	var lineage string
 	if cc.Lineage != "" {
@@ -137,15 +99,39 @@ func consentReasonFor(req consent.Request, unlocking bool) string {
 	who := truncateHead(displayExecPath(cc.ExecPath), budget-len([]rune(lineage)))
 	if who == "" {
 		// The unidentified fallback is subject to the same budget as a real
-		// path. It used to be exempt, which was invisible while ConsentReaders
-		// truncated the finished line — and became an overflow the moment that
-		// truncation was removed, on exactly the callers that reach the highest
-		// refusal counts: an empty ExecPath is what makes every anonymous
-		// caller share one throttle key. macOS then clipped the dialog itself,
-		// cutting off the qualifier this ordering exists to protect.
+		// path: an empty ExecPath is what makes every anonymous caller share
+		// one throttle key, so it is exactly the caller that reaches the
+		// highest refusal counts.
 		who = truncateHead(fmt.Sprintf("a process (pid %d)", cc.PID), budget-len([]rune(lineage)))
 	}
-	return head + who + lineage
+	return lead + who + what + lineage + flags
+}
+
+// consentFlags are the two facts that make a request worth a second look, in
+// one bracket at the sentence's end: "(unverified, refused 2 times)".
+//
+// "unverified" is an identity found by scanning running processes, not
+// vouched for by the kernel: it changes what the answer means. A request
+// already refused this session says so, because repetition is the whole
+// mechanism behind prompt fatigue: the tenth identical dialog is evidence
+// that something is asking in a loop, and a prompt that renders it like the
+// first leaves the user nothing to notice that with. Both are part of the
+// fixed half and never what truncation drops.
+func consentFlags(unverified bool, refusals int) string {
+	var flags []string
+	if unverified {
+		flags = append(flags, "unverified")
+	}
+	switch {
+	case refusals == 1:
+		flags = append(flags, "refused once")
+	case refusals > 1:
+		flags = append(flags, fmt.Sprintf("refused %d times", refusals))
+	}
+	if len(flags) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(flags, ", ") + ")"
 }
 
 const (

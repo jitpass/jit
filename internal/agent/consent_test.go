@@ -596,7 +596,7 @@ func TestTrustRequiresAChallenge(t *testing.T) {
 	}
 }
 
-// The trust prompt must say what trusting actually means. "and everything it
+// The trust prompt must say what trusting actually means. "and what it
 // launches" is the entire scope of the flag, and the only part of the sentence
 // that would change anyone's answer, so it may never be what gets truncated.
 func TestTrustReasonStatesTheScope(t *testing.T) {
@@ -606,7 +606,7 @@ func TestTrustReasonStatesTheScope(t *testing.T) {
 	}}
 	for _, c := range []*caller{nil, long, {pid: 7}} {
 		reason := trustReason(c)
-		if !strings.Contains(reason, "everything it launches") && !strings.Contains(reason, "without further prompts") {
+		if !strings.HasPrefix(reason, "trust ") || !strings.HasSuffix(reason, " and what it launches") {
 			t.Errorf("trustReason(%v) = %q, want the scope stated", c, reason)
 		}
 		if len([]rune(reason)) > maxReasonLen {
@@ -615,16 +615,32 @@ func TestTrustReasonStatesTheScope(t *testing.T) {
 	}
 }
 
-// A consent prompt leads with the ask ("use your <class> credential"), must
-// not let a program's own filename disguise where it came from, and must not
-// be long enough for macOS to clip the dialog.
+// `jit run --trust -- terraform apply` is about to BECOME terraform, so the
+// prompt names terraform. It used to say "jit", which every such prompt did.
+func TestTrustReasonNamesTheCommandThatRuns(t *testing.T) {
+	run := &caller{pid: 1, self: lineage.Process{PID: 1, Argv: []string{
+		"/opt/homebrew/bin/jit", "run", "--trust", "--profile", "release-bot", "--", "/opt/homebrew/bin/terraform", "apply",
+	}}}
+	if got, want := trustReason(run), "trust terraform and what it launches"; got != want {
+		t.Errorf("trustReason = %q, want %q", got, want)
+	}
+	// No command after "--": the caller's own name, as before.
+	bare := &caller{pid: 1, self: lineage.Process{PID: 1, Argv: []string{"/usr/local/bin/make", "--"}}}
+	if got, want := trustReason(bare), "trust make and what it launches"; got != want {
+		t.Errorf("trustReason = %q, want %q", got, want)
+	}
+}
+
+// A consent prompt says who, then what ("let <who> use your <class>
+// credential"), must not let a program's own filename disguise where it came
+// from, and must not be long enough for macOS to clip the dialog.
 func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
 	standard := consentReason(consent.Request{
 		Credential: "gcp",
 		Caller:     consent.Caller{PID: 1, ExecPath: "/usr/local/bin/gcloud"},
 	})
-	if !strings.HasPrefix(standard, "use your gcp credential for gcloud") {
-		t.Errorf("standard tool dir reason = %q, want the ask first, then the bare tool name", standard)
+	if standard != "let gcloud use your gcp credential" {
+		t.Errorf("standard tool dir reason = %q, want the bare tool name, then the ask", standard)
 	}
 
 	// Legitimate install trees put the binary in a versioned or vendored
@@ -639,7 +655,7 @@ func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
 			Credential: "git",
 			Caller:     consent.Caller{PID: 1, ExecPath: tc.path},
 		})
-		if want := "use your git credential for " + tc.name; got != want {
+		if want := "let " + tc.name + " use your git credential"; got != want {
 			t.Errorf("reason for %s = %q, want %q", tc.path, got, want)
 		}
 	}
@@ -663,10 +679,10 @@ func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
 	if len([]rune(huge)) > maxReasonLen {
 		t.Errorf("reason is %d runes, want <= %d", len([]rune(huge)), maxReasonLen)
 	}
-	if !strings.HasPrefix(huge, "use your gcp credential") {
-		t.Errorf("reason = %q, want the credential name intact at the start", huge)
+	if !strings.Contains(huge, " use your gcp credential") {
+		t.Errorf("reason = %q, want the ask intact after a long name", huge)
 	}
-	if !strings.Contains(huge, "gcloud") {
+	if !strings.Contains(huge, "/gcloud use ") {
 		t.Errorf("reason = %q, want the program name kept when a long path is trimmed", huge)
 	}
 }
@@ -727,7 +743,7 @@ func TestBestEffortReasonKeepsEveryDecisionPart(t *testing.T) {
 		if len([]rune(got)) > maxReasonLen {
 			t.Errorf("n=%d: reason is %d runes, want <= %d: %q", n, len([]rune(got)), maxReasonLen, got)
 		}
-		if !strings.Contains(got, "identified by scan") {
+		if !strings.Contains(got, "(unverified") || !strings.HasSuffix(got, ")") {
 			t.Errorf("n=%d: reason = %q, want the best-effort qualifier intact", n, got)
 		}
 		// The launcher survives a first ask — it used to be dropped from every
@@ -813,5 +829,30 @@ func TestRefusedConsentPausesRatherThanStandingDeny(t *testing.T) {
 	var throttled *consent.Throttled
 	if !errors.As(err, &throttled) {
 		t.Errorf("after a refusal the next attempt must be PAUSED, not answered from a cached Deny; got %v", err)
+	}
+}
+
+// The whole sentence, in order: who, what, what launched it, and the
+// warnings last.
+func TestConsentReasonShape(t *testing.T) {
+	req := consent.Request{
+		Credential: "aws",
+		Caller:     consent.Caller{PID: 1, ExecPath: "/opt/homebrew/bin/terraform", Lineage: "claude"},
+	}
+	if got, want := consentReason(req), "let terraform use your aws credential, via claude"; got != want {
+		t.Errorf("consentReason = %q, want %q", got, want)
+	}
+	if got, want := consentReasonFor(req, true), "let terraform unlock the vault and use aws, via claude"; got != want {
+		t.Errorf("consentReasonFor(unlocking) = %q, want %q", got, want)
+	}
+	req.Caller.Strength = consent.BestEffort
+	req.PriorRefusals = 2
+	if got, want := consentReason(req), "let terraform use your aws credential, via claude (unverified, refused 2 times)"; got != want {
+		t.Errorf("flagged consentReason = %q, want %q", got, want)
+	}
+	req.Caller.Strength = consent.Hard
+	req.PriorRefusals = 1
+	if got, want := consentReason(req), "let terraform use your aws credential, via claude (refused once)"; got != want {
+		t.Errorf("refused-once consentReason = %q, want %q", got, want)
 	}
 }

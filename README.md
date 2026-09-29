@@ -295,7 +295,7 @@ ends at its deadline, when that one process exits, or when you press
 
 ```console
 $ jit grant --process claude --profile myapp --for 8h
-  Touch ID  ->  let claude under iTerm2 use 2 secrets (myapp) unattended for 8h
+  Touch ID  ->  let claude use "myapp" for 8 hours
 ✓ granted g-7f3a2c81   claude -> myapp   until 17:42
 ```
 

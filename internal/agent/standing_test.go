@@ -473,24 +473,19 @@ func TestStandingGrantCannotBeExtended(t *testing.T) {
 }
 
 func TestStandingGrantReasonWording(t *testing.T) {
-	got := grantCreateReason("claude", "iTerm2", []string{"mcp-caido"}, 1, 0, "", true)
-	want := "let claude under iTerm2 use 1 secret (mcp-caido) until you revoke it"
+	got := grantCreateReason("claude", []string{"release-bot"}, 1, 0, "", true)
+	want := `let claude use "release-bot" until you revoke it`
 	if got != want {
 		t.Errorf("standing reason = %q, want %q", got, want)
 	}
-	// The OS dialog has a hard length budget (maxReasonLen), and a tree
-	// grant's profile list is the part that yields to it: the sheet shows
-	// the full sentence, the prompt shows it within the budget, and the
-	// scope clause is never the half that goes.
-	two := grantCreateReason("claude", "iTerm2", []string{"mcp-caido", "mcp-urlscan"}, 2, 0, "", true)
-	if !strings.HasPrefix(two, "let claude under iTerm2 use 2 secrets (mcp-caido, ") || !strings.HasSuffix(two, ") until you revoke it") {
-		t.Errorf("two-profile standing reason = %q, want the first profile named and the scope kept", two)
-	}
-	long := grantCreateReason(strings.Repeat("x", 100), strings.Repeat("z", 100), []string{strings.Repeat("y", 100)}, 12, 0, "JitPassApp", true)
+	// The OS dialog has a hard length budget (maxReasonLen), and the profile
+	// list is the part that yields to it: the scope clause is never the
+	// half that goes.
+	long := grantCreateReason(strings.Repeat("x", 100), []string{strings.Repeat("y", 100)}, 12, 0, "JitPassApp", true)
 	if len([]rune(long)) > maxReasonLen {
 		t.Errorf("reason is %d runes, must fit the %d-rune prompt budget", len([]rune(long)), maxReasonLen)
 	}
-	if !strings.Contains(long, "until you revoke it") {
+	if !strings.HasSuffix(long, " until you revoke it") {
 		t.Errorf("truncated reason = %q, lost the scope statement", long)
 	}
 }

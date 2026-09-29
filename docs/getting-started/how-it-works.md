@@ -96,13 +96,13 @@ mechanism, so nothing about your workflow changes:
 ## Every prompt tells you why it appeared
 
 A Touch ID prompt you can't explain is one you'll approve out of habit -
-which defeats the point of asking. So when jit asks, it names what it's
-asking *for* and what set it off:
+which defeats the point of asking. So when jit asks, it names who asked and
+for which profile:
 
-> jit is trying to **unlock the vault for profile "mcp-jamf", launched by claude**.
+> jit is trying to **unlock the vault for claude, profile "mcp-tickets"**.
 
 That's an MCP server your editor started, wanting the secrets in your
-`mcp-jamf` profile. Approve or cancel on the facts, not on a guess.
+`mcp-tickets` profile. Approve or cancel on the facts, not on a guess.
 
 The same provenance is kept afterwards: `jit service status` shows who
 unlocked the current session, and `jit audit` lists every unlock,

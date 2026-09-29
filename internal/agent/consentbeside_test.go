@@ -389,7 +389,7 @@ func TestLateTouchNeverOvertakesADeny(t *testing.T) {
 		errc <- err
 	}()
 	req := receive(t, pending, "the pending request")
-	if !strings.Contains(req.Cause, unlockAsWell) {
+	if !strings.Contains(req.Cause, unlockAnd) {
 		t.Fatalf("setup: the prompt should offer the unlock; said %q", req.Cause)
 	}
 	receive(t, d.raised, "the Touch ID")

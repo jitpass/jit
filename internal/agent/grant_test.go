@@ -459,43 +459,56 @@ func TestGrantCreateValidatesBeforePrompting(t *testing.T) {
 }
 
 func TestGrantCreateReasonWording(t *testing.T) {
-	got := grantCreateReason("claude", "", []string{"jamf", "aws-ci"}, 3, 8*time.Hour, "", false)
-	want := "let claude use 3 secrets (jamf, aws-ci) unattended for 8h"
+	got := grantCreateReason("claude", []string{"release-bot", "ci"}, 3, 8*time.Hour, "", false)
+	want := `let claude use "release-bot", "ci" for 8 hours`
 	if got != want {
 		t.Errorf("grantCreateReason = %q, want %q", got, want)
 	}
-	// The tree-scoped shape must name both halves of the perimeter: the
-	// filter name AND the anchor the human is hanging it under.
-	tree := grantCreateReason("claude", "iTerm2", []string{"jamf"}, 1, time.Hour, "", false)
-	if want := "let claude under iTerm2 use 1 secret (jamf) unattended for 1h"; tree != want {
-		t.Errorf("tree grantCreateReason = %q, want %q", tree, want)
-	}
-	if r := grantCreateReason("", "", []string{"p"}, 1, time.Minute, "", false); !strings.Contains(r, "this process") {
+	if r := grantCreateReason("", []string{"p"}, 1, time.Minute, "", false); !strings.Contains(r, "this process") {
 		t.Errorf("nameless reason = %q, want a 'this process' fallback", r)
 	}
-	long := grantCreateReason(strings.Repeat("x", 100), strings.Repeat("z", 100), []string{strings.Repeat("y", 100)}, 12, 3*24*time.Hour, "", false)
+	// A grant that names no profile still says what it covers.
+	if r := grantCreateReason("claude", nil, 3, time.Hour, "", false); r != "let claude use 3 secrets for 1 hour" {
+		t.Errorf("profile-less reason = %q", r)
+	}
+	long := grantCreateReason(strings.Repeat("x", 100), []string{strings.Repeat("y", 100)}, 12, 3*24*time.Hour, "", false)
 	if len([]rune(long)) > maxReasonLen {
 		t.Errorf("reason is %d runes, must fit the %d-rune prompt budget", len([]rune(long)), maxReasonLen)
 	}
-	if !strings.Contains(long, "unattended for 3d") {
+	if !strings.HasSuffix(long, " for 3 days") {
 		t.Errorf("truncated reason = %q, lost the scope statement — the half that changes the decision", long)
 	}
 }
 
-func TestFormatGrantTTL(t *testing.T) {
+// An extension says who, what and how much longer, as a sentence that reads
+// after macOS's "is trying to".
+func TestGrantExtendReasonWording(t *testing.T) {
+	got := grantExtendReason("claude", []string{"release-bot"}, 3, 2*time.Hour)
+	if want := `let claude use "release-bot" for another 2 hours`; got != want {
+		t.Errorf("grantExtendReason = %q, want %q", got, want)
+	}
+	long := grantExtendReason(strings.Repeat("x", 100), []string{strings.Repeat("y", 100)}, 12, 90*time.Minute)
+	if len([]rune(long)) > maxReasonLen || !strings.HasSuffix(long, " for another 1h 30m") {
+		t.Errorf("long extension = %q (%d runes), want the scope kept inside %d", long, len([]rune(long)), maxReasonLen)
+	}
+}
+
+func TestSpokenTTL(t *testing.T) {
 	cases := []struct {
 		d    time.Duration
 		want string
 	}{
-		{45 * time.Minute, "45m"},
-		{8 * time.Hour, "8h"},
-		{90 * time.Minute, "1h30m"},
-		{24 * time.Hour, "1d"},
-		{3 * 24 * time.Hour, "3d"},
+		{time.Minute, "1 minute"},
+		{45 * time.Minute, "45 minutes"},
+		{time.Hour, "1 hour"},
+		{8 * time.Hour, "8 hours"},
+		{90 * time.Minute, "1h 30m"},
+		{24 * time.Hour, "1 day"},
+		{3 * 24 * time.Hour, "3 days"},
 	}
 	for _, tc := range cases {
-		if got := formatGrantTTL(tc.d); got != tc.want {
-			t.Errorf("formatGrantTTL(%s) = %q, want %q", tc.d, got, tc.want)
+		if got := spokenTTL(tc.d); got != tc.want {
+			t.Errorf("spokenTTL(%s) = %q, want %q", tc.d, got, tc.want)
 		}
 	}
 }
@@ -552,8 +565,8 @@ func TestGrantEventsReachTheDurableSink(t *testing.T) {
 		}
 		t.Errorf("sink never received %s; got: %s", want, strings.Join(kinds, ", "))
 	}
-	find("the creation approval (KindApproved, op grant_create, unattended wording)", func(e SessionEvent) bool {
-		return e.Kind == KindApproved && e.Op == OpGrantCreate && strings.Contains(e.Cause, "unattended for")
+	find("the creation approval (KindApproved, op grant_create, the prompt's wording)", func(e SessionEvent) bool {
+		return e.Kind == KindApproved && e.Op == OpGrantCreate && strings.Contains(e.Cause, " for 1 hour")
 	})
 	find("the grant serve (KindUse, op grant_use, path in labels)", func(e SessionEvent) bool {
 		return e.Kind == KindUse && e.Op == OpGrantUse && containsString(e.Labels, "jamf/api-pass")

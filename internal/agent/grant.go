@@ -305,7 +305,7 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 			requester = requesterName(c)
 		}
 	}
-	reason := grantCreateReason(who, under, profileNames(profiles), len(secrets), ttl, requester, req.Standing)
+	reason := grantCreateReason(who, profileNames(profiles), len(secrets), ttl, requester, req.Standing)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantCreate, c)
 	// nil event = throttled, no prompt shown — nothing true to record.
 	if event != nil && s.OnSessionEvent != nil {
@@ -395,51 +395,73 @@ func requesterName(c *caller) string {
 	return "a program"
 }
 
-// grantCreateReason is the one line the human decides by. requester is set
-// only for an explicit anchor (a GUI app naming a tree it is not inside) and
-// prefixes the sentence with who is asking, since the tree alone no longer
-// implies it.
-func grantCreateReason(name, under string, profiles []string, count int, ttl time.Duration, requester string, standing bool) string {
-	// A tree grant's who-clause carries two names ("claude under iTerm2"),
-	// so its budgets shrink: 11 runes per name and 16 for the profiles is
-	// what keeps the whole sentence — including a worst-case "167h59m" TTL —
-	// inside maxReasonLen, checked by TestGrantCreateReasonWording's
-	// worst-case fixture. With a requester in front ("JitPass asks: ") the
-	// budgets shrink again, to 8/8/10, for the same reason.
-	whoBudget, profBudget := maxTrustWhoLen, 20
-	if under != "" {
-		whoBudget, profBudget = 11, 16
-	}
-	prefix := ""
-	if requester != "" {
-		whoBudget, profBudget = 8, 10
-		prefix = truncate(requester, 8) + " asks: "
-	}
-	who := truncate(name, whoBudget)
-	if who == "" {
-		who = "this process"
-	}
-	if under != "" {
-		who += " under " + truncate(under, whoBudget)
-	}
-	noun := "secrets"
-	if count == 1 {
-		noun = "secret"
-	}
-	// The name and profile budgets are sized so the whole sentence fits
-	// maxReasonLen with room to spare: the trailing scope statement
-	// ("unattended for …") is the half that changes the decision, so it must
-	// never be the half a long tool name pushes off the prompt. The outer
-	// truncate is a belt only.
-	// The scope clause is the half that changes the decision. A standing
-	// grant's is "until you revoke it": no deadline, and the sentence must
-	// say so in the same words the app's sheet used.
-	scope := "unattended for " + formatGrantTTL(ttl)
+// grantCreateReason is the one line the human decides by: who may use which
+// profiles, and until when. requester is set only for an explicit anchor (a
+// GUI app naming a tree it is not inside) and prefixes the sentence with who
+// is asking, since the tree alone no longer implies it.
+//
+// It used to carry the anchor ("claude under iTerm2"), the number of secrets
+// and "unattended" as well. With the dialog the only thing on screen, Meni
+// kept who and which profile (2026-09-29); the rest is in `jit grant list`
+// and the audit. The scope ("for 8 hours", "until you revoke it") is the half
+// that changes the decision, so it is never the half that gets cut: the
+// names are bounded, and the profiles take what is left.
+func grantCreateReason(name string, profiles []string, count int, ttl time.Duration, requester string, standing bool) string {
+	scope := "for " + spokenTTL(ttl)
 	if standing {
 		scope = "until you revoke it"
 	}
-	return truncate(prefix+fmt.Sprintf("let %s use %d %s (%s) %s",
-		who, count, noun, truncate(strings.Join(profiles, ", "), profBudget), scope), maxReasonLen)
+	return grantSentence(name, profiles, count, requester, scope)
+}
+
+// grantExtendReason is grantCreateReason for a grant that already runs: the
+// same who and what, for that much longer.
+func grantExtendReason(name string, profiles []string, count int, ttl time.Duration) string {
+	return grantSentence(name, profiles, count, "", "for another "+spokenTTL(ttl))
+}
+
+func grantSentence(name string, profiles []string, count int, requester, scope string) string {
+	prefix := ""
+	if requester != "" {
+		prefix = truncate(requester, 8) + " asks: "
+	}
+	who := truncate(name, maxTrustWhoLen)
+	if who == "" {
+		who = "this process"
+	}
+	head := prefix + "let " + who + " use "
+	tail := " " + scope
+	room := maxReasonLen - len([]rune(head+tail))
+	return head + truncate(grantedNames(profiles, count), room) + tail
+}
+
+// grantedNames is what a grant covers, in the user's own labels: `"dev"`,
+// `"dev", "ci"`. A grant that names no profile says how many secrets.
+func grantedNames(profiles []string, count int) string {
+	if len(profiles) == 0 {
+		return countNoun(count, "secret")
+	}
+	quoted := make([]string, len(profiles))
+	for i, p := range profiles {
+		quoted[i] = `"` + p + `"`
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// spokenTTL says a grant's length the way a person would: "8 hours", "45
+// minutes", "3 days". A length that is not whole keeps the short form ("1h
+// 30m"), which still reads as a length and not a countdown.
+func spokenTTL(d time.Duration) string {
+	d = d.Round(time.Minute)
+	switch {
+	case d >= 24*time.Hour && d%(24*time.Hour) == 0:
+		return countNoun(int(d/(24*time.Hour)), "day")
+	case d >= time.Hour && d%time.Hour == 0:
+		return countNoun(int(d/time.Hour), "hour")
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh %dm", d/time.Hour, (d%time.Hour)/time.Minute)
+	}
+	return countNoun(int(d/time.Minute), "minute")
 }
 
 // standingAnchorError refuses a standing grant whose anchor the kernel
@@ -473,22 +495,6 @@ func profileNames(ps []GrantProfile) []string {
 		out = append(out, p.Name)
 	}
 	return out
-}
-
-// formatGrantTTL renders a duration the way a human typed it: "8h", "45m",
-// "3d" — never time.Duration's "8h0m0s", which reads like a countdown.
-func formatGrantTTL(d time.Duration) string {
-	d = d.Round(time.Minute)
-	if d >= 24*time.Hour && d%(24*time.Hour) == 0 {
-		return fmt.Sprintf("%dd", d/(24*time.Hour))
-	}
-	if d >= time.Hour && d%time.Hour == 0 {
-		return fmt.Sprintf("%dh", d/time.Hour)
-	}
-	if d >= time.Hour {
-		return fmt.Sprintf("%dh%02dm", d/time.Hour, (d%time.Hour)/time.Minute)
-	}
-	return fmt.Sprintf("%dm", d/time.Minute)
 }
 
 // grantUnwrap answers an OpUnwrap from the grant store, or returns ok=false
@@ -639,13 +645,13 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 	}
 	s.grantMu.Lock()
 	g := s.grants[req.GrantID]
-	var name, under string
+	var name string
 	var count int
 	var profiles []string
 	var rootPID int32
 	var rootStart int64
 	if g != nil {
-		name, under, count, profiles = g.name, g.anchorName, len(g.deks), g.profiles
+		name, count, profiles = g.name, len(g.deks), g.profiles
 		rootPID, rootStart = g.rootPID, g.rootStart
 	}
 	_, isStanding := s.standing[req.GrantID]
@@ -669,9 +675,7 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: fmt.Sprintf("grant_extend: grant %q's process has exited, so there is no window left to extend (create a new grant)", req.GrantID)}
 	}
 
-	// grantCreateReason already words the full scope; re-lead it as an
-	// extension so the prompt says what is actually happening.
-	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl, "", false), maxReasonLen)
+	reason := grantExtendReason(name, profiles, count, ttl)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantExtend, c)
 	// nil event = throttled, no prompt shown — nothing true to record.
 	if event != nil && s.OnSessionEvent != nil {

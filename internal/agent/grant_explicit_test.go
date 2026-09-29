@@ -80,18 +80,18 @@ func TestExplicitAnchorOnAForeignSessionRootIsPromptedWithRequester(t *testing.T
 	fetcher.mu.Lock()
 	reason := strings.Join(fetcher.reasons, " | ")
 	fetcher.mu.Unlock()
-	if !strings.Contains(reason, " asks: let claude under ") {
-		t.Errorf("prompt = %q, want it to name the requester and the tree", reason)
+	if !strings.Contains(reason, " asks: let claude use ") {
+		t.Errorf("prompt = %q, want it to name the requester and who the grant is for", reason)
 	}
 }
 
 func TestGrantCreateReasonWithRequesterFitsTheBudget(t *testing.T) {
-	r := grantCreateReason("claude-code-agent", "WezTerm-gui-app", []string{"jamf-production", "aws-ci"}, 12, 167*time.Hour+59*time.Minute, "JitPassApp", false)
+	r := grantCreateReason("claude-code-agent", []string{"release-production", "ci-deploy", "staging-readers"}, 12, 167*time.Hour+59*time.Minute, "JitPassApp", false)
 	if n := utf8.RuneCountInString(r); n > maxReasonLen {
 		t.Errorf("reason is %d runes, over maxReasonLen %d: %q", n, maxReasonLen, r)
 	}
-	if !strings.HasPrefix(r, "JitPass… asks: let claude-… under WezTerm… use 12 secrets") {
-		t.Errorf("reason = %q", r)
+	if !strings.HasPrefix(r, `JitPass… asks: let claude-code-agent use "release-production", `) || !strings.HasSuffix(r, " for 167h 59m") {
+		t.Errorf("reason = %q, want the requester, who, the first profile and the scope", r)
 	}
 }
 

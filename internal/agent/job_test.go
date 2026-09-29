@@ -386,8 +386,8 @@ func TestJobRemoveIsFreeAndFinal(t *testing.T) {
 func TestJobReasonsFitThePrompt(t *testing.T) {
 	long := strings.Repeat("x", 40) + "/" + strings.Repeat("y", 40) + ".py"
 	for _, r := range []string{
-		jobAllowReason(long, "notion+jamf+wiz", 14, 3, job.AskEachTime),
-		jobAllowReason(long, "notion+jamf+wiz", 14, 3, job.AskNever),
+		jobAllowReason(long, 14, 3, job.AskEachTime),
+		jobAllowReason(long, 14, 3, job.AskNever),
 		jobRunReason("Claude Helper (Renderer)", long, 14),
 	} {
 		if len([]rune(r)) > maxReasonLen {
@@ -396,14 +396,23 @@ func TestJobReasonsFitThePrompt(t *testing.T) {
 	}
 	// The facts that change the decision survive a long label: how many
 	// secrets, how many shown, and that it never asks again.
-	r := jobAllowReason(long, "notion", 14, 3, job.AskNever)
-	for _, want := range []string{"14 notion secrets", "3 shown", "runs without asking"} {
+	r := jobAllowReason(long, 14, 3, job.AskNever)
+	for _, want := range []string{"with 14 secrets", "3 shown", ", without asking"} {
 		if !strings.Contains(r, want) {
 			t.Errorf("%q lost %q", r, want)
 		}
 	}
-	if r := jobRunReason("claude", long, 14); !strings.Contains(r, "never the values") {
-		t.Errorf("the run promise was truncated off: %q", r)
+	if r := jobRunReason("claude", long, 14); !strings.HasSuffix(r, " for claude with 14 secrets") {
+		t.Errorf("who asked and with how many secrets was truncated off: %q", r)
+	}
+	if got, want := jobRunReason("claude", "reports/weekly.py", 2), "run reports/weekly.py for claude with 2 secrets"; got != want {
+		t.Errorf("jobRunReason = %q, want %q", got, want)
+	}
+	if got, want := jobAllowReason("reports/weekly.py", 2, 0, job.AskNever), "let AI run reports/weekly.py with 2 secrets, without asking"; got != want {
+		t.Errorf("jobAllowReason = %q, want %q", got, want)
+	}
+	if got, want := jobAllowReason("reports/weekly.py", 0, 0, job.AskEachTime), "let AI run reports/weekly.py with no secrets"; got != want {
+		t.Errorf("jobAllowReason with no secrets = %q, want %q", got, want)
 	}
 }
 
@@ -968,7 +977,8 @@ func TestJobAllowPromptNamesResolvedFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := (*reasons)[0]
-	for _, want := range []string{filepath.Base(r.dir) + "/list_guest_users.py", "1 notion secret", "1 shown"} {
+	script := r.spec().Argv[1]
+	for _, want := range []string{filepath.Base(r.dir) + "/" + script, "with 1 secret", "1 shown"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt %q lacks %q", got, want)
 		}
@@ -1096,38 +1106,35 @@ func TestJobRequesterNamesTheAppBehindJit(t *testing.T) {
 	}
 }
 
-// Step 4: after the app's sheet showed the request and the human pressed
-// Allow, the Touch ID says "confirm:" and the facts, not the whole sentence
-// again. Without the app, the whole sentence. The audit keeps the whole
-// sentence either way, and the pending event names the job for the sheet.
+// A job's run says the same sentence with or without a broker in front of
+// it: the sentence has no explanatory tail left for confirmReason to drop.
+// The audit keeps it too, and the pending event names the job.
 func TestBrokeredJobRunConfirmsBriefly(t *testing.T) {
 	r := newJobRig(t)
 	reasons := r.captureReasons()
-	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+	if _, err := r.c.JobAllow("guest-report", r.spec()); err != nil {
 		t.Fatal(err)
 	}
-	// A run with no app: the whole sentence, promise and all. (The approval
-	// sentence has no tail, so it cannot show a wrong shortening; the first
-	// version of this test checked that one and missed the bug.)
-	if _, err := r.c.JobRun("notion-guests"); err != nil {
+	// A run with no app: the whole sentence.
+	if _, err := r.c.JobRun("guest-report"); err != nil {
 		t.Fatal(err)
 	}
-	if d := (*reasons)[1]; strings.HasPrefix(d, "confirm:") || !strings.Contains(d, "never the values") {
+	if d := (*reasons)[1]; strings.HasPrefix(d, "confirm:") || !strings.HasSuffix(d, " with 1 secret") {
 		t.Fatalf("with no app, the run prompt = %q, want the whole sentence", d)
 	}
 
 	pending, stop := broker(t, r.s, r.c)
 	defer stop()
 	errc := make(chan error, 1)
-	go func() { _, err := r.c.JobRun("notion-guests"); errc <- err }()
+	go func() { _, err := r.c.JobRun("guest-report"); errc <- err }()
 	var req SessionEvent
 	select {
 	case req = <-pending:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the app was never shown the run")
 	}
-	if req.Op != OpJobRun || req.Job != "notion-guests" {
-		t.Fatalf("pending = op %q job %q, want job_run for notion-guests", req.Op, req.Job)
+	if req.Op != OpJobRun || req.Job != "guest-report" {
+		t.Fatalf("pending = op %q job %q, want job_run for guest-report", req.Op, req.Job)
 	}
 	if err := r.c.ConsentAnswer(req.ConsentID, true); err != nil {
 		t.Fatal(err)
@@ -1136,8 +1143,8 @@ func TestBrokeredJobRunConfirmsBriefly(t *testing.T) {
 		t.Fatal(err)
 	}
 	dialog := (*reasons)[2]
-	if !strings.HasPrefix(dialog, "confirm: run ") || strings.Contains(dialog, "never the values") || !strings.Contains(dialog, "list_guest_users") {
-		t.Fatalf("dialog after an app allow = %q, want the short confirmation naming the script", dialog)
+	if dialog != (*reasons)[1] || !strings.Contains(dialog, r.spec().Argv[1]) {
+		t.Fatalf("dialog after a broker's allow = %q, want the run's own sentence %q", dialog, (*reasons)[1])
 	}
 	var e SessionEvent
 	events, _ := r.c.History()
@@ -1146,17 +1153,17 @@ func TestBrokeredJobRunConfirmsBriefly(t *testing.T) {
 			e = ev
 		}
 	}
-	if !strings.Contains(e.Cause, "never the values") || e.Job != "notion-guests" {
+	if e.Cause != dialog || e.Job != "guest-report" {
 		t.Fatalf("audit = %+v, want the full sentence and the job", e)
 	}
 }
 
 func TestConfirmReason(t *testing.T) {
 	cases := map[string]string{
-		// A job run: the facts stay, the promise goes.
-		"run notion/list_guest_users.py for Claude (3 secrets); it sees output, never the values": "confirm: run notion/list_guest_users.py for Claude (3 secrets)",
+		// A sentence with an explanatory tail: the facts stay, the tail goes.
+		"run reports/weekly.py for claude with 3 secrets; it sees output, never the values": "confirm: run reports/weekly.py for claude with 3 secrets",
 		// No tail: unchanged, never truncated into losing its scope.
-		"let claude under iTerm2 use 2 secrets (mcp-caido, mcp-urlscan) until you revoke it": "let claude under iTerm2 use 2 secrets (mcp-caido, mcp-urlscan) until you revoke it",
+		`let claude use "release-bot", "ci" until you revoke it`: `let claude use "release-bot", "ci" until you revoke it`,
 	}
 	for in, want := range cases {
 		if got := confirmReason(in); got != want {
