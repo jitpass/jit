@@ -329,9 +329,8 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		// unlocked and the migration half-applied. ~/.claude is written by a
 		// third-party tool running arbitrary code, so this is not a
 		// theoretical adversary. The guard also enforces the size bound on the
-		// opened descriptor, where a pre-open stat bounds nothing.
-		// The guard also refuses a file past the size bound, the same bound
-		// the scan reads with, so nothing the scan found is passed over here.
+		// opened descriptor, where a pre-open stat bounds nothing; it is the
+		// bound the scan reads with, so nothing the scan found is passed over.
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
 			return nil

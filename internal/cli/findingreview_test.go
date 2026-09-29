@@ -38,8 +38,8 @@ func TestReviewMarksTheRestWhenOneTargetMoved(t *testing.T) {
 	if len(result.Reviewed) != 1 || result.Reviewed[0].Line == nil || *result.Reviewed[0].Line != 2 {
 		t.Errorf("reviewed = %+v, want the finding on line 2", result.Reviewed)
 	}
-	if len(result.Missed) != 1 || !strings.HasSuffix(result.Missed[0], "README.md:9") {
-		t.Errorf("missed = %q, want README.md:9", result.Missed)
+	if len(result.Missed) != 1 || len(result.Reviewed) != 1 || result.Missed[0] != result.Reviewed[0].Path+":9" {
+		t.Errorf("missed = %q, want %s:9 as review was given it", result.Missed, readme)
 	}
 
 	out, err = runRoot(t, "", "review", "--format", "text", readme+":9")

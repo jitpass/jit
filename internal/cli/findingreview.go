@@ -171,8 +171,9 @@ type reviewResult struct {
 	// Skipped counts findings on a named line that a mark does not fit:
 	// ones Protect or Redact fixes.
 	Skipped int `json:"skipped,omitempty"`
-	// Missed is each FILE[:LINE] the scan found nothing on any more: the
-	// line moved or the value changed since the scan that listed it.
+	// Missed is each FILE[:LINE] the scan found nothing on any more, spelled
+	// as review was given it (like Reviewed's paths): the line moved or the
+	// value changed since the scan that listed it.
 	Missed []string `json:"missed,omitempty"`
 }
 
@@ -211,7 +212,7 @@ func writeReviewResult(w io.Writer, format, verb string, entries []reviewEntry, 
 		}
 	}
 	for _, m := range missed {
-		if _, err := fmt.Fprintf(w, "Nothing to mark on %s any more: scan again.\n", m); err != nil {
+		if _, err := fmt.Fprintf(w, "Nothing to mark on %s any more: scan again.\n", shortTarget(m)); err != nil {
 			return err
 		}
 	}
@@ -220,6 +221,15 @@ func writeReviewResult(w io.Writer, format, verb string, entries []reviewEntry, 
 		return err
 	}
 	return nil
+}
+
+// shortTarget is a FILE[:LINE] target for a person: the home folder as ~.
+func shortTarget(target string) string {
+	file, line := splitReviewArg(target)
+	if line == nil {
+		return shortPath(file)
+	}
+	return shortPath(file) + ":" + strconv.Itoa(*line)
 }
 
 func validateReviewFormat(format string) error {
@@ -312,18 +322,26 @@ var reviewCmd = &cobra.Command{
 			// One target that moved since the scan must not cost the rest
 			// their marks: it is named in the result instead.
 			if matched == 0 {
-				where := shortPath(t.path)
+				where := t.path
 				if t.line != nil {
 					where += ":" + strconv.Itoa(*t.line)
 				}
 				missed = append(missed, where)
 			}
 		}
-		if len(marked) == 0 && skipped == 0 {
-			return fmt.Errorf("jit review: scan finds nothing to mark on %s", strings.Join(missed, ", "))
-		}
 		if len(marked) == 0 {
-			return fmt.Errorf("jit review: nothing there can be marked: protect, redact or rotate it (%d found)", skipped)
+			shown := make([]string, 0, len(missed))
+			for _, m := range missed {
+				shown = append(shown, shortTarget(m))
+			}
+			if skipped == 0 {
+				return fmt.Errorf("jit review: scan finds nothing to mark on %s", strings.Join(shown, ", "))
+			}
+			msg := fmt.Sprintf("jit review: nothing there can be marked: protect, redact or rotate it (%d found)", skipped)
+			if len(shown) > 0 {
+				msg += "; nothing to mark on " + strings.Join(shown, ", ")
+			}
+			return errors.New(msg)
 		}
 		if err := saveReviewStore(store); err != nil {
 			return fmt.Errorf("jit review: %w", err)

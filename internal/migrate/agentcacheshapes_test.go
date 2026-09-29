@@ -227,3 +227,32 @@ func TestRedactFindsATokenPastTheContentScannersLineLimit(t *testing.T) {
 		t.Errorf("token past 1 MiB not redacted: ...%q", got[len(got)-80:])
 	}
 }
+
+// A token the 1 MiB line limit cuts matches short in the content scanner
+// and whole in the indexed sweep. The whole one wins: redacting the short
+// span would leave the rest of the secret in the file.
+func TestRedactTakesTheWholeTokenAcrossTheLineLimit(t *testing.T) {
+	home := t.TempDir()
+	paste := filepath.Join(home, ".claude", "paste-cache", "cut.txt")
+	if err := os.MkdirAll(filepath.Dir(paste), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := "glpat-" + "Xk4mT9pQ2vR7wL3nB8cY5zJ1hF6dS0gA"
+	// The cut lands 24 characters into the token's body: enough for the
+	// content scanner's {20,} to match the short piece.
+	at := (1 << 20) - 30
+	words := strings.Repeat("filler ", at/7)
+	filler := strings.Repeat("y", at-len(words)) + words
+	body := filler + token + " end\n"
+	if err := os.WriteFile(paste, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RedactAgentCacheShapes(home, []string{paste}, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(paste)
+	tail := string(got[len(filler):])
+	if strings.Contains(tail, token[len(token)-8:]) || !strings.HasPrefix(tail, "<jit:redacted:") || !strings.HasSuffix(tail, "> end\n") {
+		t.Errorf("after redact: %q", tail)
+	}
+}
