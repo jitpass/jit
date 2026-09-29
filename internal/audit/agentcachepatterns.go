@@ -471,3 +471,17 @@ func (c Config) agentCachePatternFindings(path, agent string, data []byte, skipV
 func CachePatternTokens(data []byte) []FileToken {
 	return cachePatternIndex().matches(data)
 }
+
+// CacheFileTokens is the tokens a scan reports in one agent cache file, at
+// offsets into data. The file-shaped caches ScanAgentStores reads with the
+// content scanner (paste-cache, shell-snapshots, backups, history.jsonl) are
+// matched with it here too: the indexed sweep leaves out shapes without a
+// literal lead, such as a Telegram bot token, and a Redact of a row the scan
+// listed must find what the scan found. Every other cache file goes through
+// the indexed sweep, as the scan does.
+func CacheFileTokens(home, path string, data []byte) []FileToken {
+	if AgentSweepDirFile(home, path) || isAgentPromptHistoryPath(path) {
+		return TextTokens(data)
+	}
+	return CachePatternTokens(data)
+}

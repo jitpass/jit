@@ -67,14 +67,17 @@ func RedactAgentCacheShapes(home string, only []string, lines []int, apply bool)
 		if err != nil {
 			return nil
 		}
+		// The guard refuses a file past the scan's own size bound. A file
+		// the user named is one a scan listed, so failing to read it now is
+		// said, never an empty "nothing to redact".
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
+			if len(wanted) > 0 {
+				note(path, "jit couldn't read it again: it grew too large or changed since the scan", SkipUnreadable)
+			}
 			return nil
 		}
-		if len(data) > maxAgentCacheEditSize {
-			return nil
-		}
-		tokens := audit.CachePatternTokens(data)
+		tokens := audit.CacheFileTokens(home, path, data)
 		if len(wantedLine) > 0 {
 			kept := tokens[:0]
 			for _, tk := range tokens {
