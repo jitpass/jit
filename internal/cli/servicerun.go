@@ -26,7 +26,6 @@ import (
 	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/screenlock"
-	"github.com/jitpass/jit/internal/secureenclave"
 )
 
 // This file is `jit service run`: the daemon mode itself — what the installed
@@ -52,15 +51,6 @@ var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)
 // agent.ClosableFetcher, closeFetcher's runtime check would stop matching and
 // no fetcher would be wiped after an unlock.
 var _ agent.ClosableFetcher = keystore.Fetcher(nil)
-
-// And its prompt must stay withdrawable, on both backends: the consent
-// panel's Deny cancels a Touch ID through it. A backend that lost the method
-// would still prompt, and the Deny would silently leave its dialog up.
-var (
-	_ agent.CancelableFetcher = keystore.Fetcher(nil)
-	_ agent.CancelableFetcher = (*keychainwrap.Wrapper)(nil)
-	_ agent.CancelableFetcher = (*secureenclave.Wrapper)(nil)
-)
 
 var agentTTL time.Duration
 
@@ -166,9 +156,6 @@ var agentRunCmd = &cobra.Command{
 			server.Consent.SetMaxAge(agent.DefaultMaxSessionAge)
 			mounts.consent = server
 			fmt.Fprintln(stdout, "jit service: per-process credential consent ENABLED (prompting on credential reads)")
-		}
-		secureenclave.OnUnwithdrawable = func() {
-			fmt.Fprintln(stdout, "jit service: the vault key could not be asked for approval first; a Deny is still refused, but cannot close that Touch ID dialog")
 		}
 		server.OnUnlock = mounts.start
 		server.OnLock = mounts.stop

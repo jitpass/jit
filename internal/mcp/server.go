@@ -25,7 +25,7 @@ type Backend interface {
 	ListJobs() ([]agent.JobStatus, error)
 	RunJob(name string) (agent.JobResult, error)
 	// RequestJob hands a proposal to JitPass to show the human. An error
-	// carrying agent.ErrNoJobBroker's text means no app is running.
+	// carrying agent.ErrNoProposalViewer's text means no app is running.
 	RequestJob(name string, spec agent.JobSpec, why string) error
 }
 
@@ -454,7 +454,7 @@ func (s *Server) requestJob(p jobProposal) callResult {
 		return textResult("Sent to JitPass on the user's Mac. Nothing was created: the user reads the whole job there and approves it with Touch ID, or dismisses it. "+
 			"Once approved, call run_job with the name "+p.Name+". You will see the job's output, never its secret values.", false)
 	}
-	if !strings.Contains(err.Error(), agent.ErrNoJobBroker.Error()) {
+	if !strings.Contains(err.Error(), agent.ErrNoProposalViewer.Error()) {
 		return textResult("The proposal was not accepted: "+serviceError(err), true)
 	}
 	parts := []string{"cd", quote(p.Folder), "&&", "jit", "job", "allow", p.Name}

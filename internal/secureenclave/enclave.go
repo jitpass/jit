@@ -18,8 +18,6 @@ import (
 	"fmt"
 	"strings"
 	"unsafe"
-
-	"github.com/jitpass/jit/internal/authprompt"
 )
 
 // The statuses this package tells apart. They arrive as OSStatus, or as a
@@ -100,13 +98,6 @@ type enclave interface {
 	remove() error
 	seal(plaintext []byte) ([]byte, error)
 	open(sealed []byte, reason string) ([]byte, error)
-}
-
-// cancelableOpener is an enclave whose open can be withdrawn (openCancel):
-// the hardware. A fetch with a withdraw channel uses it when the slot's
-// enclave has it, and a plain open otherwise.
-type cancelableOpener interface {
-	openCancel(sealed []byte, reason string, withdraw <-chan struct{}) ([]byte, error)
 }
 
 // maxBytes bounds what seal and open take. The vault's MEK is 32 bytes and
@@ -200,52 +191,6 @@ func (h hardware) seal(plaintext []byte) ([]byte, error) {
 }
 
 func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
-	return h.openOn(nil, sealed, reason)
-}
-
-// OnUnwithdrawable is called when a withdrawable open could not ask for the
-// key's user presence first and prompted by itself: that dialog cannot be
-// taken down. The refusal it was meant to serve is still enforced by
-// whoever asked (the service checks the withdrawal again after the open).
-// The service sets it, once, before it serves, to say so in its log.
-var OnUnwithdrawable = func() {}
-
-// openCancel is open whose dialog is taken down if withdraw closes before it
-// is answered; the failure is then authprompt.ErrWithdrawn. The context is
-// freed only after the watcher has stopped.
-//
-// It asks for the key's user presence on the context first (se_open_ctx,
-// seAuthorize in enclave.m) and only then decrypts: a decrypt's own dialog
-// cannot be withdrawn on a key that came from the keychain, which the vault's
-// key does. An unanswered dialog is taken down after two minutes.
-func (h hardware) openCancel(sealed []byte, reason string, withdraw <-chan struct{}) ([]byte, error) {
-	ctx := C.se_context_new()
-	defer C.se_context_free(ctx)
-	stop := authprompt.Watch(withdraw, func() { C.se_context_invalidate(ctx) })
-	pt, err := h.openOn(ctx, sealed, reason)
-	withdrawn := stop()
-	if err != nil && withdrawn {
-		// A withdrawn decrypt is a cancel, whatever status Security gave
-		// it: never ErrWrongKey (openFailure's reading of a decrypt's -50),
-		// which would tell the caller the sealed bytes are bad.
-		return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w (%w)", ErrCanceled, err), true)
-	}
-	return pt, err
-}
-
-// openOnDeadContext is open on a context invalidated before it starts: what a
-// withdrawal meets if it slips in after fetchMEK's check and before the
-// decrypt. For TestHardwareOpenWithdrawn, which measures what Security does
-// with it (fail at once with no dialog, and with which status).
-func (h hardware) openOnDeadContext(sealed []byte, reason string) ([]byte, error) {
-	ctx := C.se_context_new()
-	defer C.se_context_free(ctx)
-	C.se_context_invalidate(ctx)
-	return h.openOn(ctx, sealed, reason)
-}
-
-// openOn is open on ctx, or on a context of its own when ctx is nil.
-func (h hardware) openOn(ctx unsafe.Pointer, sealed []byte, reason string) ([]byte, error) {
 	if len(sealed) == 0 || len(sealed) > maxBytes {
 		return nil, fmt.Errorf("refusing to open %d bytes", len(sealed))
 	}
@@ -254,18 +199,9 @@ func (h hardware) openOn(ctx unsafe.Pointer, sealed []byte, reason string) ([]by
 	cReason := C.CString(reason)
 	defer C.free(unsafe.Pointer(cReason))
 	var out *C.uchar
-	var n, decrypting, askedFirst C.int
+	var n, decrypting C.int
 	n0 := C.int(len(sealed)) // #nosec G115 -- bounded by maxBytes above
-	var r C.SEResult
-	if ctx != nil {
-		r = C.se_open_ctx(ctx, tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting, &askedFirst)
-		// Only when the key was found: a lookup that failed asked nothing.
-		if askedFirst == 0 && (r.success != 0 || decrypting != 0) {
-			OnUnwithdrawable()
-		}
-	} else {
-		r = C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
-	}
+	r := C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
 	// A blob that won't decrypt is errSecParam from SecKeyCreateDecryptedData
 	// ("ECIES: Failed to aes-gcm decrypt data", TestHardwareKeyNeverAsking).
 	// Only the decryption's -50 says that: the same status from finding the

@@ -649,8 +649,8 @@ func TestTrustReasonNamesTheCommandThatRuns(t *testing.T) {
 }
 
 // Every name in the sentence was chosen by somebody other than the human
-// reading it. None can break a line, close the profile's quotes, or add the
-// "; " a broker's short form cuts at.
+// reading it. None can break a line, close the profile's quotes, or add a
+// "; " of its own.
 func TestNamesCannotRewriteTheSentence(t *testing.T) {
 	if got, want := dialogName("  a\nb\t\u200bc;  d\"e  "), "a b c, d'e"; got != want {
 		t.Errorf("dialogName = %q, want %q", got, want)
@@ -669,9 +669,6 @@ func TestNamesCannotRewriteTheSentence(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "let /tmp/a, b/tool unlock the vault and use aws, via claude use") {
 		t.Errorf("sentence = %q, want the ask intact after the cleaned names", got)
-	}
-	if short := confirmReason(got); short != got {
-		t.Errorf("confirmReason cut a sentence at a name: %q", short)
 	}
 }
 

@@ -656,63 +656,11 @@ func (c *Client) Subscribe(ctx context.Context, fn func(SessionEvent)) error {
 	return c.subscribe(ctx, Request{}, fn)
 }
 
-// SubscribeAsBroker is Subscribe for a client that will ANSWER consent
-// requests (consentbroker.go): the stream additionally carries a KindPending
-// event for each disclosed challenge before its Touch ID appears, and fn
-// answers it with ConsentAnswer. While a broker is connected, every such
-// challenge waits on it — so a broker that shows nothing and answers nothing
-// turns every prompt into a refusal; it must render each request or not
-// subscribe this way.
-func (c *Client) SubscribeAsBroker(ctx context.Context, fn func(SessionEvent)) error {
-	return c.subscribe(ctx, Request{Broker: true}, fn)
-}
-
 // SubscribeShowingProposals is Subscribe for an app that shows the human
 // what an AI tool proposes (Request.ShowsProposals): the stream also carries
-// each KindJobProposal. It is never asked about a prompt.
+// each KindJobProposal.
 func (c *Client) SubscribeShowingProposals(ctx context.Context, fn func(SessionEvent)) error {
 	return c.subscribe(ctx, Request{ShowsProposals: true}, fn)
-}
-
-// SubscribeBesideTouchID is SubscribeAsBroker for a broker that shows each
-// request beside its Touch ID (Request.TouchIDFollows): a pending event that
-// carries TouchIDFollows is not waiting for an allow, so fn shows it, calls
-// ConsentShown once it is drawn, and offers Deny only. A pending event
-// without the flag came from an agent that predates this mode and still
-// waits for ConsentAnswer.
-func (c *Client) SubscribeBesideTouchID(ctx context.Context, fn func(SessionEvent)) error {
-	return c.subscribe(ctx, Request{Broker: true, TouchIDFollows: true}, fn)
-}
-
-// ConsentList is the requests waiting on a broker right now, oldest first,
-// for a broker that connected after they were raised. Never prompts.
-func (c *Client) ConsentList() ([]SessionEvent, error) {
-	resp, err := c.call(Request{Op: OpConsentList})
-	if err != nil {
-		return nil, err
-	}
-	for i := range resp.Events {
-		scrubEventBy(&resp.Events[i])
-	}
-	return resp.Events, nil
-}
-
-// ConsentAnswer resolves a pending request by ConsentID. allow lets the
-// agent proceed to its own Touch ID; false refuses it with no prompt.
-func (c *Client) ConsentAnswer(consentID string, allow bool) error {
-	decision := DecisionDeny
-	if allow {
-		decision = DecisionAllow
-	}
-	_, err := c.call(Request{Op: OpConsentAnswer, ConsentID: consentID, Decision: decision})
-	return err
-}
-
-// ConsentShown tells the agent a TouchIDFollows request is on screen, so its
-// Touch ID appears without waiting out shownWait. It grants nothing.
-func (c *Client) ConsentShown(consentID string) error {
-	_, err := c.call(Request{Op: OpConsentShown, ConsentID: consentID})
-	return err
 }
 
 func (c *Client) subscribe(ctx context.Context, req Request, fn func(SessionEvent)) error {

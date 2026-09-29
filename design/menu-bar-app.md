@@ -81,7 +81,7 @@ The dropdown, top to bottom. Each row is a socket op the CLI can also send.
 | Lock now / Unlock | `lock`, `unlock` | `jit lock`, `jit unlock` |
 | Active grants: holder, profiles, expiry, serve count; Revoke | `grant_list`, `grant_revoke` | `jit grant list`, `jit grant revoke` |
 | Last N events, live | `subscribe` | `jit audit -f` |
-| Pending consent request with Deny / Allow with Touch ID (phase 4) | `subscribe` with `broker`, `consent_list`, `consent_answer` | none; the dialog itself is the CLI's view |
+| Pending consent request with Deny / Allow with Touch ID (phase 4; removed 2026-09-29, the Touch ID dialog is the whole question) | `subscribe` with `broker`, `consent_list`, `consent_answer` (removed); job proposals via `subscribe` with `shows_proposals` | none; the dialog itself is the CLI's view |
 | Open jit audit / doctor in Terminal | none | shell out |
 
 Notifications, opt-in per kind: session locked (with why: idle, ceiling,
@@ -135,6 +135,14 @@ if the app is abandoned.
    older app alongside keeps the sheet-first order. The audit records a
    Deny in the app as "denied in JitPass"; Cancel on the dialog keeps the
    key store's own error.
+
+   **Removed on 2026-09-29**, both modes: the Touch ID dialog is the whole
+   question, and nothing of the app appears beside it. `consent_list`,
+   `consent_answer`, `consent_shown`, `touch_id_follows` and the `pending`
+   event are gone; an old app's `consent_list` gets the unknown-op error.
+   The app is sent job proposals by setting `shows_proposals` on
+   `subscribe` (`broker` is still read as `shows_proposals`, for apps that
+   predate it).
 
 Nothing else in `internal/agent` changes. `internal/consent` stays pure.
 

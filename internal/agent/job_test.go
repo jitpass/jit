@@ -1106,78 +1106,6 @@ func TestJobRequesterNamesTheAppBehindJit(t *testing.T) {
 	}
 }
 
-// A job's run says the same sentence with or without a broker in front of
-// it: the sentence has no explanatory tail left for confirmReason to drop.
-// The audit keeps it too, and the pending event names the job.
-func TestBrokeredJobRunConfirmsBriefly(t *testing.T) {
-	r := newJobRig(t)
-	reasons := r.captureReasons()
-	if _, err := r.c.JobAllow("guest-report", r.spec()); err != nil {
-		t.Fatal(err)
-	}
-	// A run with no app: the whole sentence.
-	if _, err := r.c.JobRun("guest-report"); err != nil {
-		t.Fatal(err)
-	}
-	if d := (*reasons)[1]; strings.HasPrefix(d, "confirm:") || !strings.HasSuffix(d, " with 1 secret") {
-		t.Fatalf("with no app, the run prompt = %q, want the whole sentence", d)
-	}
-
-	pending, stop := broker(t, r.s, r.c)
-	defer stop()
-	errc := make(chan error, 1)
-	go func() { _, err := r.c.JobRun("guest-report"); errc <- err }()
-	var req SessionEvent
-	select {
-	case req = <-pending:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the app was never shown the run")
-	}
-	if req.Op != OpJobRun || req.Job != "guest-report" {
-		t.Fatalf("pending = op %q job %q, want job_run for guest-report", req.Op, req.Job)
-	}
-	if err := r.c.ConsentAnswer(req.ConsentID, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-errc; err != nil {
-		t.Fatal(err)
-	}
-	dialog := (*reasons)[2]
-	if dialog != (*reasons)[1] || !strings.Contains(dialog, r.spec().Argv[1]) {
-		t.Fatalf("dialog after a broker's allow = %q, want the run's own sentence %q", dialog, (*reasons)[1])
-	}
-	var e SessionEvent
-	events, _ := r.c.History()
-	for _, ev := range events {
-		if ev.Kind == KindApproved && ev.Op == OpJobRun {
-			e = ev
-		}
-	}
-	if e.Cause != dialog || e.Job != "guest-report" {
-		t.Fatalf("audit = %+v, want the full sentence and the job", e)
-	}
-}
-
-func TestConfirmReason(t *testing.T) {
-	cases := map[string]string{
-		// A sentence with an explanatory tail: the facts stay, the tail goes.
-		"run reports/weekly.py for claude with 3 secrets; it sees output, never the values": "confirm: run reports/weekly.py for claude with 3 secrets",
-		// No tail: unchanged, never truncated into losing its scope.
-		`let claude use "release-bot", "ci" until you revoke it`: `let claude use "release-bot", "ci" until you revoke it`,
-	}
-	for in, want := range cases {
-		if got := confirmReason(in); got != want {
-			t.Errorf("confirmReason(%q) = %q, want %q", in, got, want)
-		}
-	}
-	// A facts clause so long that "confirm: " would not fit whole keeps the
-	// original rather than cutting it.
-	long := strings.Repeat("x", 84) + "; y"
-	if got := confirmReason(long); got != long {
-		t.Errorf("an over-long short form was used: %q", got)
-	}
-}
-
 // Third review, findings 1 and 7: the prompt names the program that runs,
 // even when an argument names another file and the folder name is long.
 func TestJobAllowPromptNamesTheProgramThatRuns(t *testing.T) {
@@ -1303,7 +1231,7 @@ func TestJobProposalsGoToTheAppAndCreateNothing(t *testing.T) {
 	spec := r.spec()
 	spec.Ask = string(job.AskNever) // the agent asks for unattended; it must not get it
 
-	if _, err := r.c.JobRequest("notion-guests", spec, "access review"); err == nil || !strings.Contains(err.Error(), ErrNoJobBroker.Error()) {
+	if _, err := r.c.JobRequest("guest-report", spec, "access review"); err == nil || !strings.Contains(err.Error(), ErrNoProposalViewer.Error()) {
 		t.Fatalf("with no app: %v", err)
 	}
 
@@ -1312,26 +1240,22 @@ func TestJobProposalsGoToTheAppAndCreateNothing(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = r.c.SubscribeAsBroker(ctx, func(e SessionEvent) {
-			switch e.Kind {
-			case KindJobProposal:
+		_ = r.c.SubscribeShowingProposals(ctx, func(e SessionEvent) {
+			if e.Kind == KindJobProposal {
 				events <- e
-			case KindPending:
-				// The approval's own sheet: the human presses Allow.
-				go func() { _ = r.c.ConsentAnswer(e.ConsentID, true) }()
 			}
 		})
 	}()
 	defer func() { cancel(); <-done }()
-	waitFor(t, "broker", func() bool { return r.s.brokerCount() == 1 })
+	waitFor(t, "the app's stream", func() bool { return r.s.proposalViewers() == 1 })
 
-	p, err := r.c.JobRequest("notion-guests", spec, "access review")
+	p, err := r.c.JobRequest("guest-report", spec, "access review")
 	if err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case e := <-events:
-		if e.ConsentID != p.ID || e.Job != "notion-guests" || e.Cause != "access review" {
+		if e.ConsentID != p.ID || e.Job != "guest-report" || e.Cause != "access review" {
 			t.Fatalf("app was shown %+v", e)
 		}
 	case <-time.After(5 * time.Second):
@@ -1348,7 +1272,7 @@ func TestJobProposalsGoToTheAppAndCreateNothing(t *testing.T) {
 	}
 
 	// Approving it is the ordinary approval, and it stops waiting.
-	if _, err := r.c.JobAllowProposal("notion-guests", p.Spec, p.ID); err != nil {
+	if _, err := r.c.JobAllowProposal("guest-report", p.Spec, p.ID); err != nil {
 		t.Fatal(err)
 	}
 	if r.prompts() != 1 {
@@ -1592,28 +1516,20 @@ func TestJobRunIgnoresProfileManifestEdits(t *testing.T) {
 	}
 }
 
-// An app that shows proposals and brokers nothing (JitPass, since the Touch
-// ID dialog became the whole question) is still shown a proposal, and is
-// never asked about a prompt: the job's own approval goes straight to the
-// Touch ID.
-func TestJobProposalsReachAnAppThatBrokersNothing(t *testing.T) {
+// An app that shows proposals (JitPass) is shown a proposal, and nothing
+// else reaches its stream but the trail: the job's own approval goes
+// straight to the Touch ID, once.
+func TestJobProposalsReachTheApp(t *testing.T) {
 	r := newJobRig(t)
-	events := make(chan SessionEvent, 4)
+	events := make(chan SessionEvent, 16)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = r.c.SubscribeShowingProposals(ctx, func(e SessionEvent) {
-			if e.Kind == KindJobProposal || e.Kind == KindPending {
-				events <- e
-			}
-		})
+		_ = r.c.SubscribeShowingProposals(ctx, func(e SessionEvent) { events <- e })
 	}()
 	defer func() { cancel(); <-done }()
 	waitFor(t, "the app's stream", func() bool { return r.s.proposalViewers() == 1 })
-	if n := r.s.brokerCount(); n != 0 {
-		t.Fatalf("an app that only shows proposals counts as %d consent brokers", n)
-	}
 
 	p, err := r.c.JobRequest("guest-report", r.spec(), "access review")
 	if err != nil {
@@ -1628,16 +1544,78 @@ func TestJobProposalsReachAnAppThatBrokersNothing(t *testing.T) {
 		t.Fatal("the app was never shown the proposal")
 	}
 
-	// The approval prompts at once, with nothing parked for the app.
 	if _, err := r.c.JobAllow("guest-report", r.spec()); err != nil {
 		t.Fatalf("JobAllow: %v", err)
 	}
 	if r.prompts() != 1 {
 		t.Errorf("prompts = %d, want the one Touch ID", r.prompts())
 	}
+	// Everything the stream carried after the proposal is in the trail:
+	// no request was sent to the app for it to answer or show beside the
+	// dialog.
+	history, err := r.c.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := map[string]bool{}
+	for _, e := range history {
+		recorded[e.Kind+" "+e.Op+" "+e.Cause] = true
+	}
+	for quiet := false; !quiet; {
+		select {
+		case e := <-events:
+			if !recorded[e.Kind+" "+e.Op+" "+e.Cause] || e.ConsentID != "" {
+				t.Errorf("the app was sent %+v, which is not in the trail", e)
+			}
+		case <-time.After(200 * time.Millisecond):
+			quiet = true
+		}
+	}
+}
+
+// A JitPass older than shows_proposals subscribes with the deprecated
+// broker flag, and is still shown proposals.
+func TestJobProposalsReachAnAppThatSaysBroker(t *testing.T) {
+	r := newJobRig(t)
+	events := make(chan SessionEvent, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.c.subscribe(ctx, Request{Broker: true}, func(e SessionEvent) {
+			if e.Kind == KindJobProposal {
+				events <- e
+			}
+		})
+	}()
+	defer func() { cancel(); <-done }()
+	waitFor(t, "the app's stream", func() bool { return r.s.subscriberCount() == 1 })
+
+	p, err := r.c.JobRequest("guest-report", r.spec(), "access review")
+	if err != nil {
+		t.Fatalf("JobRequest with an app that says broker: %v", err)
+	}
 	select {
 	case e := <-events:
-		t.Errorf("the app was sent %+v for a prompt it does not broker", e)
-	case <-time.After(200 * time.Millisecond):
+		if e.ConsentID != p.ID || e.Job != "guest-report" {
+			t.Fatalf("the app was shown %+v, want the proposal %s", e, p.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the app was never shown the proposal")
+	}
+}
+
+// The consent ops an older JitPass still sends are gone: each is refused as
+// any unknown op is, and the service goes on answering.
+func TestRemovedConsentOpsAreUnknown(t *testing.T) {
+	r := newJobRig(t)
+	for _, op := range []string{"consent_list", "consent_answer", "consent_shown"} {
+		_, err := r.c.call(Request{Op: op})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("unknown op %q", op)) {
+			t.Errorf("%s: %v, want the unknown-op error", op, err)
+		}
+	}
+	if _, err := r.c.History(); err != nil {
+		t.Fatalf("the service stopped answering: %v", err)
 	}
 }

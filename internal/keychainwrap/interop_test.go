@@ -41,7 +41,7 @@ func interopPair(t *testing.T) (*Wrapper, *agent.Server) {
 	if err := w.EnsureMEK(); err != nil {
 		t.Fatalf("EnsureMEK: %v", err)
 	}
-	mek, err := w.fetchMEK("interop test", nil)
+	mek, err := w.fetchMEK("interop test")
 	if err != nil {
 		t.Fatalf("fetchMEK: %v", err)
 	}

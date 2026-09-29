@@ -111,7 +111,7 @@ func TestPublishMarksAFullSubscriberLagged(t *testing.T) {
 	// this is not tested by a peer that stops reading.
 	s := NewServer(shortSocketPath(t), nil, time.Minute)
 	s.subscribeBuffer = 1
-	sub := s.subscribe(false, false, false)
+	sub := s.subscribe(false)
 	defer s.unsubscribe(sub)
 
 	s.publish(SessionEvent{Kind: KindUnlock})

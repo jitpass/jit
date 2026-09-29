@@ -271,9 +271,6 @@ func (k countingKeychainKey) FetchMEK(string) ([]byte, error) {
 	*k.uses++
 	return append([]byte(nil), k.kw.key...), nil
 }
-func (k countingKeychainKey) FetchMEKCancel(reason string, _ <-chan struct{}) ([]byte, error) {
-	return k.FetchMEK(reason)
-}
 func (countingKeychainKey) Close() {}
 
 func TestMemoizedVaultOpenerOpensOnce(t *testing.T) {

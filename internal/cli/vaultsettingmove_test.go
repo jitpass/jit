@@ -35,10 +35,7 @@ func (k presenceKey) RequireUserPresence(reason string) error {
 	return nil
 }
 func (k presenceKey) FetchMEK(string) ([]byte, error) { return append([]byte(nil), k.kw.key...), nil }
-func (k presenceKey) FetchMEKCancel(reason string, _ <-chan struct{}) ([]byte, error) {
-	return k.FetchMEK(reason)
-}
-func (presenceKey) Close() {}
+func (presenceKey) Close()                            {}
 
 // moveRig is a fixture home with a vault under a recording key, and one
 // global profile naming billing/EXPORT_SECRETS_FILE.

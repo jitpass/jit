@@ -16,7 +16,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/jitpass/jit/internal/authprompt"
 	"github.com/jitpass/jit/internal/unlockreason"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -278,34 +277,14 @@ func (w *Wrapper) Install(mek []byte) error {
 // ("JitPass is trying to <reason>."), so reason comes from the caller, the
 // way keychainwrap.Wrapper.FetchMEK's does.
 func (w *Wrapper) FetchMEK(reason string) ([]byte, error) {
-	return w.fetchMEK(reason, nil)
-}
-
-// FetchMEKCancel is FetchMEK whose dialog is taken down if withdraw closes
-// before it is answered (design/consent-side-panel-plan.md, step 2); the
-// failure is then authprompt.ErrWithdrawn, and a withdraw already closed
-// shows no dialog at all. The dialog is the key's user presence, asked on
-// the fetch's own context; the decrypt runs on that context after an
-// approval, so a withdrawal in that instant may still fail it, and it is
-// then reported as withdrawn too, never as a wrong key. A cached MEK returns
-// at once.
-func (w *Wrapper) FetchMEKCancel(reason string, withdraw <-chan struct{}) ([]byte, error) {
-	return w.fetchMEK(reason, withdraw)
+	return w.fetchMEK(reason)
 }
 
 var errNoSealed = errors.New("this vault's key is not in the Secure Enclave (no sealed key file)")
 
-func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, error) {
+func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	// Withdrawn already: no dialog, and nothing handed over, not even a key
-	// this Wrapper cached from an earlier fetch. Checked here rather than
-	// trusting Security to refuse a dead context (TestHardwareOpenWithdrawn
-	// measures that path).
-	if authprompt.Withdrawn(withdraw) {
-		return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w", ErrCanceled), true)
-	}
 
 	if w.mek == nil {
 		k, blob, err := readSealed(w.path)
@@ -322,12 +301,7 @@ func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, err
 		if err != nil {
 			return nil, err
 		}
-		var mek []byte
-		if c, ok := enc.(cancelableOpener); ok && withdraw != nil {
-			mek, err = c.openCancel(blob, reason, withdraw)
-		} else {
-			mek, err = enc.open(blob, reason)
-		}
+		mek, err := enc.open(blob, reason)
 		if err != nil {
 			return nil, err
 		}
@@ -365,7 +339,7 @@ func (w *Wrapper) Close() {
 // still ask) as keychainwrap's. internal/cli asserts this method on a vault's
 // KeyWrapper.
 func (w *Wrapper) RequireUserPresence(reason string) error {
-	mek, err := w.fetchMEK(reason, nil)
+	mek, err := w.fetchMEK(reason)
 	if err != nil {
 		return err
 	}
@@ -409,7 +383,7 @@ func (w *Wrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
 // WrapKeyLabeled implements vault.LabeledKeyWrapper: class is the AAD, bound
 // exactly as keychainwrap and the agent bind it; label is ignored, as there.
 func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK(unlockreason.Store, nil)
+	mek, err := w.fetchMEK(unlockreason.Store)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +393,7 @@ func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error
 
 // UnwrapKeyLabeled implements vault.LabeledKeyWrapper.
 func (w *Wrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK(unlockreason.Read, nil)
+	mek, err := w.fetchMEK(unlockreason.Read)
 	if err != nil {
 		return nil, err
 	}

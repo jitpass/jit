@@ -78,13 +78,11 @@ const (
 )
 
 // Fetcher is what the service builds per unlock: FetchMEK copies the key
-// out (prompting), FetchMEKCancel does the same with a dialog that can be
-// withdrawn, Close wipes the fetcher's own copy. It is the method set of
-// agent.ClosableFetcher and agent.CancelableFetcher; internal/cli asserts
-// both at compile time where it wires the service.
+// out (prompting), Close wipes the fetcher's own copy. It is
+// agent.ClosableFetcher's method set; internal/cli asserts that at compile
+// time where it wires the service.
 type Fetcher interface {
 	FetchMEK(reason string) ([]byte, error)
-	FetchMEKCancel(reason string, withdraw <-chan struct{}) ([]byte, error)
 	Close()
 }
 

@@ -15,15 +15,6 @@ typedef struct {
 // ACL, is the enforcement point in this interim implementation.
 KWResult kw_challenge(const char *reason);
 
-// kw_context_new returns a retained LAContext for kw_challenge_ctx, so the
-// caller can withdraw the prompt from another thread with
-// kw_context_invalidate while kw_challenge_ctx blocks. Free it with
-// kw_context_free only once no call can still use it.
-void *kw_context_new(void);
-void kw_context_invalidate(void *ctx);
-void kw_context_free(void *ctx);
-KWResult kw_challenge_ctx(const char *reason, void *ctx);
-
 // kw_ensure_mek generates a random keySize-byte key on first call and
 // stores it as a PLAIN (no SecAccessControl) keychain generic-password
 // item under service/account if one doesn't already exist. Idempotent.

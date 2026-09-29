@@ -359,15 +359,14 @@ func TestEveryQueryIsChecked(t *testing.T) {
 // the read that can show the keychain's access dialog: kw_fetch_mek with
 // quiet 0 (fetchMEK itself, and HasMEK, rotation's check of its own
 // items), and fetchMEK's callers. Each is a read behind jit's own Touch ID
-// check (FetchMEK and FetchMEKCancel, the wrap and unwrap,
-// RequireUserPresence) or a rotation's promote reading the items it wrote
-// in the same command.
+// check (FetchMEK, the wrap and unwrap, RequireUserPresence) or a
+// rotation's promote reading the items it wrote in the same command.
 // MatchesMEK, InstallMEK and CountOpens compare or measure an item that may
 // be another jit's, and must never prompt: they are not here.
 var promptingReadCallers = map[string]map[string]bool{
 	"kw_fetch_mek": {"fetchMEK": true, "HasMEK": true},
 	"fetchMEK": {
-		"FetchMEK": true, "FetchMEKCancel": true, "WrapKeyLabeled": true, "UnwrapKeyLabeled": true,
+		"FetchMEK": true, "WrapKeyLabeled": true, "UnwrapKeyLabeled": true,
 		"RequireUserPresence": true, "PromoteStagedRekeyMEK": true,
 	},
 }
