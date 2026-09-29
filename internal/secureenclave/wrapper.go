@@ -298,6 +298,14 @@ func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, err
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Withdrawn already: no dialog, and nothing handed over, not even a key
+	// this Wrapper cached from an earlier fetch. Checked here rather than
+	// trusting Security to refuse a dead context (TestHardwareOpenWithdrawn
+	// measures that path).
+	if authprompt.Withdrawn(withdraw) {
+		return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w", ErrCanceled), true)
+	}
+
 	if w.mek == nil {
 		k, blob, err := readSealed(w.path)
 		if err != nil {
@@ -312,12 +320,6 @@ func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, err
 		enc, err := w.slotFor(k.Tag)
 		if err != nil {
 			return nil, err
-		}
-		// Withdrawn already: no dialog at all, rather than trusting Security
-		// to refuse a dead context (which the spike never measured on this
-		// path; TestHardwareOpenWithdrawn does).
-		if authprompt.Withdrawn(withdraw) {
-			return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w", ErrCanceled), true)
 		}
 		var mek []byte
 		if c, ok := enc.(cancelableOpener); ok && withdraw != nil {

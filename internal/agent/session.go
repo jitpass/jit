@@ -675,6 +675,12 @@ func (s *Server) installSessionLocked(mek []byte, event *SessionEvent) {
 	// one buffer that persists for the whole TTL.
 	lockMemory(s.mek)
 	s.lastUnlock = event
+	// Approvals from before this session (given while the vault stayed
+	// locked) must not answer in it; one this session's own prompt gives is
+	// cached after this and stays.
+	if s.Consent != nil {
+		s.Consent.NewSession()
+	}
 	s.lastDenied = time.Time{}
 	s.lastDeniedCause = ""
 	s.recordEvent(*event)

@@ -392,3 +392,61 @@ func TestGateSettlesALapseBeforeDeciding(t *testing.T) {
 		t.Errorf("two reads after a lapse cost %d prompts, want 1 (the approval must stick)", n)
 	}
 }
+
+// The review's case: an approval given while the vault stayed locked (the
+// unlock cooldown was running, so the prompt could not open a session) used
+// to live on, slid by every retry, and answered for the session the human
+// opened later for something else. It is only good in the session it was
+// given in. The combined prompt's approval, which opens its session, still
+// sticks.
+func TestApprovalGivenWhileLockedDoesNotCarryIntoALaterSession(t *testing.T) {
+	s, c, log := startUnlockConsentServer(t)
+	wrapped := wrapThenLock(t, s, c)
+	s.mu.Lock()
+	s.lastDenied = time.Now()
+	s.lastDeniedCause = "test: refused"
+	s.mu.Unlock()
+
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Fatal("setup: inside the cooldown the read should fail at the unlock")
+	}
+	// The human opens a session later, for something else.
+	s.mu.Lock()
+	s.lastDenied = time.Time{}
+	s.mu.Unlock()
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	before := log.count()
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("unwrap in the new session: %v", err)
+	}
+	if n := len(log.since(before)); n != 1 {
+		t.Fatalf("the read in the new session cost %d prompts, want 1: the approval from the locked vault answered for it", n)
+	}
+	before = log.count()
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("second unwrap: %v", err)
+	}
+	if n := len(log.since(before)); n != 0 {
+		t.Errorf("the new session's own approval did not stick: %d prompt(s)", n)
+	}
+}
+
+// The combined prompt opens its session during the prompt; the approval is
+// cached after, so it belongs to that session and the next read asks nothing.
+func TestCombinedApprovalSticksInTheSessionItOpened(t *testing.T) {
+	s, c, log := startUnlockConsentServer(t)
+	wrapped := wrapThenLock(t, s, c)
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("unwrap: %v", err)
+	}
+	before := log.count()
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("second unwrap: %v", err)
+	}
+	if n := len(log.since(before)); n != 0 {
+		t.Errorf("the combined approval did not stick in the session it opened: %d prompt(s)", n)
+	}
+}

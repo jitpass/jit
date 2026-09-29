@@ -565,3 +565,46 @@ func TestSessionDecisionIsCappedAtMaxAge(t *testing.T) {
 		t.Errorf("a decision in constant use outlived the cap: %d prompt(s), want 2", calls)
 	}
 }
+
+// A Session decision answers only in the session it was cached in. One given
+// while no session was open (the unlock refused) must not answer for a
+// session the human opens later; an Always decision is not a session's.
+func TestSessionDecisionDoesNotCarryIntoANewSession(t *testing.T) {
+	e, _ := clockedEngine(5 * time.Minute)
+	calls := 0
+	p := countingPrompter(Allow, Session, &calls)
+	_, _ = e.Decide(gcloud(false), p)
+	if _, _ = e.Decide(gcloud(false), p); calls != 1 {
+		t.Fatalf("setup: the decision should answer in its own session, %d prompts", calls)
+	}
+	e.NewSession()
+	if _, _ = e.Decide(gcloud(false), p); calls != 2 {
+		t.Errorf("a decision from before the session answered in it: %d prompt(s), want 2", calls)
+	}
+	if _, _ = e.Decide(gcloud(false), p); calls != 2 {
+		t.Errorf("the new session's own decision did not stick: %d prompt(s), want 2", calls)
+	}
+
+	always := 0
+	pa := countingPrompter(Allow, Always, &always)
+	kube := Request{Credential: "kube", Caller: Caller{PID: 4343, ExecPath: "/usr/local/bin/kubectl", Strength: BestEffort}}
+	_, _ = e.Decide(kube, pa)
+	e.NewSession()
+	if _, _ = e.Decide(kube, pa); always != 1 {
+		t.Errorf("an Always decision stopped answering at a new session: %d prompt(s), want 1", always)
+	}
+}
+
+// A refusal whose prompt a Clear overtook belongs to the ended session: it
+// must not arm the backoff in the next one.
+func TestRefusalOvertakenByClearDoesNotArmTheBackoff(t *testing.T) {
+	e, _ := clockedEngine(5 * time.Minute)
+	p := func(Request) (Decision, Scope, error) {
+		e.Clear() // the lock, landing mid-prompt
+		return Deny, Once, nil
+	}
+	_, _ = e.Decide(gcloud(false), p)
+	if n := e.refusalCount(gcloud(false).key()); n != 0 {
+		t.Errorf("a refusal from a cleared session armed the backoff: %d refusal(s) counted, want 0", n)
+	}
+}

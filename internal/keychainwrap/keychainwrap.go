@@ -240,13 +240,13 @@ func presenceFromStatus(status int32) MEKPresence {
 	return MEKIndeterminate
 }
 
+// errWithdrawnFirst is a prompt withdrawn before it was shown.
+var errWithdrawnFirst = errors.New("withdrawn before the dialog was shown")
+
 // errNoMEK is the sentence kw_fetch_mek answers errSecItemNotFound with
 // (keychain.m), word for word, so the message is the same whether the absence
 // is caught before the challenge or, in a race, after it. The backticks are
 // what the CLI's error printer renders cyan.
-// errWithdrawnFirst is a prompt withdrawn before it was shown.
-var errWithdrawnFirst = errors.New("withdrawn before the dialog was shown")
-
 var errNoMEK = errors.New("no master key stored in the keychain, run `jit vault init` first")
 
 // WrapKey implements vault.KeyWrapper.
@@ -286,6 +286,14 @@ func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, err
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Withdrawn already: no dialog, and nothing handed over, not even a key
+	// this Wrapper cached from an earlier fetch. Checked here rather than
+	// trusting macOS to refuse a dead context, for every Wrapper,
+	// withdrawable challenge or not.
+	if authprompt.Withdrawn(withdraw) {
+		return nil, fmt.Errorf("local authentication failed: %w", authprompt.Outcome(errWithdrawnFirst, true))
+	}
+
 	if w.mek == nil {
 		// No fingerprint for a key that is not there. On a Mac that never
 		// ran `jit vault init` the challenge used to come first, so the user
@@ -298,12 +306,6 @@ func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, err
 				return nil, w.missing
 			}
 			return nil, errNoMEK
-		}
-		// Withdrawn already: no dialog at all. fetchMEK checks this rather
-		// than trusting macOS to refuse a dead context, and it covers every
-		// Wrapper, withdrawable challenge or not.
-		if authprompt.Withdrawn(withdraw) {
-			return nil, fmt.Errorf("local authentication failed: %w", authprompt.Outcome(errWithdrawnFirst, true))
 		}
 		challenge := w.challenge
 		if withdraw != nil && w.challengeCancel != nil {

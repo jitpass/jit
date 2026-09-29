@@ -153,3 +153,17 @@ func TestHardwareChallengeWithdrawn(t *testing.T) {
 	}
 	t.Logf("dead context: %v", err)
 }
+
+// A Wrapper holding a key from an earlier fetch still hands nothing over once
+// withdrawn: the Deny wins over the cache as it does over the dialog.
+func TestWithdrawnFetchNeverReturnsACachedKey(t *testing.T) {
+	w := cancelWrapper(t, noChallenge, func(string, <-chan struct{}) error { return nil })
+	if _, err := w.FetchMEKCancel("test", make(chan struct{})); err != nil {
+		t.Fatalf("setup fetch: %v", err)
+	}
+	withdraw := make(chan struct{})
+	close(withdraw)
+	if k, err := w.FetchMEKCancel("test", withdraw); !errors.Is(err, authprompt.ErrWithdrawn) || k != nil {
+		t.Fatalf("withdrawn fetch on a cached key = %v (key returned: %v), want ErrWithdrawn and no key", err, k != nil)
+	}
+}

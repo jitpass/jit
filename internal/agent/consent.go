@@ -376,6 +376,11 @@ func (s *Server) ConsentReaders(cred string, holders []int32) bool {
 	if s.Consent == nil || len(holders) == 0 {
 		return false
 	}
+	// Settle the session first, as gateConsent does: a lapsed session is
+	// collected (and consent cleared) before any decision can answer.
+	if mek := s.peekSession(); mek != nil {
+		wipe(mek)
+	}
 	for _, h := range holders {
 		cc := consentCallerForPID(h)
 		cc.DescendsFromGrant = s.descendsFromTrust(h)

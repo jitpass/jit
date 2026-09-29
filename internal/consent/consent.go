@@ -133,6 +133,9 @@ type cached struct {
 	// born is when the prompt was answered. A Session decision slides on use
 	// (lookup), so born is what bounds it absolutely (Engine.maxAge).
 	born time.Time
+	// session is the Engine.session the decision was cached in. A Session
+	// decision is only good in that session (lookup).
+	session uint64
 }
 
 // refusal tracks consecutive non-approvals for one key, and until when the
@@ -249,7 +252,14 @@ type Engine struct {
 	// approval and the caching means the answer belongs to a session that
 	// has already ended.
 	clears uint64
-	now    func() time.Time // injectable for tests
+	// session counts NewSession calls: the unlock sessions begun. A Session
+	// decision answers only inside the session it was cached in. One given
+	// while no session was open (the vault stayed locked: the unlock was
+	// refused, or its cooldown was running) would otherwise live on, slid by
+	// every retry, and answer for a session the human opened later for
+	// something else, since no lock ever came to clear it.
+	session uint64
+	now     func() time.Time // injectable for tests
 }
 
 // New returns an Engine whose Session-scoped decisions live at most sessionTTL
@@ -325,7 +335,11 @@ func (e *Engine) Decide(req Request, prompt Prompter) (Decision, error) {
 			if cacheable {
 				e.remember(key, d, scope, clears)
 			}
-			e.score(key, d)
+			// A refusal from a session a Clear has since ended must not
+			// re-arm the backoff in the next one: Clear wiped it on purpose.
+			if e.clearCount() == clears {
+				e.score(key, d)
+			}
 		}
 		e.finishFlight(key)
 		if err != nil {
@@ -440,7 +454,8 @@ func (e *Engine) lookup(key string) (Decision, bool) {
 	}
 	now := e.now()
 	aged := !c.expires.IsZero() && e.maxAge > 0 && !now.Before(c.born.Add(e.maxAge))
-	if aged || (!c.expires.IsZero() && !c.expires.After(now)) {
+	stale := !c.expires.IsZero() && c.session != e.session
+	if aged || stale || (!c.expires.IsZero() && !c.expires.After(now)) {
 		delete(e.cache, key)
 		return Undecided, false
 	}
@@ -476,7 +491,18 @@ func (e *Engine) remember(key string, d Decision, scope Scope, clears uint64) {
 	if e.clears != clears {
 		return
 	}
-	e.cache[key] = cached{decision: d, expires: expires, born: now}
+	e.cache[key] = cached{decision: d, expires: expires, born: now, session: e.session}
+}
+
+// NewSession marks the start of an unlock session. Session decisions cached
+// before it (in no session, or an earlier one) stop answering; Always
+// decisions are untouched. The agent calls it wherever a session begins,
+// including a disclosed prompt whose approval opened one: that approval is
+// cached after the session starts, so it belongs to it.
+func (e *Engine) NewSession() {
+	e.mu.Lock()
+	e.session++
+	e.mu.Unlock()
 }
 
 func (e *Engine) clearCount() uint64 {
