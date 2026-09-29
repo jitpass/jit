@@ -74,7 +74,7 @@ func RedactAgentCacheShapes(home string, only []string, lines []int, apply bool)
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
 			if len(wanted) > 0 {
-				note(path, unreadableReason(path), SkipUnreadable)
+				note(path, unreadableReason(path, err), SkipUnreadable)
 			}
 			return nil
 		}
@@ -134,19 +134,17 @@ func RedactAgentCacheShapes(home string, only []string, lines []int, apply bool)
 }
 
 // unreadableReason is why a named file could not be read again, in the
-// reader's words rather than the read's error.
-func unreadableReason(path string) string {
+// reader's words rather than readErr's. Never a second open: the guarded
+// read exists because an open can block on a FIFO swapped in.
+func unreadableReason(path string, readErr error) string {
 	info, err := os.Lstat(path)
 	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(readErr, fs.ErrNotExist):
+		return "it was deleted since the scan"
 	case err == nil && info.Size() > audit.MaxAgentCacheFileSize:
 		return "it grew past 64 MB since the scan, too large to rewrite"
-	case errors.Is(err, fs.ErrNotExist):
-		return "it was deleted since the scan"
-	}
-	if f, err := os.Open(path); errors.Is(err, fs.ErrPermission) {
+	case errors.Is(readErr, fs.ErrPermission):
 		return "jit isn't allowed to read it"
-	} else if err == nil {
-		_ = f.Close()
 	}
 	return "jit couldn't read it again after the scan"
 }

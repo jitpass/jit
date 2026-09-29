@@ -152,6 +152,8 @@ func TestRedactNamesAFileItCouldNotReadAgain(t *testing.T) {
 	}
 	if len(named.Skipped) != 1 || named.Skipped[0].Path != transcript || named.Skipped[0].Kind != SkipUnreadable {
 		t.Errorf("named: skipped = %+v, want the transcript as unreadable", named.Skipped)
+	} else if named.Skipped[0].Reason != "jit isn't allowed to read it" {
+		t.Errorf("reason = %q, want the permission said plainly", named.Skipped[0].Reason)
 	}
 
 	all, err := RedactAgentCacheShapes(home, nil, nil, false)
