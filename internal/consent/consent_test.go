@@ -64,10 +64,45 @@ func TestSessionDecisionIsReusedThenExpires(t *testing.T) {
 	if got, _ := e.Decide(gcloud(false), p); got != Allow || calls != 1 {
 		t.Fatalf("within TTL: got %v after %d prompt(s), want Allow after 1 (cached)", got, calls)
 	}
-	// Past the TTL: prompts again.
-	*now = now.Add(2 * time.Minute) // total 6m > 5m TTL
+	// Idle past the TTL since the LAST use: prompts again.
+	*now = now.Add(6 * time.Minute)
 	if got, _ := e.Decide(gcloud(false), p); got != Allow || calls != 2 {
 		t.Fatalf("after TTL: got %v after %d prompt(s), want Allow after 2 (re-prompted)", got, calls)
+	}
+}
+
+// A decision in continuous use never expires mid-work: each use slides it, as
+// each use slides the unlock session. It used to lapse a fixed TTL after the
+// prompt, so a tool reading its credential every minute was asked again every
+// five minutes of a session that was never idle.
+func TestSessionDecisionSlidesWhileUsed(t *testing.T) {
+	e, now := clockedEngine(5 * time.Minute)
+	calls := 0
+	p := countingPrompter(Allow, Session, &calls)
+
+	if got, _ := e.Decide(gcloud(false), p); got != Allow || calls != 1 {
+		t.Fatalf("first access: got %v after %d prompt(s), want Allow after 1", got, calls)
+	}
+	// Twenty minutes of use, a read every four minutes: 4x the TTL in all,
+	// never 5 minutes between two reads.
+	for i := 1; i <= 5; i++ {
+		*now = now.Add(4 * time.Minute)
+		if got, _ := e.Decide(gcloud(false), p); got != Allow || calls != 1 {
+			t.Fatalf("read %d at +%dm: got %v after %d prompt(s), want Allow after 1 (slid)", i, 4*i, got, calls)
+		}
+	}
+}
+
+// Always has no expiry, and a hit must not give it one.
+func TestAlwaysHitDoesNotGainAnExpiry(t *testing.T) {
+	e, now := clockedEngine(5 * time.Minute)
+	calls := 0
+	p := countingPrompter(Allow, Always, &calls)
+	_, _ = e.Decide(gcloud(false), p)
+	_, _ = e.Decide(gcloud(false), p) // a hit
+	*now = now.Add(24 * time.Hour)
+	if got, _ := e.Decide(gcloud(false), p); got != Allow || calls != 1 {
+		t.Fatalf("an Always decision expired after a hit: got %v after %d prompt(s), want Allow after 1", got, calls)
 	}
 }
 
@@ -487,5 +522,46 @@ func TestConcurrentRefusedBurstPromptsOnce(t *testing.T) {
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Errorf("%d concurrent refused requests produced %d prompts, want 1", n, calls)
+	}
+}
+
+// A lock that lands while the prompt is up, after the approval but before it
+// is cached, ends the session the answer was given in. The answer must not be
+// cached into the next one. The agent's combined consent-and-unlock prompt
+// resolves mounts before returning, which made this window real.
+func TestClearDuringPromptIsNotCached(t *testing.T) {
+	e, _ := clockedEngine(5 * time.Minute)
+	calls := 0
+	p := func(Request) (Decision, Scope, error) {
+		calls++
+		e.Clear() // the lock, landing mid-prompt
+		return Allow, Session, nil
+	}
+	if got, _ := e.Decide(gcloud(false), p); got != Allow {
+		t.Fatalf("the prompt's own answer still applies to this access, got %v", got)
+	}
+	if _, _ = e.Decide(gcloud(false), p); calls != 2 {
+		t.Errorf("an answer overtaken by a Clear was cached: %d prompt(s), want 2", calls)
+	}
+}
+
+// A decision in constant use slides, but never past the session's hard
+// ceiling from when it was answered: the one bound that holds on a path
+// where no Clear reaches the cache.
+func TestSessionDecisionIsCappedAtMaxAge(t *testing.T) {
+	e, now := clockedEngine(5 * time.Minute)
+	e.SetMaxAge(time.Hour)
+	calls := 0
+	p := countingPrompter(Allow, Session, &calls)
+	_, _ = e.Decide(gcloud(false), p)
+	for i := 1; i <= 14; i++ { // a read every 4 minutes, to +56m
+		*now = now.Add(4 * time.Minute)
+		if _, _ = e.Decide(gcloud(false), p); calls != 1 {
+			t.Fatalf("read at +%dm re-prompted before the cap", 4*i)
+		}
+	}
+	*now = now.Add(4 * time.Minute) // +60m: at the cap
+	if _, _ = e.Decide(gcloud(false), p); calls != 2 {
+		t.Errorf("a decision in constant use outlived the cap: %d prompt(s), want 2", calls)
 	}
 }

@@ -150,6 +150,10 @@ var agentRunCmd = &cobra.Command{
 			// routes the FIFO credential mounts (gcp/npm/netrc) through the same
 			// engine, best-effort.
 			server.Consent = consent.New(agentTTL)
+			// An approval slides while it is used, so it also needs the
+			// session's absolute bound: the service clears it on every lock,
+			// and this cap covers any path a lock does not reach.
+			server.Consent.SetMaxAge(agent.DefaultMaxSessionAge)
 			mounts.consent = server
 			fmt.Fprintln(stdout, "jit service: per-process credential consent ENABLED (prompting on credential reads)")
 		}
