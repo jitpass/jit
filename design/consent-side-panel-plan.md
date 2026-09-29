@@ -117,6 +117,11 @@ These stand alone and cut prompts with or without the panel.
   4. Then raise the Touch ID through `FetchMEKCancel`. A `consent_answer
      deny` during the prompt closes `cancel`.
   5. A late `allow` (from an older app) is a no-op.
+  6. After the fetch returns, check the withdrawal again. `FetchMEKCancel`
+     lets an approval that wins the race stand (a finger touch a few
+     milliseconds after the Deny), so the broker must still refuse and wipe
+     the key rather than open the session or serve the secret. A Deny is
+     never overtaken by a late touch. (Raised by the step 2 review.)
 - `brokerWait` (90 s for an answer) no longer applies in this mode. The
   Touch ID's own 120 s timeout bounds it.
 - The dialog's sentence: see D1.
@@ -126,7 +131,8 @@ These stand alone and cut prompts with or without the panel.
   - the wait honoured, and the prompt starting at the cap with a silent
     broker;
   - no wait at all without a broker;
-  - a deny before, during, and after the prompt;
+  - a deny before, during, and after the prompt, and a deny that loses the
+    race to an approval (still refused);
   - the audit's two causes;
   - an old-style `allow` ignored.
 
