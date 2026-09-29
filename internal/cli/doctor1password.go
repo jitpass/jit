@@ -34,18 +34,15 @@ var (
 // linkedSecretPaths returns the vault paths whose envelopes carry the
 // op-ref storage marker — auth-free (List + Info read metadata only).
 func linkedSecretPaths(v *vault.Vault) ([]string, error) {
-	paths, err := v.List()
+	// Unreadable envelopes are left out: integrity findings cover them.
+	infos, err := v.Infos()
 	if err != nil {
 		return nil, err
 	}
 	var linked []string
-	for _, p := range paths {
-		info, err := v.Info(p)
-		if err != nil {
-			continue // integrity findings already cover unreadable envelopes
-		}
+	for _, info := range infos {
 		if info.Storage == vault.StorageOpRef {
-			linked = append(linked, p)
+			linked = append(linked, info.Path)
 		}
 	}
 	return linked, nil

@@ -96,6 +96,9 @@ const (
 	SkipLive     SkipKind = "live"     // an agent was writing the file; re-run later
 	SkipBinary   SkipKind = "binary"   // a store a length-changing edit would corrupt
 	SkipHardLink SkipKind = "hardlink" // rewriting one name would leave the other exposed
+	// SkipUnreadable is a file the user named that could not be read: it
+	// grew past the size bound or changed kind since the scan listed it.
+	SkipUnreadable SkipKind = "unreadable"
 )
 
 // AgentCacheSkip is one cache file jit found a credential in and deliberately
@@ -135,11 +138,6 @@ func (c AgentCacheCleanup) Occurrences() int {
 	}
 	return n
 }
-
-// maxAgentCacheEditSize bounds a file this will rewrite. Well above any
-// transcript measured (22 MiB), and a file past it is reported rather than
-// silently passed over.
-const maxAgentCacheEditSize = 64 << 20
 
 // eligibleAgentNeedles drops values that must never be searched for.
 //
@@ -307,6 +305,7 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 	if len(needles) == 0 {
 		return out, nil
 	}
+	index := newNeedleIndex(needles)
 
 	note := func(path, reason string, kind SkipKind, copies []AgentCacheCopy) {
 		out.Skipped = append(out.Skipped, AgentCacheSkip{
@@ -330,15 +329,13 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		// unlocked and the migration half-applied. ~/.claude is written by a
 		// third-party tool running arbitrary code, so this is not a
 		// theoretical adversary. The guard also enforces the size bound on the
-		// opened descriptor, where a pre-open stat bounds nothing.
+		// opened descriptor, where a pre-open stat bounds nothing; it is the
+		// bound the scan reads with, so nothing the scan found is passed over.
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
 			return nil
 		}
-		if len(data) > maxAgentCacheEditSize {
-			return nil // too big to hold a credential we can act on; audit reports it
-		}
-		spans := agentNeedleSpans(data, needles)
+		spans := index.spans(data)
 		if len(spans) == 0 {
 			return nil
 		}
@@ -407,10 +404,52 @@ type agentSpan struct {
 	varName    string
 }
 
-// agentNeedleSpans returns every occurrence of every needle, in file order,
-// with overlaps resolved first-claim-wins. needles arrive longest-first, so
-// the longer of two overlapping credentials wins its span.
-func agentNeedleSpans(data []byte, needles []AgentCacheSecret) []agentSpan {
+// needleIndex finds every needle in one pass over a file, bucketed by the
+// needle's first two bytes. A bytes.Index per needle cost 70 ms per needle
+// per 300 MB, so a vault of 150 secrets took 10 s over one Mac's caches
+// (measured 2026-09-29); this takes the same time for any number of them.
+// Needles are at least 12 bytes (eligibleAgentNeedles), so two bytes always
+// exist. Built once per sweep: the table is 64K slots.
+type needleIndex struct {
+	needles []AgentCacheSecret
+	byPair  [][]int
+}
+
+func newNeedleIndex(needles []AgentCacheSecret) *needleIndex {
+	x := &needleIndex{needles: needles, byPair: make([][]int, 1<<16)}
+	for k, n := range needles {
+		if len(n.Value) >= 2 {
+			key := uint16(n.Value[0])<<8 | uint16(n.Value[1])
+			x.byPair[key] = append(x.byPair[key], k)
+		}
+	}
+	return x
+}
+
+// spans returns every occurrence of every needle, in file order, with
+// overlaps resolved first-claim-wins. needles arrive longest-first, so the
+// longer of two overlapping credentials wins its span.
+func (x *needleIndex) spans(data []byte) []agentSpan {
+	needles := x.needles
+	byPair := x.byPair
+	// occurrences[k] is needle k's matches left to right, each starting past
+	// the one before it, as a search that resumes after each hit finds them.
+	occurrences := make([][]int, len(needles))
+	next := make([]int, len(needles))
+	for i := 0; i+1 < len(data); i++ {
+		ks := byPair[uint16(data[i])<<8|uint16(data[i+1])]
+		if ks == nil {
+			continue
+		}
+		for _, k := range ks {
+			v := needles[k].Value
+			if i < next[k] || len(data)-i < len(v) || string(data[i:i+len(v)]) != v {
+				continue
+			}
+			occurrences[k] = append(occurrences[k], i)
+			next[k] = i + len(v)
+		}
+	}
 	var spans []agentSpan
 	claimed := func(lo, hi int) bool {
 		for _, s := range spans {
@@ -420,19 +459,12 @@ func agentNeedleSpans(data []byte, needles []AgentCacheSecret) []agentSpan {
 		}
 		return false
 	}
-	for _, n := range needles {
-		nb := []byte(n.Value)
-		for off := 0; ; {
-			i := bytes.Index(data[off:], nb)
-			if i < 0 {
-				break
-			}
-			lo := off + i
-			hi := lo + len(nb)
+	for k, n := range needles {
+		for _, lo := range occurrences[k] {
+			hi := lo + len(n.Value)
 			if !claimed(lo, hi) {
 				spans = append(spans, agentSpan{start: lo, end: hi, varName: n.Var})
 			}
-			off = hi
 		}
 	}
 	sort.Slice(spans, func(a, b int) bool { return spans[a].start < spans[b].start })
@@ -470,7 +502,7 @@ func spliceAgentSpans(data []byte, spans []agentSpan) []byte {
 	prev := 0
 	for _, s := range spans {
 		if s.start < prev || s.end > len(data) {
-			continue // belt and braces on the ordering agentNeedleSpans guarantees
+			continue // belt and braces on the ordering needleIndex.spans guarantees
 		}
 		out.Write(data[prev:s.start])
 		out.WriteString(historyRedactedPrefix + s.varName + historyRedactedSuffix)

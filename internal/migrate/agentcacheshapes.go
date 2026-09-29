@@ -5,6 +5,7 @@ package migrate
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -67,14 +68,17 @@ func RedactAgentCacheShapes(home string, only []string, lines []int, apply bool)
 		if err != nil {
 			return nil
 		}
+		// The guard refuses a file past the scan's own size bound. A file
+		// the user named is one a scan listed, so failing to read it now is
+		// said, never an empty "nothing to redact".
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
+			if len(wanted) > 0 {
+				note(path, unreadableReason(path, err), SkipUnreadable)
+			}
 			return nil
 		}
-		if len(data) > maxAgentCacheEditSize {
-			return nil
-		}
-		tokens := audit.CachePatternTokens(data)
+		tokens := audit.CacheFileTokens(home, path, data)
 		if len(wantedLine) > 0 {
 			kept := tokens[:0]
 			for _, tk := range tokens {
@@ -127,4 +131,20 @@ func RedactAgentCacheShapes(home string, only []string, lines []int, apply bool)
 		return nil
 	})
 	return out, err
+}
+
+// unreadableReason is why a named file could not be read again, in the
+// reader's words rather than readErr's. Never a second open: the guarded
+// read exists because an open can block on a FIFO swapped in.
+func unreadableReason(path string, readErr error) string {
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(readErr, fs.ErrNotExist):
+		return "it was deleted since the scan"
+	case err == nil && info.Size() > audit.MaxAgentCacheFileSize:
+		return "it grew past 64 MB since the scan, too large to rewrite"
+	case errors.Is(readErr, fs.ErrPermission):
+		return "jit isn't allowed to read it"
+	}
+	return "jit couldn't read it again after the scan"
 }

@@ -26,6 +26,11 @@ const maxContentScanSize = 5 << 20 // 5 MiB
 // sits on may not be.
 const maxContentLineSize = 1 << 20 // 1 MiB
 
+// lineLimit is the limit newLineScanner cuts at: maxContentLineSize, and
+// smaller only in a test that needs a line past it without a megabyte of
+// input for every regex (no test in this package runs in parallel).
+var lineLimit = maxContentLineSize
+
 // credentialFileNameHints gate which files the MACHINE-WIDE walk will content
 // -scan (see classifyCredentialDump). A file whose own name announces that it
 // holds credentials is worth opening; everything else is left to the
@@ -362,8 +367,37 @@ func FindFileTokens(path string) ([]FileToken, error) {
 		return nil, nil
 	}
 
+	return lineTokens(io.MultiReader(bytes.NewReader(head[:n]), file)), nil
+}
+
+// TextTokens is FindFileTokens over bytes already read, with Start and End
+// as offsets into data rather than into the line: what a rewrite splices.
+func TextTokens(data []byte) []FileToken {
+	tokens := lineTokens(bytes.NewReader(data))
+	if len(tokens) == 0 {
+		return nil
+	}
+	// lineStart[i] is where line i+1 begins; the scanner counts one line per
+	// newline, the same count this makes.
+	lineStart := []int{0}
+	for i, b := range data {
+		if b == '\n' {
+			lineStart = append(lineStart, i+1)
+		}
+	}
+	for i := range tokens {
+		base := lineStart[tokens[i].Line-1]
+		tokens[i].Start += base
+		tokens[i].End += base
+	}
+	return tokens
+}
+
+// lineTokens is the line sweep FindFileTokens and TextTokens share, with
+// Start and End relative to each line.
+func lineTokens(r io.Reader) []FileToken {
 	var tokens []FileToken
-	scanner := newLineScanner(io.MultiReader(bytes.NewReader(head[:n]), file))
+	scanner := newLineScanner(r)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -421,7 +455,7 @@ func FindFileTokens(path string) ([]FileToken, error) {
 	// A scanner error (an over-long line past maxContentLineSize, a mid-read
 	// I/O error) returns what we found so far rather than failing the run —
 	// partial detection beats none.
-	return tokens, nil
+	return tokens
 }
 
 // credentialNameLead caps how far back along a line assignedCredentialName

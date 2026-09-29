@@ -141,6 +141,10 @@ var agentCacheRoots = []agentCacheRoot{
 // "there is nothing there".
 const maxAgentCacheFileSize = 64 << 20
 
+// MaxAgentCacheFileSize is that bound, for a caller saying why a file it
+// named was not read.
+const MaxAgentCacheFileSize = maxAgentCacheFileSize
+
 // substrIndex matches many fixed strings against a buffer in one pass.
 //
 // Bucketed by first byte: at each position only the needles beginning with

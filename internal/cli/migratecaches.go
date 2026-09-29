@@ -63,6 +63,8 @@ func init() {
 	migrateCmd.AddCommand(migrateCachesCmd)
 }
 
+const cachesNothingToDo = "No AI agent cache holds a copy of any vaulted secret. Nothing to do."
+
 func runMigrateCaches(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	home, err := os.UserHomeDir()
@@ -88,33 +90,41 @@ func runMigrateCaches(cmd *cobra.Command, _ []string) error {
 
 	// Plan first, from the same discovery the real run acts on, so the [y/N]
 	// is consent for exactly what will happen (and --dry-run shows the truth).
-	plan, err := migrate.PreviewAgentCaches(home, secrets)
-	if err != nil {
-		return fmt.Errorf("jit migrate caches: scanning agent caches: %w", err)
-	}
-	if len(plan.Edited) == 0 && len(plan.Skipped) == 0 {
-		fmt.Fprintln(out, "No AI agent cache holds a copy of any vaulted secret. Nothing to do.")
-		return nil
-	}
+	// Under --yes there is no one to confirm a plan, so the sweep runs once.
+	if migrateDryRun || !migrateYes {
+		plan, err := migrate.PreviewAgentCaches(home, secrets)
+		if err != nil {
+			return fmt.Errorf("jit migrate caches: scanning agent caches: %w", err)
+		}
+		if len(plan.Edited) == 0 && len(plan.Skipped) == 0 {
+			fmt.Fprintln(out, cachesNothingToDo)
+			return nil
+		}
 
-	// The frame brackets the plan like every other migrate dry-run
-	// (design/dry-run-refactor.md D1); the vault open above it is
-	// inherent — the needles ARE vault values — and reads only.
-	if migrateDryRun {
-		printDryRunBanner(out)
-	}
-	renderAgentCleanupPlan(out, home, plan)
+		// The frame brackets the plan like every other migrate dry-run
+		// (design/dry-run-refactor.md D1); the vault open above it is
+		// inherent — the needles ARE vault values — and reads only.
+		if migrateDryRun {
+			printDryRunBanner(out)
+		}
+		renderAgentCleanupPlan(out, home, plan)
 
-	if migrateDryRun {
-		printDryRunTrailer(out, migrateApplyCommand("jit migrate caches", nil), false)
-		return nil
-	}
-	if !migrateYes && !confirmPrompt(cmd, "Redact these copies? [y/N] ") {
-		fmt.Fprintln(out, "Aborted. Nothing was changed.")
-		return nil
+		if migrateDryRun {
+			printDryRunTrailer(out, migrateApplyCommand("jit migrate caches", nil), false)
+			return nil
+		}
+		if !confirmPrompt(cmd, "Redact these copies? [y/N] ") {
+			fmt.Fprintln(out, "Aborted. Nothing was changed.")
+			return nil
+		}
 	}
 
 	cleanup, cleanErr := migrate.CleanAgentCaches(v, home, secrets)
+	// No plan was shown under --yes, so an empty run says so here.
+	if migrateYes && cleanErr == nil && len(cleanup.Edited) == 0 && len(cleanup.Skipped) == 0 {
+		fmt.Fprintln(out, cachesNothingToDo)
+		return nil
+	}
 	renderAgentCleanupResult(out, home, cleanup)
 	// This whole-vault sweep has just shown the complete current picture, so
 	// whatever an earlier automatic run deferred is now accounted for. A live

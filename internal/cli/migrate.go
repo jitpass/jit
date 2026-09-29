@@ -774,7 +774,9 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	if extras == nil {
 		extras = &planExtras{}
 	}
-	if cacheSelected {
+	// Under --yes nothing confirms the plan, and the apply-time sweep reads
+	// every cache anyway: previewing it too would read them all twice.
+	if cacheSelected && (migrateDryRun || !migrateYes) {
 		if needles := migrate.PlanNeedles(envFiles, looseSecretFiles); len(needles) > 0 {
 			if preview, err := migrate.PreviewAgentCaches(home, needles); err != nil {
 				extras.cacheNote = err.Error()

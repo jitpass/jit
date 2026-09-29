@@ -42,8 +42,8 @@ func newLineScanner(r io.Reader) *bufio.Scanner {
 	// maxContentLineSize, so this ceiling exists only to bound how far the
 	// buffer can grow while a line is still being accumulated — ErrTooLong is
 	// structurally unreachable through it.
-	s.Buffer(make([]byte, 0, 64*1024), 2*maxContentLineSize)
-	s.Split(scanLinesTruncating(maxContentLineSize))
+	s.Buffer(make([]byte, 0, 64*1024), 2*lineLimit)
+	s.Split(scanLinesTruncating(lineLimit))
 	return s
 }
 

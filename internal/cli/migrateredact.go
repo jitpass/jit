@@ -109,6 +109,8 @@ func runMigrateRedact(cmd *cobra.Command, args []string) error {
 	return runErr
 }
 
+const redactNothingToDo = "No AI agent cache holds a token jit recognises by its format. Nothing to do."
+
 func migrateRedact(cmd *cobra.Command, args []string, report *redactReport) error {
 	out := cmd.OutOrStdout()
 	home, err := os.UserHomeDir()
@@ -135,28 +137,38 @@ func migrateRedact(cmd *cobra.Command, args []string, report *redactReport) erro
 		report.Files = append(report.Files, files...)
 	}
 
-	plan, err := migrate.RedactAgentCacheShapes(home, files, migrateRedactLines, false)
-	if err != nil {
-		return fmt.Errorf("jit migrate redact: scanning agent caches: %w", err)
-	}
-	if len(plan.Edited) == 0 && len(plan.Skipped) == 0 {
-		fmt.Fprintln(out, "No AI agent cache holds a token jit recognises by its format. Nothing to do.")
-		return nil
-	}
-	if migrateDryRun {
-		printDryRunBanner(out)
-	}
-	renderRedactPlan(out, home, plan)
-	if migrateDryRun {
-		printDryRunTrailer(out, migrateApplyCommand("jit migrate redact", args), false)
-		return nil
-	}
-	if !migrateYes && !confirmPrompt(cmd, "Redact these tokens? This cannot be undone. [y/N] ") {
-		fmt.Fprintln(out, "Aborted. Nothing was changed.")
-		return nil
+	// A plan is only for a person to confirm: under --yes there is no one
+	// to show it to, and planning would read every cache a second time.
+	if migrateDryRun || !migrateYes {
+		plan, err := migrate.RedactAgentCacheShapes(home, files, migrateRedactLines, false)
+		if err != nil {
+			return fmt.Errorf("jit migrate redact: scanning agent caches: %w", err)
+		}
+		if len(plan.Edited) == 0 && len(plan.Skipped) == 0 {
+			fmt.Fprintln(out, redactNothingToDo)
+			return nil
+		}
+		if migrateDryRun {
+			printDryRunBanner(out)
+		}
+		renderRedactPlan(out, home, plan)
+		if migrateDryRun {
+			printDryRunTrailer(out, migrateApplyCommand("jit migrate redact", args), false)
+			return nil
+		}
+		if !confirmPrompt(cmd, "Redact these tokens? This cannot be undone. [y/N] ") {
+			fmt.Fprintln(out, "Aborted. Nothing was changed.")
+			return nil
+		}
 	}
 
 	done, runErr := migrate.RedactAgentCacheShapes(home, files, migrateRedactLines, true)
+	// Empty under --yes (no plan was shown), or the files changed between
+	// the plan and the run: either way the run says so, never nothing.
+	if runErr == nil && len(done.Edited) == 0 && len(done.Skipped) == 0 {
+		fmt.Fprintln(out, redactNothingToDo)
+		return nil
+	}
 	renderRedactResult(out, home, done)
 	if report != nil {
 		report.Applied = len(done.Edited) > 0

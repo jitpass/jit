@@ -471,3 +471,51 @@ func (c Config) agentCachePatternFindings(path, agent string, data []byte, skipV
 func CachePatternTokens(data []byte) []FileToken {
 	return cachePatternIndex().matches(data)
 }
+
+// CacheFileTokens is every token a scan can report in one agent cache file,
+// at offsets into data, so a Redact of a row the scan listed finds it.
+//
+// The file-shaped caches (paste-cache, shell-snapshots, backups,
+// history.jsonl) are read by ScanAgentStores with the content scanner up to
+// 5 MiB, and only when that finds nothing does the indexed sweep read them:
+// past 1 MiB on one line, or past 5 MiB, the content scanner stops. The
+// indexed sweep leaves out shapes without a literal lead, such as a Telegram
+// bot token. So those files get both, the content scanner only within the
+// bound the scan gives it (it runs every regex per line: 79 s over a 60 MiB
+// history, measured 2026-09-29). Where the two overlap the wider span wins:
+// a token cut by the 1 MiB line limit matches short in the content scanner,
+// and the short span would leave the rest of the secret in the file. Every
+// other cache file goes through the indexed sweep alone, as the scan does.
+func CacheFileTokens(home, path string, data []byte) []FileToken {
+	pattern := CachePatternTokens(data)
+	if !AgentSweepDirFile(home, path) && !isAgentPromptHistoryPath(path) || len(data) > maxContentScanSize {
+		return pattern
+	}
+	return mergeTokens(TextTokens(data), pattern)
+}
+
+// mergeTokens is text's tokens plus each of pattern's that overlaps none of
+// them, or that covers every one it overlaps, which it then replaces. Each
+// list is overlap-free on its own, so the result is too.
+func mergeTokens(text, pattern []FileToken) []FileToken {
+	tokens := append([]FileToken(nil), text...)
+	for _, p := range pattern {
+		var hit []int
+		covers := true
+		for i, t := range tokens {
+			if p.Start < t.End && t.Start < p.End {
+				hit = append(hit, i)
+				covers = covers && p.Start <= t.Start && t.End <= p.End
+			}
+		}
+		if len(hit) > 0 && !covers {
+			continue
+		}
+		for k := len(hit) - 1; k >= 0; k-- {
+			tokens = append(tokens[:hit[k]], tokens[hit[k]+1:]...)
+		}
+		tokens = append(tokens, p)
+	}
+	sort.Slice(tokens, func(a, b int) bool { return tokens[a].Start < tokens[b].Start })
+	return tokens
+}

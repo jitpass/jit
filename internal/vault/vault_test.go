@@ -8,8 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -822,5 +825,55 @@ func TestSettingAV1SecretAgainUpgradesItsEnvelope(t *testing.T) {
 	}
 	if info.Version != envelopeVersion {
 		t.Errorf("Version = %d after rewrite, want %d", info.Version, envelopeVersion)
+	}
+}
+
+// Infos is Info for every listed entry, in List's order, whatever order the
+// workers finish in. A file that is not an envelope is left out, never an
+// error for the rest, and _backups/ entries are read like any other.
+func TestInfosIsInfoForEveryListedEntry(t *testing.T) {
+	v := newTestVault(t)
+	for i := range 40 {
+		p := fmt.Sprintf("billing-sync/KEY_%02d", i)
+		if err := v.SetWithMeta(p, []byte("value"), Meta{Origin: fmt.Sprintf("~/billing-sync/.env.%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := v.Set("_backups/billing-sync/env", []byte("backup")); err != nil {
+		t.Fatal(err)
+	}
+	writeV1Envelope(t, v, "legacy/old-key", []byte("pre-v2 value"))
+	broken := filepath.Join(v.vaultDir(), "broken", "entry.enc")
+	if err := os.MkdirAll(filepath.Dir(broken), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(broken, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := v.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	var wantInfos []SecretInfo
+	for _, p := range paths {
+		info, err := v.Info(p)
+		if err != nil {
+			continue
+		}
+		want = append(want, p)
+		wantInfos = append(wantInfos, info)
+	}
+	if slices.Contains(want, "broken/entry") || !slices.Contains(want, "_backups/billing-sync/env") {
+		t.Fatalf("fixture: Info readable set = %v", want)
+	}
+
+	got, err := v.Infos()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, wantInfos) {
+		t.Errorf("Infos differs from Info over List:\n got %+v\nwant %+v", got, wantInfos)
 	}
 }
