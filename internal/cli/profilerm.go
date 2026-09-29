@@ -11,12 +11,14 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -193,8 +195,7 @@ func runProfileRm(cmd *cobra.Command, args []string) error {
 	// destroys its history too. The same gate `jit vault rm` uses.
 	var removed []string
 	if len(plan.deletePaths) > 0 {
-		reason := fmt.Sprintf("delete profile %s and %s", promptEllipsis(name, 40),
-			countWord(len(plan.deletePaths), "secret", "secrets"))
+		reason := "delete " + withEntries("profile "+promptEllipsis(name, 40), plan.deletePaths)
 		announceTouchIDWait()
 		if err := requireUserPresence(reason); err != nil {
 			return fmt.Errorf("jit profile rm: %w", err)
@@ -224,7 +225,7 @@ func runProfileRm(cmd *cobra.Command, args []string) error {
 
 	_, _ = cOK.Fprint(out, glyphDone)
 	if len(removed) > 0 {
-		fmt.Fprintf(out, " deleted profile %s and %s\n", name, countWord(len(removed), "secret", "secrets"))
+		fmt.Fprintf(out, " deleted %s\n", withEntries("profile "+name, removed))
 	} else {
 		fmt.Fprintf(out, " deleted profile %s\n", name)
 	}
@@ -357,29 +358,76 @@ func printProfileRmPlan(out io.Writer, home string, plan profileRmPlan) {
 	del, keep, missing := len(plan.deletePaths), len(plan.keepPaths), len(plan.missingPaths)
 	switch {
 	case del > 0:
-		fmt.Fprintf(out, "deletes the profile and %s nothing else uses:\n", countWord(del, "secret", "secrets"))
+		fmt.Fprintf(out, "deletes %s nothing else uses:\n", withEntries("the profile", plan.deletePaths))
 		for _, p := range plan.deletePaths {
-			fmt.Fprintf(out, "  %s\n", p)
+			fmt.Fprintf(out, "  %s\n", entryLine(p))
 		}
 	case missing > 0 && keep == 0:
 		if missing == 1 {
-			fmt.Fprintln(out, "deletes the profile; its secret is already gone")
+			noun := "secret"
+			if settings.IsPointer(plan.missingPaths[0]) {
+				noun = "setting"
+			}
+			fmt.Fprintf(out, "deletes the profile; its %s is already gone\n", noun)
 		} else {
-			fmt.Fprintf(out, "deletes the profile; its %d secrets are already gone\n", missing)
+			fmt.Fprintf(out, "deletes the profile; its %s are already gone\n", entriesWord(plan.missingPaths))
 		}
 		return
 	default:
 		fmt.Fprintln(out, "deletes the profile")
 	}
 	if keep > 0 {
-		fmt.Fprintf(out, "keeps %s something else uses:\n", countWord(keep, "secret", "secrets"))
+		fmt.Fprintf(out, "keeps %s something else uses:\n", entriesWord(plan.keepPaths))
 		for _, p := range plan.keepPaths {
-			fmt.Fprintf(out, "  %s\n", p)
+			fmt.Fprintf(out, "  %s\n", entryLine(p))
 		}
 	}
 	if missing > 0 {
-		fmt.Fprintf(out, "%s already gone\n", countWord(missing, "secret is", "secrets are"))
+		verb := " are"
+		if missing == 1 {
+			verb = " is"
+		}
+		fmt.Fprintf(out, "%s%s already gone\n", entriesWord(plan.missingPaths), verb)
 	}
+}
+
+// entriesWord counts manifest entries in the reader's words: a plain
+// setting is not a secret. "1 secret", "2 settings", "1 setting and 2
+// secrets".
+func entriesWord(entries []string) string {
+	settingsN := 0
+	for _, e := range entries {
+		if settings.IsPointer(e) {
+			settingsN++
+		}
+	}
+	secrets := len(entries) - settingsN
+	switch {
+	case settingsN == 0:
+		return countWord(secrets, "secret", "secrets")
+	case secrets == 0:
+		return countWord(settingsN, "setting", "settings")
+	}
+	return countWord(settingsN, "setting", "settings") + " and " + countWord(secrets, "secret", "secrets")
+}
+
+// withEntries joins what goes: "the profile and 2 secrets", or "the
+// profile, 1 setting and 2 secrets" rather than two "and"s.
+func withEntries(subject string, entries []string) string {
+	w := entriesWord(entries)
+	if strings.Contains(w, " and ") {
+		return subject + ", " + w
+	}
+	return subject + " and " + w
+}
+
+// entryLine is one entry of a plan list: a secret's vault path, or a
+// setting's path marked as one.
+func entryLine(entry string) string {
+	if path, ok := settings.PathOf(entry); ok {
+		return path + " (setting)"
+	}
+	return entry
 }
 
 // printProfileRmLaunchers names each known tool that uses the profile, one

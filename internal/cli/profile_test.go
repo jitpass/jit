@@ -18,6 +18,7 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/pointerfile"
+	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -700,5 +701,33 @@ func TestProfileRmDryRunJSON(t *testing.T) {
 	out, err = h.run("", "profile", "rm", "--format", "json", "token")
 	if err == nil || !strings.Contains(out, "--format json needs --dry-run") {
 		t.Errorf("--format json without --dry-run = (%v) %s", err, out)
+	}
+}
+
+// A settings-only profile: its setting file goes with it, and every line
+// calls it a setting, never a secret.
+func TestProfileRmCallsASettingASetting(t *testing.T) {
+	h := newProfileHarness(t)
+	v := h.seedWithOrigin("", "billing-sync/API_KEY")
+	store := settings.New(v.Root)
+	if err := store.Set("billing-sync/REGION", []byte("eu-west-1")); err != nil {
+		t.Fatal(err)
+	}
+	h.writeGlobal("billing-sync", "REGION: jit://setting/billing-sync/REGION\nAPI_KEY: billing-sync/API_KEY\n")
+
+	out, err := h.run("y\n", "profile", "rm", "billing-sync")
+	if err != nil {
+		t.Fatalf("rm: %v\n%s", err, out)
+	}
+	assertContainsAll(t, out,
+		"deletes the profile, 1 setting and 1 secret nothing else uses:\n",
+		"  billing-sync/REGION (setting)\n",
+		"  billing-sync/API_KEY\n",
+		glyphDone+" deleted profile billing-sync, 1 setting and 1 secret\n")
+	if len(h.reasons) != 1 || h.reasons[0] != "delete profile billing-sync, 1 setting and 1 secret" {
+		t.Errorf("Touch ID reasons = %q", h.reasons)
+	}
+	if ok, _ := store.Exists("billing-sync/REGION"); ok {
+		t.Error("the setting file survived")
 	}
 }
