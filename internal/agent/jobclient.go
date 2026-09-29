@@ -48,6 +48,18 @@ func (c *Client) JobNames() ([]JobStatus, error) {
 	return resp.Jobs, nil
 }
 
+// JobCarry asks the service to carry every job that gets the vault value at
+// path along to the plain setting it is being moved to. Call it after the
+// setting is written and before the vault copy is removed: the service
+// compares the two itself. No prompt.
+func (c *Client) JobCarry(path string) ([]JobCarry, error) {
+	resp, err := c.call(Request{Op: OpJobCarry, CarryPath: path})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Carried, nil
+}
+
 // JobRemove deletes a job now. No prompt: reducing access is always free.
 // keyNote is set when the job is gone but its key could not be deleted from
 // the service's copy of jit (Response.KeyNote); show it.

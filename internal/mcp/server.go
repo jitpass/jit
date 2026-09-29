@@ -333,10 +333,20 @@ func jobStateLine(j agent.JobStatus) string {
 	case agent.JobRotated:
 		return "cannot run: a secret was rotated since the user approved it. The user must approve it again."
 	}
+	ready := "ready, asks the user (Touch ID) each time"
 	if j.Ask == string(job.AskNever) {
-		return "ready, runs without asking the user"
+		ready = "ready, runs without asking the user"
 	}
-	return "ready, asks the user (Touch ID) each time"
+	var gone []string
+	for _, sec := range j.Secrets {
+		if sec.Gone {
+			gone = append(gone, sec.Var)
+		}
+	}
+	if len(gone) > 0 {
+		ready += ". It runs without " + strings.Join(gone, ", ") + ", which the user removed from the vault since approving it"
+	}
+	return ready
 }
 
 func (s *Server) runJob(name string) callResult {

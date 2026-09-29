@@ -216,6 +216,19 @@ type Server struct {
 	// decrypting needs internal/vault. Nil disables job_run.
 	OnRunJob func(j job.Job, deks map[string][]byte) (JobResult, error)
 
+	// OnMovedSetting, if set, reports the plain setting a vault path's value
+	// is kept in after `jit vault move-out`: its manifest pointer and its
+	// file. ok is false when there is none. It tells a secret that was moved
+	// (the job stops, its profile still sets it) from one that was deleted
+	// (left out of runs), and names the file job_carry fingerprints.
+	OnMovedSetting func(vaultPath string) (s MovedSetting, ok bool)
+
+	// OnReadVaultValue, if set, decrypts the vault's current value at path
+	// with dek, the DEK the service unwrapped for it itself. job_carry
+	// compares it with the new setting. The CLI wires it because decrypting
+	// needs internal/vault. Nil means no job is carried along.
+	OnReadVaultValue func(path string, dek []byte) ([]byte, error)
+
 	// jobs is the approved job list, loaded from jobsPath (SetJobStore) and
 	// saved on every change, guarded by jobMu. A run copies its job out and
 	// releases the lock: a run lasts minutes and must not hold up a list.
@@ -236,6 +249,15 @@ type Server struct {
 	// after: approval refuses a name it holds.
 	jobKept    []job.Kept
 	jobRunning map[string]bool
+	// carryMu runs one job_carry at a time (jobcarry.go), so each approval
+	// gets exactly one answer to a mismatched setting.
+	carryMu sync.Mutex
+	// carryCompared and carryBeforeStore, when a test sets them, run in a
+	// carry after the value comparison and just before the carried job is
+	// stored: the windows a swapped setting file or a changed job land in.
+	// Nil in the service.
+	carryCompared    func()
+	carryBeforeStore func()
 	// jobProposals are agents' job proposals waiting for the human
 	// (jobrequest.go), memory-only, capped and expiring. Guarded by jobMu.
 	jobProposals map[string]JobProposal
@@ -756,6 +778,11 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		s.dropProposal(req.ProposalID)
 		return Response{OK: true}
+	case OpJobCarry:
+		if req.CarryPath == "" {
+			return Response{OK: false, Error: "job_carry: missing carry_path"}
+		}
+		return Response{OK: true, Carried: s.carryMovedValue(req.CarryPath, c)}
 	case OpJobRun:
 		if req.JobName == "" {
 			return Response{OK: false, Error: "job_run: missing job_name"}

@@ -43,6 +43,16 @@ type jobRig struct {
 	settings []JobSettingSource
 	ran      []job.Job
 	gotDEKs  []map[string][]byte
+	// moved is what OnMovedSetting reports: a vault path's plain setting
+	// after a move out. plain is what OnReadVaultValue decrypts, and only
+	// with the DEK the entry was sealed with (jobcarry_test.go).
+	moved map[string]MovedSetting
+	plain map[string]plainValue
+}
+
+// plainValue is one vault value as the fake vault decrypts it.
+type plainValue struct {
+	dek, value []byte
 }
 
 var jobDEK = bytes.Repeat([]byte{0x07}, 32)
@@ -50,7 +60,7 @@ var jobDEK = bytes.Repeat([]byte{0x07}, 32)
 func newJobRig(t *testing.T) *jobRig {
 	t.Helper()
 	var calls int32
-	r := &jobRig{calls: &calls, vault: map[string][]byte{}, keys: &memGrantKeys{}}
+	r := &jobRig{calls: &calls, vault: map[string][]byte{}, keys: &memGrantKeys{}, moved: map[string]MovedSetting{}, plain: map[string]plainValue{}}
 	r.dir = t.TempDir()
 	if err := os.WriteFile(filepath.Join(r.dir, "list_guest_users.py"), []byte("print('hi')\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -60,6 +70,7 @@ func newJobRig(t *testing.T) *jobRig {
 		t.Fatal(err)
 	}
 	r.vault["notion/NOTION_API_KEY"] = wrapped
+	r.plain["notion/NOTION_API_KEY"] = plainValue{dek: jobDEK, value: []byte("secret_notion_value")}
 	r.sources = []JobSecretSource{{Var: "NOTION_API_KEY", Path: "notion/NOTION_API_KEY", Wrapped: wrapped, Class: "mcp"}}
 	r.storeAt = filepath.Join(t.TempDir(), "jobs.json")
 
@@ -96,6 +107,24 @@ func newJobRig(t *testing.T) *jobRig {
 			r.ran = append(r.ran, j)
 			r.gotDEKs = append(r.gotDEKs, cp)
 			return JobResult{Exit: 0, Stdout: "Total users seen: 264\n"}, nil
+		}
+		s.OnMovedSetting = func(path string) (MovedSetting, bool) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			m, ok := r.moved[path]
+			return m, ok
+		}
+		s.OnReadVaultValue = func(path string, dek []byte) ([]byte, error) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			pv, ok := r.plain[path]
+			if !ok || r.vault[path] == nil {
+				return nil, errors.New("not found")
+			}
+			if !bytes.Equal(pv.dek, dek) {
+				return nil, errors.New("wrong key")
+			}
+			return append([]byte(nil), pv.value...), nil
 		}
 		s.discloseBackoff = nil
 		s.GrantKeys = r.keys

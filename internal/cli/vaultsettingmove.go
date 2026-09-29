@@ -14,7 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
@@ -23,7 +25,9 @@ import (
 // jit vault move-out / move-in: one value between the vault and the plain
 // settings beside it (design/secrets-only-vault.md). Neither changes a value,
 // only where it is kept, so every file that reads it keeps working and the
-// live mount's next read is already right. Both are their own Touch ID every
+// live mount's next read is already right. An AI job keeps the vault paths
+// it was approved with, so a move out asks the service to carry each one
+// along (carryJobs), and one it can't stops. Both are their own Touch ID every
 // time: move-out decrypts, move-in writes the vault, and neither rides the
 // service session.
 
@@ -38,6 +42,9 @@ var vaultMoveOutCmd = &cobra.Command{
 	Long: "Move each named vault entry out of the vault into a plain setting beside it, and point\n" +
 		"every profile that names it at the setting. The value does not change and files that read\n" +
 		"it keep working, but any program on this Mac can then read it without Touch ID.\n\n" +
+		"An AI job that gets the value is moved to the setting too, once the jit service has checked\n" +
+		"the two copies match. One it can't check (an each-time job while the vault is locked) stops\n" +
+		"until you approve it again, and the move prints the line that does.\n\n" +
 		"For a value the scan counts as a secret, that leaves a secret in plain text, and jit scan\n" +
 		"reports it again. Undo with jit vault move-in.",
 	Example: "  jit vault move-out billing-sync/EXPORT_SECRETS_FILE",
@@ -70,6 +77,67 @@ type settingMovedEntry struct {
 	Path     string   `json:"path"`
 	Scan     string   `json:"scan,omitempty"`
 	Profiles []string `json:"profiles"`
+	// Jobs is every AI job that gets the value, for a move out: carried
+	// along to the setting, or stopped until approved again and why.
+	Jobs []settingMovedJob `json:"jobs,omitempty"`
+	// JobsUnchecked, for a move out, says why the AI jobs could not be
+	// asked about (the service is not running); empty when they were.
+	JobsUnchecked string `json:"jobs_unchecked,omitempty"`
+}
+
+// settingMovedJob is one AI job a move out reached (agent.JobCarry). Approve
+// is the line that approves a job that was not carried again.
+type settingMovedJob struct {
+	Job     string `json:"job"`
+	Var     string `json:"var"`
+	Carried bool   `json:"carried"`
+	Why     string `json:"why,omitempty"`
+	Approve string `json:"approve,omitempty"`
+}
+
+// carryMovedJobs asks the service to carry the AI jobs that get path along
+// to its new setting (agent's job_carry). A variable so tests can stand in
+// for the service.
+var carryMovedJobs = func(path string) ([]agent.JobCarry, error) {
+	ac, err := agentClient()
+	if err != nil {
+		return nil, err
+	}
+	return ac.JobCarry(path)
+}
+
+// jobsMayUse reports whether any AI job might get the vault value at path,
+// from the job list on disk, so a move that no job cares about neither asks
+// the service (nor starts it) nor warns about jobs that don't exist. A list
+// that can't be read answers yes: the service then decides. A variable for
+// carryMovedJobs' reason.
+var jobsMayUse = func(path string) bool {
+	root, err := vaultRootDir()
+	if err != nil {
+		return true
+	}
+	jobs, err := job.Load(job.StorePath(root))
+	if err != nil {
+		return true
+	}
+	for _, j := range jobs {
+		for _, sec := range j.Secrets {
+			if sec.Path == path {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// listJobsForMove reads the jobs, for the re-approve lines of the ones a move
+// out stopped. A variable for carryMovedJobs' reason.
+var listJobsForMove = func() ([]agent.JobStatus, error) {
+	ac, err := agentClient()
+	if err != nil {
+		return nil, err
+	}
+	return ac.JobList()
 }
 
 // settingMoveTarget is one path and the manifests that name it.
@@ -200,8 +268,9 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 
 	result := settingMoveResult{Moved: []settingMovedEntry{}}
 	for _, t := range targets {
-		scan, err := settingMoveOne(v, store, classes, t, out)
+		scan, jobs, err := settingMoveOne(v, store, classes, t, out)
 		if err != nil {
+			reportJobsOnError(cmd.ErrOrStderr(), t.path, jobs)
 			return fmt.Errorf("jit vault %s: %w", verb, err)
 		}
 		if classes != nil {
@@ -212,11 +281,12 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 				classes.SetSettingProvenance(t.path, settings.Provenance{})
 			}
 		}
-		result.Moved = append(result.Moved, settingMovedEntry{Path: t.path, Scan: scan, Profiles: t.profiles})
+		result.Moved = append(result.Moved, settingMovedEntry{Path: t.path, Scan: scan, Profiles: t.profiles, Jobs: jobs.jobs, JobsUnchecked: jobs.unchecked})
 	}
 	if classes != nil {
 		_ = classes.Save()
 	}
+	addApproveLines(result.Moved)
 
 	if settingMoveFormat == "json" {
 		return writeJSON(w, result)
@@ -225,20 +295,29 @@ func runSettingMove(cmd *cobra.Command, args []string, out bool) error {
 	return nil
 }
 
+// movedJobs is what a move out did to the AI jobs that get the value.
+type movedJobs struct {
+	jobs      []settingMovedJob
+	unchecked string
+}
+
 // settingMoveOne moves one value. The order keeps it whole whatever fails: the
 // value is written to its new place first, then every manifest is pointed
 // at it, and only then is the old copy removed. A failure part way leaves
-// the value in both places, never in neither.
-func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Classes, t settingMoveTarget, out bool) (string, error) {
+// the value in both places, never in neither. A move out asks the service to
+// carry the AI jobs along between the two, while both copies exist: the
+// service compares them itself (agent's jobcarry.go).
+func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Classes, t settingMoveTarget, out bool) (string, movedJobs, error) {
 	var value []byte
 	var err error
+	var jobs movedJobs
 	if out {
 		value, err = v.Get(t.path)
 	} else {
 		value, err = store.Get(t.path)
 	}
 	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", t.path, err)
+		return "", jobs, fmt.Errorf("reading %s: %w", t.path, err)
 	}
 	scan := string(audit.ClassifyEnvVar(path.Base(t.path), string(value)))
 	if out {
@@ -248,15 +327,15 @@ func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Cla
 		// kept) is removed below: a run that fails on a later value must not
 		// have lost this one's origin (review of #183).
 		if classes == nil {
-			return "", fmt.Errorf("moving %s out: the index beside the vault could not be read, so its origin would be lost", t.path)
+			return "", jobs, fmt.Errorf("moving %s out: the index beside the vault could not be read, so its origin would be lost", t.path)
 		}
 		info, ierr := v.Info(t.path)
 		if ierr != nil {
-			return "", fmt.Errorf("moving %s out: reading its origin: %w", t.path, ierr)
+			return "", jobs, fmt.Errorf("moving %s out: reading its origin: %w", t.path, ierr)
 		}
 		classes.SetSettingProvenance(t.path, settings.Provenance{Origin: info.Origin, GroupID: info.GroupID})
 		if serr := classes.Save(); serr != nil {
-			return "", fmt.Errorf("moving %s out: saving its origin: %w", t.path, serr)
+			return "", jobs, fmt.Errorf("moving %s out: saving its origin: %w", t.path, serr)
 		}
 		err = store.Set(t.path, value)
 	} else {
@@ -268,14 +347,15 @@ func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Cla
 		err = v.SetWithMeta(t.path, value, meta)
 	}
 	if err != nil {
-		return "", fmt.Errorf("writing %s: %w", t.path, err)
+		return "", jobs, fmt.Errorf("writing %s: %w", t.path, err)
 	}
 	for _, m := range t.manifests {
 		if err := repointManifest(m, t.from, t.to); err != nil {
-			return "", err
+			return "", jobs, err
 		}
 	}
 	if out {
+		jobs = carryJobs(t.path)
 		err = v.Remove(t.path)
 		if errors.Is(err, vault.ErrNotFound) {
 			err = nil
@@ -284,9 +364,75 @@ func settingMoveOne(v *vault.Vault, store *settings.Store, classes *settings.Cla
 		err = store.Remove(t.path)
 	}
 	if err != nil {
-		return "", fmt.Errorf("removing the old copy of %s: %w", t.path, err)
+		return "", jobs, fmt.Errorf("removing the old copy of %s: %w", t.path, err)
 	}
-	return scan, nil
+	return scan, jobs, nil
+}
+
+// carryJobs asks the service to carry path's AI jobs along. It never fails
+// the move: the value is already in its setting and the profiles point there,
+// and a job the service could not reach or check stops once the vault copy
+// is gone, which `jit job list` and the app then show.
+func carryJobs(path string) movedJobs {
+	if !jobsMayUse(path) {
+		return movedJobs{}
+	}
+	carried, err := carryMovedJobs(path)
+	if err != nil {
+		why := err.Error()
+		if strings.Contains(why, "unknown op") {
+			why = "the jit service is older than this jit"
+		}
+		return movedJobs{unchecked: why}
+	}
+	var out movedJobs
+	for _, c := range carried {
+		out.jobs = append(out.jobs, settingMovedJob{Job: c.Job, Var: c.Var, Carried: c.Carried, Why: c.Why})
+	}
+	return out
+}
+
+// reportJobsOnError says what a move that then failed (removing the vault
+// copy, say) already did to the AI jobs, before the error: carried or
+// stopped, they stay that way, and the error alone would hide it.
+func reportJobsOnError(w io.Writer, path string, jobs movedJobs) {
+	if len(jobs.jobs) == 0 && jobs.unchecked == "" {
+		return
+	}
+	e := []settingMovedEntry{{Path: path, Jobs: jobs.jobs, JobsUnchecked: jobs.unchecked}}
+	addApproveLines(e)
+	fmt.Fprintf(w, "%s:\n", path)
+	printMovedJobs(w, e[0])
+}
+
+// addApproveLines fills in the line that approves each job a move out did
+// not carry along again. A list that cannot be read leaves them empty.
+func addApproveLines(moved []settingMovedEntry) {
+	stopped := false
+	for _, m := range moved {
+		for _, j := range m.Jobs {
+			stopped = stopped || !j.Carried
+		}
+	}
+	if !stopped {
+		return
+	}
+	jobs, err := listJobsForMove()
+	if err != nil {
+		return
+	}
+	lines := map[string]string{}
+	for _, j := range jobs {
+		lines[j.Name] = reapproveCommand(j)
+	}
+	for _, m := range moved {
+		// m.Jobs shares its array with moved's, so this fills in moved.
+		for k, j := range m.Jobs {
+			if !j.Carried {
+				m.Jobs[k].Approve = lines[j.Job]
+			}
+		}
+	}
 }
 
 // repointManifest rewrites every entry of the manifest at file that names
@@ -350,6 +496,30 @@ func printSettingMove(w io.Writer, r settingMoveResult, out bool) {
 		if out && m.Scan == string(audit.EnvVarSecret) {
 			_, _ = cWarn.Fprintf(w, "    note: the scan counts this value as a secret, so jit scan reports it again\n")
 			wrapBody(w, 0, "    ", hlCmds("    to put it back: `jit vault move-in "+m.Path+"`"))
+		}
+		printMovedJobs(w, m)
+	}
+}
+
+// printMovedJobs says what a move out did to each AI job that gets the value.
+// A stopped job is a warning with its re-approve line: it won't run again
+// until then.
+func printMovedJobs(w io.Writer, m settingMovedEntry) {
+	if m.JobsUnchecked != "" {
+		_, _ = cWarn.Fprintf(w, "    AI jobs weren't checked (%s)\n", m.JobsUnchecked)
+		wrapBody(w, 0, "    ", hlCmds("    any job that gets it stops until you approve it again: `jit job list` shows them"))
+		return
+	}
+	for _, j := range m.Jobs {
+		if j.Carried {
+			fmt.Fprintf(w, "    AI job %s reads it from the setting now\n", j.Job)
+			continue
+		}
+		_, _ = cWarn.Fprintf(w, "    AI job %s stops until you approve it again: %s\n", j.Job, j.Why)
+		if j.Approve != "" {
+			fmt.Fprint(w, "    ")
+			_, _ = cPath.Fprintf(w, "%s %s", glyphAction, j.Approve)
+			fmt.Fprintln(w)
 		}
 	}
 }

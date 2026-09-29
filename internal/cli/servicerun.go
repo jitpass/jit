@@ -184,6 +184,8 @@ var agentRunCmd = &cobra.Command{
 		server.OnResolveJob = resolveJobSecrets(root)
 		server.OnResolveJobSettings = resolveJobSettings(root)
 		server.OnRunJob = runJobProcess(root, mounts)
+		server.OnMovedSetting = movedSettingReader(root)
+		server.OnReadVaultValue = vaultValueReader(root)
 		if n, err := server.SetJobStore(job.StorePath(root)); err != nil {
 			fmt.Fprintf(stderr, "jit service: AI jobs not loaded: %v\n", err)
 		} else if n > 0 {
