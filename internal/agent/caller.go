@@ -257,17 +257,24 @@ func (s *Server) grantReasonFor(mounts []RunMount, unlocking bool) string {
 	return head + "a global credential on this machine"
 }
 
-// trustReason words the `jit run --trust` prompt: the program being trusted
-// and what trusting it MEANS. The prompt has to carry "and what it launches",
+// trustReason words the `jit run --trust` prompt: the program being trusted,
+// what trusting it MEANS, and what launched it (", via claude"), as every
+// other prompt says. Meni, reading "trust true and what it launches" in the
+// live test: "what is trying to trust true?". A run the human typed at a
+// shell has no launcher to name, and says nothing about one. The prompt has to carry "and what it launches",
 // because that scope is the entire point of the flag and the reason it needs
 // a human. "trust" stands for the old sentence's "reach your credentials
 // without further prompts", which took four lines of the dialog.
 func trustReason(c *caller) string {
 	who := truncateHead(dialogName(trustedCommand(c)), maxTrustWhoLen)
 	if who == "" {
-		return "trust this run and what it launches"
+		who = "this run"
 	}
-	return fmt.Sprintf("trust %s and what it launches", who)
+	via := ""
+	if by := truncate(dialogName(c.launchedBy()), maxLauncherLen); by != "" {
+		via = ", via " + by
+	}
+	return fmt.Sprintf("trust %s and what it launches%s", who, via)
 }
 
 // trustedCommand names what a `jit run --trust -- <command>` is about to

@@ -606,7 +606,7 @@ func TestTrustReasonStatesTheScope(t *testing.T) {
 	}}
 	for _, c := range []*caller{nil, long, {pid: 7}} {
 		reason := trustReason(c)
-		if !strings.HasPrefix(reason, "trust ") || !strings.HasSuffix(reason, " and what it launches") {
+		if !strings.HasPrefix(reason, "trust ") || !strings.Contains(reason, " and what it launches") {
 			t.Errorf("trustReason(%v) = %q, want the scope stated", c, reason)
 		}
 		if len([]rune(reason)) > maxReasonLen {
@@ -630,6 +630,12 @@ func TestTrustReasonNamesTheCommandThatRuns(t *testing.T) {
 	if got, want := trustReason(run), "trust terraform and what it launches"; got != want {
 		t.Errorf("trustReason = %q, want %q", got, want)
 	}
+	// A run a program launched says which, as every other prompt does.
+	run.ancestors = []lineage.Process{{PID: 9, ExecPath: "/usr/local/bin/claude", Argv: []string{"claude"}}}
+	if got, want := trustReason(run), "trust terraform and what it launches, via claude"; got != want {
+		t.Errorf("launched by a program: trustReason = %q, want %q", got, want)
+	}
+	run.ancestors = nil
 	// A command outside the standard folders is shown with its folder.
 	run.self.Argv = []string{"jit", "run", "--trust", "--", "/tmp/x/terraform"}
 	if got, want := trustReason(run), "trust /tmp/x/terraform and what it launches"; got != want {
