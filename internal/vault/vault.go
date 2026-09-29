@@ -11,8 +11,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jitpass/jit/internal/atomicfile"
@@ -293,7 +295,13 @@ func (v *Vault) readEnvelope(path string) (envelope, error) {
 	if err != nil {
 		return envelope{}, err
 	}
-	data, err := os.ReadFile(src) // #nosec G304 -- src is derived and validated by sanitizeSecretPath, not a raw external path
+	return readEnvelopeFile(src)
+}
+
+// readEnvelopeFile reads and parses the envelope file at src, a path
+// sanitizeSecretPath or joinSecretPath produced.
+func readEnvelopeFile(src string) (envelope, error) {
+	data, err := os.ReadFile(src) // #nosec G304 -- src comes from sanitizeSecretPath or joinSecretPath, not a raw external path
 	if err != nil {
 		if os.IsNotExist(err) {
 			return envelope{}, ErrNotFound
@@ -525,6 +533,10 @@ func (v *Vault) Info(path string) (SecretInfo, error) {
 	if err != nil {
 		return SecretInfo{}, err
 	}
+	return env.info(path), nil
+}
+
+func (env envelope) info(path string) SecretInfo {
 	return SecretInfo{
 		Path:           path,
 		Version:        env.Version,
@@ -536,7 +548,55 @@ func (v *Vault) Info(path string) (SecretInfo, error) {
 		OriginSeenUnix: env.OriginSeenUnix,
 		ExpiresUnix:    env.ExpiresUnix,
 		Storage:        env.Storage,
-	}, nil
+	}
+}
+
+// Infos is Info for every entry List returns, in List's order, read on
+// every core. An entry whose envelope cannot be read is left out, as every
+// caller scanning the whole vault already skips an Info error; doctor's
+// integrity section is what reports those. Same contract as Info: nothing
+// is decrypted, nothing prompts, and the metadata is what the file claims.
+//
+// Doctor read every envelope twice through Info, _backups/ included (602
+// files, 1.4 GB on one Mac): 2 s of a 4 s doctor (measured 2026-09-29).
+func (v *Vault) Infos() ([]SecretInfo, error) {
+	paths, err := v.List()
+	if err != nil {
+		return nil, err
+	}
+	infos := make([]SecretInfo, len(paths))
+	ok := make([]bool, len(paths))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(runtime.NumCPU(), len(paths)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				src, err := joinSecretPath(v.vaultDir(), paths[i])
+				if err != nil {
+					continue
+				}
+				env, err := readEnvelopeFile(src)
+				if err != nil {
+					continue
+				}
+				infos[i], ok[i] = env.info(paths[i]), true
+			}
+		}()
+	}
+	for i := range paths {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	out := infos[:0]
+	for i, info := range infos {
+		if ok[i] {
+			out = append(out, info)
+		}
+	}
+	return out, nil
 }
 
 // wrapKey/unwrapKey route through the KeyWrapper, passing the secret's
@@ -663,18 +723,14 @@ func syncDir(dir string) {
 // skipped rather than reported — Verify owns corruption, and one bad file
 // should not cost the count of the rest.
 func (v *Vault) UnboundPaths() ([]string, error) {
-	paths, err := v.List()
+	infos, err := v.Infos()
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for _, p := range paths {
-		info, err := v.Info(p)
-		if err != nil {
-			continue
-		}
+	for _, info := range infos {
 		if info.Version == envelopeVersionAADLess {
-			out = append(out, p)
+			out = append(out, info.Path)
 		}
 	}
 	sort.Strings(out)

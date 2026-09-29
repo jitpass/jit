@@ -122,13 +122,27 @@ func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	// read as an archived version of whatever path it names, and Restore
 	// would rename it over the real secret. EqualFold, not ==: on the
 	// default case-insensitive macOS filesystem, "_History" IS "_history".
+	full, err := joinSecretPath(vaultDir, path)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectCaseVariant(vaultDir, path); err != nil {
+		return "", err
+	}
+	return full, nil
+}
+
+// joinSecretPath is sanitizeSecretPath without the case-variant check: for
+// a path List just returned, which is the stored spelling by construction,
+// so the check (a directory read per segment) could never refuse it.
+func joinSecretPath(vaultDir, path string) (string, error) {
+	if err := ValidatePath(path); err != nil {
+		return "", err
+	}
 	full := filepath.Join(vaultDir, path+".enc")
 	cleanVaultDir := filepath.Clean(vaultDir)
 	if full != cleanVaultDir && !strings.HasPrefix(full, cleanVaultDir+string(filepath.Separator)) {
 		return "", invalidPath("secret path %q escapes the vault directory", path)
-	}
-	if err := rejectCaseVariant(vaultDir, path); err != nil {
-		return "", err
 	}
 	return full, nil
 }
