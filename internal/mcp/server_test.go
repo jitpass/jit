@@ -36,7 +36,7 @@ func (f *fakeBackend) RequestJob(name string, spec agent.JobSpec, why string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.appUp {
-		return errors.New("agent: job_request: " + agent.ErrNoJobBroker.Error())
+		return errors.New("agent: job_request: " + agent.ErrNoProposalViewer.Error())
 	}
 	f.requested = append(f.requested, name)
 	f.specs = append(f.specs, spec)

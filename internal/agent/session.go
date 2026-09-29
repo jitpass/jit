@@ -231,7 +231,7 @@ func (s *Server) canOfferUnlock() bool {
 // to notify on, or nil when a session was live after all (then the request
 // simply rides it). mek stays the caller's: the session takes a copy.
 // Caller must hold challengeMu.
-func (s *Server) adoptDisclosedSession(mek []byte, op string, c *caller, consentID string) *SessionEvent {
+func (s *Server) adoptDisclosedSession(mek []byte, op string, c *caller) *SessionEvent {
 	defer s.notifyPendingLock() // a collected session's lock, drained outside mu
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -242,7 +242,6 @@ func (s *Server) adoptDisclosedSession(mek []byte, op string, c *caller, consent
 	copy(own, mek)
 	event := unlockEvent(op, c)
 	event.AuthMethod = s.authMethod()
-	event.ConsentID = consentID
 	s.installSessionLocked(own, event)
 	return event
 }
@@ -283,22 +282,17 @@ func (s *Server) discloseChallengeFull(reasonFor func(unlocking bool) string, op
 	s.pendingChallenge = pending
 	s.mu.Unlock()
 
-	// A consent broker, when one is connected, is shown the request: beside
-	// the Touch ID, where its Deny withdraws the dialog, or (an older app)
-	// in front of it, where only its allow reaches the screen. Either way
-	// parkWithBrokers stamps pending with the consent id the outcome below
-	// must carry, and status keeps pointing at the same snapshot, so `jit
-	// status` during a brokered wait still explains it.
-	mek, prompted, err := s.promptOrBroker(pending, reason, true)
+	fetcher := s.newFetcher()
+	mek, err := fetcher.FetchMEK(reason)
+	// The fetcher's own cache is pure residue once FetchMEK has returned its
+	// copy. Closing it here matters more than on the unlock path: every
+	// consent prompt comes through here, so this is the site that leaked a
+	// MEK copy per prompt.
+	closeFetcher(fetcher)
 
 	event := unlockEvent(op, c)
-	event.ConsentID = pending.ConsentID
 	event.Job = jobName
-	if prompted {
-		// A refusal from the broker never showed a dialog, so it has no
-		// auth method to report.
-		event.AuthMethod = s.authMethod()
-	}
+	event.AuthMethod = s.authMethod()
 	if err != nil {
 		event.Kind = KindDenied
 		event.Cause = fmt.Sprintf("%s: %s", reason, err)
@@ -321,7 +315,7 @@ func (s *Server) discloseChallengeFull(reasonFor func(unlocking bool) string, op
 	if unlocking {
 		// Still under challengeMu, so no other challenge has opened a session
 		// since canOfferUnlock; adoptDisclosedSession checks anyway.
-		d.unlock = s.adoptDisclosedSession(mek, unlockOp, c, pending.ConsentID)
+		d.unlock = s.adoptDisclosedSession(mek, unlockOp, c)
 	}
 	return d
 }
@@ -617,14 +611,11 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	s.pendingChallenge = pending
 	s.mu.Unlock()
 
-	// An unlock a PROGRAM triggered (an MCP server, an agent, a script —
-	// anything with a launcher to name) goes to the consent broker first,
-	// like a disclosed challenge: that is the unexplained prompt the
-	// provenance work exists for. One the human typed themselves — a bare
-	// `jit run` at a shell, or `jit unlock` — needs no explaining and gets
-	// the dialog directly. Explanation, not a gate: the launcher chooses
-	// which prompt, never whether.
-	mek, prompted, err := s.promptOrBroker(pending, reason, op != OpUnlock && c.launchedBy() != "")
+	fetcher := s.newFetcher()
+	mek, err := fetcher.FetchMEK(reason)
+	// The MEK we keep is the copy FetchMEK returned; the fetcher's own cache
+	// has served its purpose the moment we have it.
+	closeFetcher(fetcher)
 
 	s.mu.Lock()
 	s.pendingChallenge = nil
@@ -637,10 +628,7 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 		event := unlockEvent(op, c)
 		event.Kind = KindDenied
 		event.Cause = err.Error()
-		event.ConsentID = pending.ConsentID
-		if prompted {
-			event.AuthMethod = s.authMethod()
-		}
+		event.AuthMethod = s.authMethod()
 		if label != "" {
 			event.Labels = []string{label}
 		}
@@ -652,7 +640,6 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	}
 	event := unlockEvent(op, c)
 	event.AuthMethod = s.authMethod()
-	event.ConsentID = pending.ConsentID
 	if label != "" {
 		event.Labels = []string{label}
 	}

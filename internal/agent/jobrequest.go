@@ -4,6 +4,8 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -21,9 +23,19 @@ import (
 // does. A proposal is therefore inert: the worst a flood of them can do is
 // fill a list, which is why the list is capped and entries expire.
 
-// ErrNoJobBroker is job_request's answer when no app is there to show the
-// proposal. The proposer falls back to the `jit job allow` line.
-var ErrNoJobBroker = errors.New("JitPass is not running to show the proposal")
+// ErrNoProposalViewer is job_request's answer when no app is there to show
+// the proposal. The proposer falls back to the `jit job allow` line.
+var ErrNoProposalViewer = errors.New("JitPass is not running to show the proposal")
+
+// newConsentID is a job proposal's id: JobProposal.ID, and the ConsentID of
+// the KindJobProposal event that shows it.
+func newConsentID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("consent id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // proposalViewers is how many live streams belong to an app that shows
 // proposals.
@@ -93,7 +105,7 @@ func (s *Server) requestJob(req Request, c *caller) Response {
 		return Response{OK: false, Error: "job_request: the folder must be an absolute path"}
 	}
 	if s.proposalViewers() == 0 {
-		return Response{OK: false, Error: "job_request: " + ErrNoJobBroker.Error()}
+		return Response{OK: false, Error: "job_request: " + ErrNoProposalViewer.Error()}
 	}
 	why := req.Why
 	if r := []rune(why); len(r) > maxProposalWhy {

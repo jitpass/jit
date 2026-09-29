@@ -230,7 +230,7 @@ func TestAdoptNeverReplacesALiveSession(t *testing.T) {
 
 	other := bytes.Repeat([]byte{0x99}, 32)
 	s.challengeMu.Lock()
-	ev := s.adoptDisclosedSession(other, OpUnwrap, nil, "")
+	ev := s.adoptDisclosedSession(other, OpUnwrap, nil)
 	s.challengeMu.Unlock()
 	if ev != nil {
 		t.Error("adopt reported an unlock over a live session")

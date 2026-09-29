@@ -100,7 +100,7 @@ func (c *Client) JobRun(name string) (JobResult, error) {
 }
 
 // JobRequest proposes a job for the human to approve in JitPass. It
-// creates nothing. ErrNoJobBroker's text in the error means no app is
+// creates nothing. ErrNoProposalViewer's text in the error means no app is
 // running; the caller then prints the `jit job allow` line instead.
 func (c *Client) JobRequest(name string, spec JobSpec, why string) (JobProposal, error) {
 	resp, err := c.call(Request{Op: OpJobRequest, JobName: name, JobSpec: &spec, Why: why})

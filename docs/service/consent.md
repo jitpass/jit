@@ -118,35 +118,11 @@ the ones a looping process would hammer: without the pause, declining bought
 you nothing but the next dialog, until approving became the only way to make
 it stop.
 
-## Seeing the request before the dialog: the menu bar app
+## The dialog is the whole question
 
-The system dialog fits one sentence. When the JitPass menu bar app is running,
-it is shown each request first, in full: the caller's whole command line, what
-launched it, whether the service identified it through the kernel or by a
-process scan, which credential it wants, and how many times it has already
-been refused. Two answers:
-
-- **Allow with Touch ID** lets the service go on to the same Touch ID prompt
-  it would have shown anyway. The app approves nothing on its own; the dialog
-  still decides.
-- **Deny** refuses without a prompt. The caller gets the same error and the
-  same pause a declined dialog gives it.
-
-The same goes for an **unlock a program asked for**: when the vault is locked
-and an MCP server, an agent or a script reaches for a secret, the app shows
-who before the unlock dialog does. An unlock you typed yourself, `jit unlock`
-or a `jit run` at your own shell, gets the dialog directly; there is nothing
-to explain.
-
-A request the app is shown and nobody answers is refused after ninety seconds,
-like a dialog nobody touched. If the app quits while a request is waiting, the
-dialog appears directly. Without the app, nothing changes: the service prompts
-exactly as it always has.
-
-This is the service's `consent_list` and `consent_answer` socket operations,
-offered to any process running as you. That is safe for the same reason
-[revoking a grant](./grants.md) needs no gesture: a deny only reduces access,
-and an allow only lets the service ask *you*.
+The Touch ID dialog is all you are asked. It names who asked (the program,
+and what launched it) and what for, in one sentence. The JitPass menu bar app
+shows nothing beside it: approving or cancelling the dialog is the decision.
 
 ## Pre-authorizing a whole run: `jit run --trust`
 

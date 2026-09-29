@@ -97,29 +97,19 @@ type Request struct {
 	//
 	// Deprecated: send Disclose.
 	DiscloseReason string `json:"disclose_reason,omitempty"`
-	// Broker, on "subscribe", asks to be shown disclosed challenges before
-	// they prompt (OpConsentList). An agent that predates it ignores the
-	// field and the stream simply never carries a pending request.
+	// Broker, on "subscribe", once asked to be shown each disclosed
+	// challenge before its Touch ID. Consent brokering was removed (the
+	// Touch ID dialog is the whole question), and the field now means only
+	// what ShowsProposals means: a JitPass older than shows_proposals sends
+	// broker and must still be shown job proposals.
+	//
+	// Deprecated: send ShowsProposals.
 	Broker bool `json:"broker,omitempty"`
 	// ShowsProposals, on "subscribe", says this stream belongs to an app that
 	// shows the human what an AI tool proposes ("job_request"): it is sent
 	// each KindJobProposal, and job_request only accepts a proposal while
-	// one such stream is open. It has nothing to do with consent: a stream
-	// that sets it and not Broker is never asked about a prompt. Broker
-	// implies it, for the apps that predate it.
+	// one such stream is open.
 	ShowsProposals bool `json:"shows_proposals,omitempty"`
-	// TouchIDFollows, with Broker on "subscribe", says the broker shows each
-	// request BESIDE its Touch ID instead of in front of it: it never sends
-	// an allow, only a deny or "consent_shown" (consentbroker.go). The agent
-	// uses that mode only while every connected broker declared it. An agent
-	// that predates the field ignores it, and its pending events never carry
-	// SessionEvent.TouchIDFollows, which is how the broker knows to fall back
-	// to asking first.
-	TouchIDFollows bool `json:"touch_id_follows,omitempty"`
-	// ConsentID and Decision are "consent_answer"'s arguments: the pending
-	// event's ConsentID, and DecisionAllow or DecisionDeny.
-	ConsentID string `json:"consent_id,omitempty"`
-	Decision  string `json:"decision,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees
@@ -308,22 +298,6 @@ const (
 	OpGrantList   = "grant_list"
 	OpGrantRevoke = "grant_revoke"
 	OpGrantExtend = "grant_extend"
-	// OpConsentList and OpConsentAnswer are consent brokering
-	// (consentbroker.go): a subscriber that set Request.Broker is shown each
-	// disclosed challenge as a KindPending event before its Touch ID appears,
-	// and answers with a Decision. "consent_list" returns the requests waiting
-	// right now (a broker that just connected re-syncs from it), prompt-free
-	// for OpHistory's reason. An "allow" only lets the agent's own Touch ID
-	// proceed; "deny" refuses without one. Neither op needs an unlock. For a
-	// request marked TouchIDFollows, "allow" is a no-op and "deny" withdraws
-	// the Touch ID already on screen.
-	OpConsentList   = "consent_list"
-	OpConsentAnswer = "consent_answer"
-	// OpConsentShown tells the agent a request marked TouchIDFollows is on
-	// screen, so its Touch ID need not wait out shownWait. It grants
-	// nothing: at most it saves a quarter of a second. Prompt-free, like
-	// OpConsentAnswer.
-	OpConsentShown = "consent_shown"
 	// OpAuditAppend hands the application audit log one finished invocation
 	// for the agent to write, instead of the CLI appending to audit.jsonl
 	// itself. It exists for callers that can REACH the agent but cannot write
@@ -357,7 +331,7 @@ const (
 	OpJobRun    = "job_run"
 	// OpJobRequest is an agent PROPOSING a job (MCP request_job): the
 	// service keeps it for the app to show, and creates nothing. Refused
-	// when no app (broker) is connected, so the proposer can fall back to
+	// when no app that shows proposals is connected, so the proposer can fall back to
 	// printing the `jit job allow` line. OpJobProposals lists what waits;
 	// OpJobDismiss drops one. Approving a proposal is an ordinary job_allow
 	// carrying its ProposalID, under the ordinary Touch ID.
@@ -461,12 +435,6 @@ const (
 	// which is the first question an incident asks. Labels carries the
 	// covered vault paths; Op carries the grant id.
 	KindGrantEnd = "grant_end"
-	// KindPending is a disclosed challenge waiting on a consent broker
-	// (consentbroker.go): the same snapshot the status line's PendingUnlock
-	// shows, with ConsentID set so it can be answered. Streamed to brokers
-	// only and never recorded — the KindApproved or KindDenied that follows,
-	// carrying the same ConsentID, is the durable half.
-	KindPending = "pending"
 	// KindServeStart is the first read of a new KindServe aggregate: the
 	// same fields, Count 1, sent the moment a reader, mount and verdict
 	// first meet. Streamed live to every subscriber and never recorded.
@@ -481,8 +449,8 @@ const (
 	// oldest-first. One notice per aggregate keeps the stream exactly as
 	// bounded as the trail.
 	KindServeStart = "serve_start"
-	// KindJobProposal is an agent's job proposal, streamed to brokers only
-	// (the app), with ConsentID carrying the proposal's id and Job its name.
+	// KindJobProposal is an agent's job proposal, streamed only to the apps
+	// that show proposals (Request.ShowsProposals), with ConsentID carrying the proposal's id and Job its name.
 	// The request itself is recorded in the trail as a use of job_request.
 	KindJobProposal = "job_proposal"
 )
@@ -913,19 +881,13 @@ type SessionEvent struct {
 	// happened) and on events restored from a jit version that predates this
 	// field.
 	AuthMethod string `json:"auth_method,omitempty"`
-	// ConsentID links a brokered challenge's events: set on the KindPending
-	// request a broker is shown and on the KindApproved/KindDenied outcome
-	// that answers it, so a renderer can close the one with the other.
-	// Empty on every challenge that went straight to the screen.
+	// ConsentID, on a KindJobProposal event, is the proposal's id
+	// (JobProposal.ID), which the app approves or dismisses it by. Empty on
+	// every other event.
 	ConsentID string `json:"consent_id,omitempty"`
-	// TouchIDFollows, on a KindPending event, says the Touch ID for it is
-	// appearing now and the broker's allow is not awaited: show the request
-	// beside the dialog, offer Deny only, and send "consent_shown" once it
-	// is drawn. False on a request that waits for the broker's answer first.
-	TouchIDFollows bool `json:"touch_id_follows,omitempty"`
-	// Job names the AI job a job_allow or job_run event is about, so a broker
-	// rendering the pending request can show that job's command, folder and
-	// secrets from job_list (design/agent-jobs.md, step 4). Empty otherwise.
+	// Job names the AI job a job_allow or job_run event is about, so a
+	// renderer can show that job's command, folder and secrets from
+	// job_list (design/agent-jobs.md, step 4). Empty otherwise.
 	Job string `json:"job,omitempty"`
 	// JobOutcome, on a job_run event whose run did not happen, says what
 	// that means for the job, so a client decides from this and never from

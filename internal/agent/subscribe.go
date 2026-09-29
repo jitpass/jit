@@ -31,21 +31,15 @@ const defaultSubscribeBuffer = 64
 type subscriber struct {
 	ch     chan SessionEvent
 	lagged chan struct{}
-	// broker marks a stream that answers consent requests (consentbroker.go);
-	// it receives KindPending events on top of the recorded ones.
-	broker bool
-	// follows marks a broker that shows requests beside their Touch ID and
-	// never answers allow (Request.TouchIDFollows).
-	follows bool
 	// proposals marks a stream whose app shows job proposals
-	// (Request.ShowsProposals). Every broker is one.
+	// (Request.ShowsProposals, or the deprecated Request.Broker).
 	proposals bool
 }
 
-func (s *Server) subscribe(broker, follows, proposals bool) *subscriber {
+func (s *Server) subscribe(proposals bool) *subscriber {
 	sub := &subscriber{
 		ch: make(chan SessionEvent, s.subscribeBuffer), lagged: make(chan struct{}),
-		broker: broker, follows: broker && follows, proposals: proposals || broker,
+		proposals: proposals,
 	}
 	s.subMu.Lock()
 	if s.subscribers == nil {
@@ -60,9 +54,6 @@ func (s *Server) unsubscribe(sub *subscriber) {
 	s.subMu.Lock()
 	delete(s.subscribers, sub)
 	s.subMu.Unlock()
-	if sub.broker {
-		s.brokerLeft()
-	}
 }
 
 // subscriberCount is for tests, which need to know a stream is registered
@@ -105,7 +96,8 @@ func (s *Server) PublishLive(e SessionEvent) {
 // already been verified same-user and its request decoded; nothing here
 // needs the vault, so it never touches the session and never prompts.
 func (s *Server) serveSubscription(conn net.Conn, req Request) {
-	sub := s.subscribe(req.Broker, req.TouchIDFollows, req.ShowsProposals)
+	// An app older than shows_proposals says broker, and is still one.
+	sub := s.subscribe(req.ShowsProposals || req.Broker)
 	defer s.unsubscribe(sub)
 
 	// One document acknowledges the subscription, in the same shape every

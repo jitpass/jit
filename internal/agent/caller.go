@@ -52,8 +52,8 @@ type caller struct {
 // callerForPID identifies a process that never connected — a FIFO reader
 // found by scanning holders — with the same lineage walk a socket peer
 // gets, marked bestEffort because nothing vouched for the pid. It exists so
-// a consent broker can name the reader on a mount prompt; before it, those
-// prompts recorded no caller at all.
+// a mount prompt can name the reader; before it, those prompts recorded no
+// caller at all.
 func callerForPID(pid int32) *caller {
 	chain := lineage.Ancestry(pid)
 	if len(chain) == 0 {
@@ -366,7 +366,7 @@ func DescribeUse(op string) string {
 //     so a name cannot push the ask below what the dialog shows;
 //   - double quotes become single ones, so a name cannot close the quotes a
 //     profile sits in and add a clause of its own;
-//   - ";" becomes ",": confirmReason cuts a sentence at its first "; ";
+//   - ";" becomes ",", so a name cannot end one clause and start another;
 //   - runs of spaces collapse to one, and the ends are trimmed.
 func dialogName(s string) string {
 	var b strings.Builder
