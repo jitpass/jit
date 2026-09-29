@@ -201,3 +201,29 @@ func TestRedactFindsWhatTheScanFoundInPasteCacheAndHistory(t *testing.T) {
 		}
 	}
 }
+
+// Past 1 MiB on one line the content scanner stops, and the scan finds a
+// token there through the indexed sweep instead. Redact must find it the
+// same way: one long pasted line in paste-cache is the common case.
+func TestRedactFindsATokenPastTheContentScannersLineLimit(t *testing.T) {
+	home := t.TempDir()
+	paste := filepath.Join(home, ".claude", "paste-cache", "long.txt")
+	if err := os.MkdirAll(filepath.Dir(paste), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("filler ", 180000) + shapeProbeToken + " end\n"
+	if err := os.WriteFile(paste, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done, err := RedactAgentCacheShapes(home, []string{paste}, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done.Edited) != 1 || done.Edited[0].Occurrences != 1 {
+		t.Fatalf("edited = %+v, want the one token", done.Edited)
+	}
+	got, _ := os.ReadFile(paste)
+	if strings.Contains(string(got), shapeProbeToken) || !strings.HasSuffix(string(got), "<jit:redacted:Notion Internal Integration Token> end\n") {
+		t.Errorf("token past 1 MiB not redacted: ...%q", got[len(got)-80:])
+	}
+}

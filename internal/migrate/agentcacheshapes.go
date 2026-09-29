@@ -73,7 +73,7 @@ func RedactAgentCacheShapes(home string, only []string, lines []int, apply bool)
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
 			if len(wanted) > 0 {
-				note(path, "jit couldn't read it again: it grew too large or changed since the scan", SkipUnreadable)
+				note(path, "jit couldn't read it again after the scan: "+err.Error(), SkipUnreadable)
 			}
 			return nil
 		}

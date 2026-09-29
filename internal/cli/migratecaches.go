@@ -120,7 +120,8 @@ func runMigrateCaches(cmd *cobra.Command, _ []string) error {
 	}
 
 	cleanup, cleanErr := migrate.CleanAgentCaches(v, home, secrets)
-	if cleanErr == nil && len(cleanup.Edited) == 0 && len(cleanup.Skipped) == 0 {
+	// No plan was shown under --yes, so an empty run says so here.
+	if migrateYes && cleanErr == nil && len(cleanup.Edited) == 0 && len(cleanup.Skipped) == 0 {
 		fmt.Fprintln(out, cachesNothingToDo)
 		return nil
 	}

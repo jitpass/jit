@@ -472,16 +472,36 @@ func CachePatternTokens(data []byte) []FileToken {
 	return cachePatternIndex().matches(data)
 }
 
-// CacheFileTokens is the tokens a scan reports in one agent cache file, at
-// offsets into data. The file-shaped caches ScanAgentStores reads with the
-// content scanner (paste-cache, shell-snapshots, backups, history.jsonl) are
-// matched with it here too: the indexed sweep leaves out shapes without a
-// literal lead, such as a Telegram bot token, and a Redact of a row the scan
-// listed must find what the scan found. Every other cache file goes through
-// the indexed sweep, as the scan does.
+// CacheFileTokens is every token a scan can report in one agent cache file,
+// at offsets into data, so a Redact of a row the scan listed finds it.
+//
+// The file-shaped caches (paste-cache, shell-snapshots, backups,
+// history.jsonl) are read by ScanAgentStores with the content scanner, and
+// only when that finds nothing does the indexed sweep read them: past 1 MiB
+// on one line, or past 5 MiB, the content scanner stops. The indexed sweep
+// leaves out shapes without a literal lead, such as a Telegram bot token.
+// So those files get both: the content scanner's tokens, and each indexed
+// one that overlaps none of them. Every other cache file goes through the
+// indexed sweep alone, as the scan does.
 func CacheFileTokens(home, path string, data []byte) []FileToken {
-	if AgentSweepDirFile(home, path) || isAgentPromptHistoryPath(path) {
-		return TextTokens(data)
+	pattern := CachePatternTokens(data)
+	if !AgentSweepDirFile(home, path) && !isAgentPromptHistoryPath(path) {
+		return pattern
 	}
-	return CachePatternTokens(data)
+	tokens := TextTokens(data)
+	text := len(tokens)
+	for _, p := range pattern {
+		overlaps := false
+		for _, t := range tokens[:text] {
+			if p.Start < t.End && t.Start < p.End {
+				overlaps = true
+				break
+			}
+		}
+		if !overlaps {
+			tokens = append(tokens, p)
+		}
+	}
+	sort.Slice(tokens, func(a, b int) bool { return tokens[a].Start < tokens[b].Start })
+	return tokens
 }

@@ -163,7 +163,8 @@ func migrateRedact(cmd *cobra.Command, args []string, report *redactReport) erro
 	}
 
 	done, runErr := migrate.RedactAgentCacheShapes(home, files, migrateRedactLines, true)
-	if runErr == nil && len(done.Edited) == 0 && len(done.Skipped) == 0 {
+	// No plan was shown under --yes, so an empty run says so here.
+	if migrateYes && runErr == nil && len(done.Edited) == 0 && len(done.Skipped) == 0 {
 		fmt.Fprintln(out, redactNothingToDo)
 		return nil
 	}
