@@ -89,20 +89,24 @@ func consentReasonFor(req consent.Request, unlocking bool) string {
 	budget := maxReasonLen - len([]rune(lead+what+flags))
 
 	var lineage string
-	if cc.Lineage != "" {
-		lineage = ", via " + truncate(cc.Lineage, maxConsentLineageLen)
+	if l := dialogName(cc.Lineage); l != "" {
+		lineage = ", via " + truncate(l, maxConsentLineageLen)
 	}
 	if n := len([]rune(lineage)); n > budget-minConsentWhoLen {
 		lineage = "" // a pathological launcher is dropped, never the caller
 	}
 
-	who := truncateHead(displayExecPath(cc.ExecPath), budget-len([]rune(lineage)))
+	who := truncateHead(dialogName(displayExecPath(cc.ExecPath)), budget-len([]rune(lineage)))
 	if who == "" {
 		// The unidentified fallback is subject to the same budget as a real
 		// path: an empty ExecPath is what makes every anonymous caller share
 		// one throttle key, so it is exactly the caller that reaches the
-		// highest refusal counts.
-		who = truncateHead(fmt.Sprintf("a process (pid %d)", cc.PID), budget-len([]rune(lineage)))
+		// highest refusal counts. The short form keeps the pid whole.
+		room := budget - len([]rune(lineage))
+		who = fmt.Sprintf("a process (pid %d)", cc.PID)
+		if len([]rune(who)) > room {
+			who = fmt.Sprintf("pid %d", cc.PID)
+		}
 	}
 	return lead + who + what + lineage + flags
 }

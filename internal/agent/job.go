@@ -490,7 +490,7 @@ func jobAllowReason(label string, secrets, shown int, ask job.Ask) string {
 	if room < 12 {
 		room = 12
 	}
-	return truncate(fmt.Sprintf("let AI run %s with %s%s", fitLabel(label, room), with, scope), maxReasonLen)
+	return truncate(fmt.Sprintf("let AI run %s with %s%s", fitLabel(dialogName(label), room), with, scope), maxReasonLen)
 }
 
 // jobLabel is "folder/program": the folder's own name and the file the
@@ -511,7 +511,7 @@ func jobRunReason(requester, label string, secrets int) string {
 		with = countNoun(secrets, "secret")
 	}
 	return truncate(fmt.Sprintf("run %s for %s with %s",
-		fitLabel(label, 24), truncate(requester, maxLauncherLen), with), maxReasonLen)
+		fitLabel(dialogName(label), 24), truncate(dialogName(requester), maxLauncherLen), with), maxReasonLen)
 }
 
 func countNoun(n int, noun string) string {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
@@ -182,12 +183,12 @@ const maxReasonLen = 90
 // to the op alone rather than inventing an explanation.
 func challengeReason(op string, c *caller) string {
 	what := intent(op, c)
-	by := truncate(c.launchedBy(), maxLauncherLen)
+	by := truncate(dialogName(c.launchedBy()), maxLauncherLen)
 	if by == "" {
 		return truncate(what, maxReasonLen)
 	}
 	head := unlockTheVault + " for " + by
-	if p := c.profile(); p != "" {
+	if p := dialogName(c.profile()); p != "" {
 		// The profile gives way, never the launcher: it is the user's own
 		// label, and what is left of it still names it.
 		const open, shut = `, profile "`, `"`
@@ -212,12 +213,12 @@ const (
 // named in the user's own vocabulary (a profile they wrote, a file they
 // mounted) rather than jit's internal op names.
 func intent(op string, c *caller) string {
-	if p := c.profile(); p != "" {
+	if p := dialogName(c.profile()); p != "" {
 		// The profile name is the user's own label — never a flag, never a
 		// path. `--profile mcp-jamf` in a config file means nothing to jit
 		// beyond "the profile named mcp-jamf"; showing the flag would imply
 		// jit understands an "mcp" concept it has no notion of.
-		return fmt.Sprintf(unlockTheVault+" for profile %q", truncate(p, maxProfileLen))
+		return unlockTheVault + ` for profile "` + truncate(p, maxProfileLen) + `"`
 	}
 	switch op {
 	case OpWrap:
@@ -262,7 +263,7 @@ func (s *Server) grantReasonFor(mounts []RunMount, unlocking bool) string {
 // a human. "trust" stands for the old sentence's "reach your credentials
 // without further prompts", which took four lines of the dialog.
 func trustReason(c *caller) string {
-	who := truncate(trustedCommand(c), maxTrustWhoLen)
+	who := truncateHead(dialogName(trustedCommand(c)), maxTrustWhoLen)
 	if who == "" {
 		return "trust this run and what it launches"
 	}
@@ -270,18 +271,23 @@ func trustReason(c *caller) string {
 }
 
 // trustedCommand names what a `jit run --trust -- <command>` is about to
-// become: the command after "--". The caller is always jit at this point, so
-// its own name ("trust jit") told the human nothing. Anything else is named
-// as every other prompt names it. It comes from the caller's argv, which the
-// caller chooses, exactly as its own name does.
+// become: the command after "--". The caller is jit at this point, so its own
+// name ("trust jit") told the human nothing.
+//
+// Only when the caller IS this jit, by its executable: any other process
+// trusted through the socket chooses its own argv, and "-- Finder" must not
+// make the dialog say "trust Finder". A command outside the standard tool
+// folders is shown with its folder, as every consent prompt shows a program
+// (displayExecPath). Anything else is named as before.
 func trustedCommand(c *caller) string {
 	if c == nil {
 		return ""
 	}
-	argv := c.self.Argv
-	for i, arg := range argv {
-		if arg == "--" && i+1 < len(argv) && argv[i+1] != "" {
-			return filepath.Base(argv[i+1])
+	if argv := c.self.Argv; isThisBinary(c.self.ExecPath) {
+		for i, arg := range argv {
+			if arg == "--" && i+1 < len(argv) && argv[i+1] != "" {
+				return displayExecPath(argv[i+1])
+			}
 		}
 	}
 	return displayCommand(c)
@@ -344,6 +350,39 @@ func DescribeUse(op string) string {
 // are user-written and can be non-ASCII, and a byte-index cut through the
 // middle of a multi-byte character puts invalid UTF-8 into the one string
 // whose entire job is to be read by a human on a Touch ID dialog.
+// dialogName is a name as it may appear in the Touch ID sentence. Every name
+// there (a program, its launcher, a profile, a job's label) was chosen by
+// somebody other than the human reading it, and since the sentence says who
+// before what, a name must not be able to read as the rest of the sentence:
+//
+//   - control and format characters, line breaks included, become a space,
+//     so a name cannot push the ask below what the dialog shows;
+//   - double quotes become single ones, so a name cannot close the quotes a
+//     profile sits in and add a clause of its own;
+//   - ";" becomes ",": confirmReason cuts a sentence at its first "; ";
+//   - runs of spaces collapse to one, and the ends are trimmed.
+func dialogName(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		switch {
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r):
+			space = true
+			continue
+		case r == '"':
+			r = '\''
+		case r == ';':
+			r = ','
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func truncate(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {

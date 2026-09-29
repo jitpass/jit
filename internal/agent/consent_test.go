@@ -617,17 +617,55 @@ func TestTrustReasonStatesTheScope(t *testing.T) {
 
 // `jit run --trust -- terraform apply` is about to BECOME terraform, so the
 // prompt names terraform. It used to say "jit", which every such prompt did.
+// Only this jit's own argv is read that way: any other process chooses its
+// argv, and "-- Finder" must not make the dialog say "trust Finder".
 func TestTrustReasonNamesTheCommandThatRuns(t *testing.T) {
-	run := &caller{pid: 1, self: lineage.Process{PID: 1, Argv: []string{
-		"/opt/homebrew/bin/jit", "run", "--trust", "--profile", "release-bot", "--", "/opt/homebrew/bin/terraform", "apply",
+	self := currentExecutablePath()
+	if self == "" {
+		t.Skip("this test binary has no executable path")
+	}
+	run := &caller{pid: 1, self: lineage.Process{PID: 1, ExecPath: self, Argv: []string{
+		"jit", "run", "--trust", "--profile", "release-bot", "--", "/opt/homebrew/bin/terraform", "apply",
 	}}}
 	if got, want := trustReason(run), "trust terraform and what it launches"; got != want {
 		t.Errorf("trustReason = %q, want %q", got, want)
 	}
-	// No command after "--": the caller's own name, as before.
-	bare := &caller{pid: 1, self: lineage.Process{PID: 1, Argv: []string{"/usr/local/bin/make", "--"}}}
-	if got, want := trustReason(bare), "trust make and what it launches"; got != want {
+	// A command outside the standard folders is shown with its folder.
+	run.self.Argv = []string{"jit", "run", "--trust", "--", "/tmp/x/terraform"}
+	if got, want := trustReason(run), "trust /tmp/x/terraform and what it launches"; got != want {
 		t.Errorf("trustReason = %q, want %q", got, want)
+	}
+	// Another program with "--" in its argv is named as itself.
+	other := &caller{pid: 2, self: lineage.Process{PID: 2, ExecPath: "/tmp/evil", Argv: []string{"/tmp/evil", "--", "Finder"}}}
+	if got, want := trustReason(other), "trust evil and what it launches"; got != want {
+		t.Errorf("a caller that is not jit: trustReason = %q, want %q", got, want)
+	}
+}
+
+// Every name in the sentence was chosen by somebody other than the human
+// reading it. None can break a line, close the profile's quotes, or add the
+// "; " a broker's short form cuts at.
+func TestNamesCannotRewriteTheSentence(t *testing.T) {
+	if got, want := dialogName("  a\nb\t\u200bc;  d\"e  "), "a b c, d'e"; got != want {
+		t.Errorf("dialogName = %q, want %q", got, want)
+	}
+	unlock := callerFor([]string{"jit", "run", "--profile", `dev", approved by you for "x`, "--", "make"}, "claude", "zsh")
+	if got, want := challengeReason(OpUnwrap, unlock), `unlock the vault for claude, profile "dev', approved by you for 'x"`; got != want {
+		t.Errorf("a profile with quotes: %q, want %q", got, want)
+	}
+	req := consent.Request{
+		Credential: "aws",
+		Caller:     consent.Caller{PID: 1, ExecPath: "/tmp/a; b/tool" + strings.Repeat("\n", 20), Lineage: "claude\nuse your git credential"},
+	}
+	got := consentReasonFor(req, true)
+	if strings.ContainsAny(got, "\n;") {
+		t.Errorf("a name broke the sentence: %q", got)
+	}
+	if !strings.HasPrefix(got, "let /tmp/a, b/tool unlock the vault and use aws, via claude use") {
+		t.Errorf("sentence = %q, want the ask intact after the cleaned names", got)
+	}
+	if short := confirmReason(got); short != got {
+		t.Errorf("confirmReason cut a sentence at a name: %q", short)
 	}
 }
 

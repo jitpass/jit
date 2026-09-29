@@ -374,15 +374,6 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 	return Response{OK: true, Grants: []GrantStatus{st}}
 }
 
-// grantCreateReason words the creation prompt. Everything in it is
-// agent-derived, human-typed-about-self, or abort-verified: an exact grant's
-// name comes from the kernel via the target pid, a tree grant's name is the
-// creating human's own word with the anchor (under) kernel-derived from the
-// verified session root, the count and duration ARE the grant's scope, and
-// the profile names were resolved by the agent itself to exactly the secrets
-// being granted (OnResolveGrant), never echoed from free text. The scope
-// statement ("unattended, until ...") is the half that must never be the
-// truncated half, same budget discipline as trustReason.
 // requesterName is the kernel's name for the socket peer, for a prompt that
 // must say who is asking. "a program" when the peer is already gone.
 func requesterName(c *caller) string {
@@ -422,10 +413,10 @@ func grantExtendReason(name string, profiles []string, count int, ttl time.Durat
 
 func grantSentence(name string, profiles []string, count int, requester, scope string) string {
 	prefix := ""
-	if requester != "" {
-		prefix = truncate(requester, 8) + " asks: "
+	if r := dialogName(requester); r != "" {
+		prefix = truncate(r, 8) + " asks: "
 	}
-	who := truncate(name, maxTrustWhoLen)
+	who := truncate(dialogName(name), maxTrustWhoLen)
 	if who == "" {
 		who = "this process"
 	}
