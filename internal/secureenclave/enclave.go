@@ -206,6 +206,11 @@ func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 // openCancel is open whose dialog is taken down if withdraw closes before it
 // is answered; the failure is then authprompt.ErrWithdrawn. The context is
 // freed only after the watcher has stopped.
+//
+// It asks for the key's user presence on the context first (se_open_ctx,
+// seAuthorize in enclave.m) and only then decrypts: a decrypt's own dialog
+// cannot be withdrawn on a key that came from the keychain, which the vault's
+// key does. An unanswered dialog is taken down after two minutes.
 func (h hardware) openCancel(sealed []byte, reason string, withdraw <-chan struct{}) ([]byte, error) {
 	ctx := C.se_context_new()
 	defer C.se_context_free(ctx)

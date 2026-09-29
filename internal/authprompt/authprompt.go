@@ -6,11 +6,14 @@
 // the error that says so, and the watcher that does it.
 //
 // Both key stores prompt through an LAContext, and invalidating that context
-// from another thread takes the dialog down within about 50 ms, on the
-// keychain path and on the Secure Enclave path alike (spike/consent-sync,
-// FINDINGS.md). A context invalidated before its prompt starts fails that
-// prompt at once, so a withdrawal that beats the dialog needs no special
-// case.
+// from another thread takes the dialog down within about 50 ms, as long as
+// the evaluation runs on that context itself (spike/consent-sync,
+// FINDINGS.md). The keychain path's evaluatePolicy does. A decrypt with a
+// Secure Enclave key from the keychain does not: Security prompts on a
+// context of its own, so that path evaluates the key's access control on its
+// context first (secureenclave, seAuthorize). A context invalidated before
+// its prompt starts fails that prompt at once, so a withdrawal that beats
+// the dialog needs no special case.
 //
 // Only the dialog is ever withdrawn. Reading the keychain item and opening
 // the sealed key once the dialog is approved are never interrupted halfway.
