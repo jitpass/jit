@@ -100,7 +100,7 @@ func (w *Wrapper) HasMEK() bool {
 // so it must outlive any doubt about the promote.
 func (w *Wrapper) PromoteStagedRekeyMEK() error {
 	staged := w.StagedRekeyWrapper()
-	mek, err := staged.fetchMEK("")
+	mek, err := staged.fetchMEK("", nil)
 	if err != nil {
 		return fmt.Errorf("reading staged rekey key: %w", err)
 	}
@@ -113,7 +113,7 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 	// Fresh wrapper: w may have the OLD primary cached; the point is to
 	// read what the keychain holds NOW.
 	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
-	got, err := check.fetchMEK("")
+	got, err := check.fetchMEK("", nil)
 	if err != nil {
 		return fmt.Errorf("verifying new master key: %w", err)
 	}

@@ -35,6 +35,27 @@ type MEKFetcher interface {
 	FetchMEK(reason string) ([]byte, error)
 }
 
+// CancelableFetcher is a MEKFetcher whose prompt can be withdrawn: a closed
+// withdraw takes the dialog down before the human answers, and the fetch then
+// fails with authprompt.ErrWithdrawn. Both vault key stores implement it
+// (keychainwrap and secureenclave; internal/cli asserts it where the service
+// is wired). The consent broker uses it so the menu bar panel's Deny can
+// cancel a Touch ID that is already on screen
+// (design/consent-side-panel-plan.md, step 3).
+//
+// Optional, like ClosableFetcher, so test fetchers stay one method. A
+// fetcher without it cannot take its dialog down: the broker must not treat
+// a Deny as having cancelled one.
+//
+// An approval that wins the race with a withdrawal stands at this layer:
+// FetchMEKCancel returns the key with a nil error. The broker must check the
+// withdrawal again after the fetch and refuse to hand anything over, or a
+// Deny loses to a finger touch a few milliseconds later.
+type CancelableFetcher interface {
+	MEKFetcher
+	FetchMEKCancel(reason string, withdraw <-chan struct{}) ([]byte, error)
+}
+
 // closeFetcher ends a fetcher's own MEK cache once we've taken the copy we
 // need. A fetcher is built fresh per challenge and dropped immediately, but
 // "dropped" is not "gone": keychainwrap's Wrapper pins its cached MEK with

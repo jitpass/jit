@@ -34,14 +34,14 @@ func TestRekeyStagePromoteRoundTrip(t *testing.T) {
 		t.Fatalf("EnsureStagedRekeyMEK: %v", err)
 	}
 	// Idempotent: a resume must reuse the same staged key, not mint a third.
-	stagedBefore, err := w.StagedRekeyWrapper().fetchMEK("")
+	stagedBefore, err := w.StagedRekeyWrapper().fetchMEK("", nil)
 	if err != nil {
 		t.Fatalf("fetching staged: %v", err)
 	}
 	if err := w.EnsureStagedRekeyMEK(); err != nil {
 		t.Fatalf("EnsureStagedRekeyMEK (second): %v", err)
 	}
-	stagedAfter, err := w.StagedRekeyWrapper().fetchMEK("")
+	stagedAfter, err := w.StagedRekeyWrapper().fetchMEK("", nil)
 	if err != nil {
 		t.Fatalf("fetching staged again: %v", err)
 	}

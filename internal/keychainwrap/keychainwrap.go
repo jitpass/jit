@@ -56,6 +56,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/jitpass/jit/internal/authprompt"
 	"github.com/jitpass/jit/internal/unlockreason"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -107,6 +108,11 @@ type Wrapper struct {
 	service   string
 	account   string
 	challenge func(reason string) error
+	// challengeCancel is challenge that can be withdrawn (FetchMEKCancel):
+	// a closed withdraw takes the dialog down. Nil on a Wrapper whose
+	// challenge is a stub (a grant key, a staged rekey, most tests), which
+	// then prompts through challenge and cannot be withdrawn.
+	challengeCancel func(reason string, withdraw <-chan struct{}) error
 	// missing is the error a definite absence answers with; nil means
 	// errNoMEK (the vault's master key). A grant key (grantkey.go) names
 	// its grant instead of telling the user to run `jit vault init`.
@@ -121,7 +127,7 @@ var _ vault.KeyWrapper = (*Wrapper)(nil)
 // New returns a Wrapper backed by the real LocalAuthentication challenge
 // and the real production keychain identifier.
 func New() *Wrapper {
-	return &Wrapper{service: prodService, account: prodAccount, challenge: realChallenge}
+	return &Wrapper{service: prodService, account: prodAccount, challenge: realChallenge, challengeCancel: realChallengeCancel}
 }
 
 // NewTesting returns a Wrapper over a TEST-ONLY keychain item, for tests in
@@ -149,7 +155,18 @@ func NewTesting(service, account string, challenge func(reason string) error) *W
 // internal/agent's challengeReason), so the dialog can say "...for profile
 // "mcp-jamf", launched by claude" instead.
 func (w *Wrapper) FetchMEK(reason string) ([]byte, error) {
-	return w.fetchMEK(reason)
+	return w.fetchMEK(reason, nil)
+}
+
+// FetchMEKCancel is FetchMEK whose dialog is taken down if withdraw closes
+// before the human answers: the service withdrawing a prompt nobody wants
+// answered any more (design/consent-side-panel-plan.md, step 2). The
+// failure is then authprompt.ErrWithdrawn; a withdraw already closed shows
+// no dialog at all. Once the dialog is approved, the keychain read runs to
+// the end: it uses no LAContext, so nothing withdraws it. A cached MEK
+// returns at once, with no dialog to withdraw.
+func (w *Wrapper) FetchMEKCancel(reason string, withdraw <-chan struct{}) ([]byte, error) {
+	return w.fetchMEK(reason, withdraw)
 }
 
 // EnsureMEK generates and stores the master encryption key if one doesn't
@@ -227,6 +244,9 @@ func presenceFromStatus(status int32) MEKPresence {
 // (keychain.m), word for word, so the message is the same whether the absence
 // is caught before the challenge or, in a race, after it. The backticks are
 // what the CLI's error printer renders cyan.
+// errWithdrawnFirst is a prompt withdrawn before it was shown.
+var errWithdrawnFirst = errors.New("withdrawn before the dialog was shown")
+
 var errNoMEK = errors.New("no master key stored in the keychain, run `jit vault init` first")
 
 // WrapKey implements vault.KeyWrapper.
@@ -244,7 +264,7 @@ func (w *Wrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
 // to internal/agent (both wrappers protect the same vault; a DEK may cross
 // between them), so class flows into the AAD.
 func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK(unlockreason.Store)
+	mek, err := w.fetchMEK(unlockreason.Store, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +274,7 @@ func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error
 
 // UnwrapKeyLabeled implements vault.LabeledKeyWrapper — see WrapKeyLabeled.
 func (w *Wrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK(unlockreason.Read)
+	mek, err := w.fetchMEK(unlockreason.Read, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +282,7 @@ func (w *Wrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte,
 	return open(mek, wrapped, []byte(class))
 }
 
-func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
+func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -279,7 +299,17 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 			}
 			return nil, errNoMEK
 		}
-		if err := w.challenge(reason); err != nil {
+		// Withdrawn already: no dialog at all. fetchMEK checks this rather
+		// than trusting macOS to refuse a dead context, and it covers every
+		// Wrapper, withdrawable challenge or not.
+		if authprompt.Withdrawn(withdraw) {
+			return nil, fmt.Errorf("local authentication failed: %w", authprompt.Outcome(errWithdrawnFirst, true))
+		}
+		challenge := w.challenge
+		if withdraw != nil && w.challengeCancel != nil {
+			challenge = func(reason string) error { return w.challengeCancel(reason, withdraw) }
+		}
+		if err := challenge(reason); err != nil {
 			return nil, fmt.Errorf("local authentication failed: %w", err)
 		}
 
@@ -372,7 +402,7 @@ func (w *Wrapper) Close() {
 // ("it didn't prompt for a fingerprint"): the files had already been
 // restored by an earlier undo, making the whole run deletions.
 func (w *Wrapper) RequireUserPresence(reason string) error {
-	mek, err := w.fetchMEK(reason)
+	mek, err := w.fetchMEK(reason, nil)
 	if err != nil {
 		return err
 	}
@@ -698,6 +728,33 @@ func realChallenge(reason string) error {
 	cReason := C.CString(reason)
 	defer C.free(unsafe.Pointer(cReason))
 	return goErr(C.kw_challenge(cReason))
+}
+
+// challengeOnDeadContext runs the real challenge on a context invalidated
+// before it starts: what a withdrawal meets if it slips in after fetchMEK's
+// check and before the prompt. For TestHardwareChallengeWithdrawn, which
+// measures that it fails at once with no dialog.
+func challengeOnDeadContext(reason string) error {
+	cReason := C.CString(reason)
+	defer C.free(unsafe.Pointer(cReason))
+	ctx := C.kw_context_new()
+	defer C.kw_context_free(ctx)
+	C.kw_context_invalidate(ctx)
+	return goErr(C.kw_challenge_ctx(cReason, ctx))
+}
+
+// realChallengeCancel is realChallenge on a context this side holds, so a
+// closed withdraw can invalidate it while kw_challenge_ctx blocks. The
+// context is freed only after the watcher has stopped: stop returns once
+// the invalidate can no longer run.
+func realChallengeCancel(reason string, withdraw <-chan struct{}) error {
+	cReason := C.CString(reason)
+	defer C.free(unsafe.Pointer(cReason))
+	ctx := C.kw_context_new()
+	defer C.kw_context_free(ctx)
+	stop := authprompt.Watch(withdraw, func() { C.kw_context_invalidate(ctx) })
+	err := goErr(C.kw_challenge_ctx(cReason, ctx))
+	return authprompt.Outcome(err, stop())
 }
 
 // BiometryAvailable reports whether Touch ID can currently satisfy a challenge
