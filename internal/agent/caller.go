@@ -205,7 +205,7 @@ func intent(op string, c *caller) string {
 	}
 }
 
-// grantReason is the wording for a disclosed global-credential grant's Touch
+// grantReasonFor is the wording for a disclosed global-credential grant's Touch
 // ID prompt, derived from the mounts the request named — never from anything
 // the request said about them (see Server.OnDescribeGrant).
 //
@@ -213,13 +213,22 @@ func intent(op string, c *caller) string {
 // the mounts, is deliberately a fixed phrase rather than a best guess built
 // from the caller's own path strings: vaguer, but there is no version of this
 // sentence that a requesting process gets to influence.
-func (s *Server) grantReason(mounts []RunMount) string {
+//
+// It ends with unlockAsWell when the approval will also open the session. The
+// credential's name is what gets shortened to fit, never the unlock: that half
+// changes what the fingerprint authorizes.
+func (s *Server) grantReasonFor(mounts []RunMount, unlocking bool) string {
+	tail := ""
+	if unlocking {
+		tail = unlockAsWell
+	}
+	const head = "grant this run access to "
 	if s.OnDescribeGrant != nil {
 		if named := s.OnDescribeGrant(mounts); named != "" {
-			return truncate(fmt.Sprintf("grant this run access to %s", named), maxReasonLen)
+			return head + truncate(named, maxReasonLen-len([]rune(head))-len([]rune(tail))) + tail
 		}
 	}
-	return "grant this run access to a global credential on this machine"
+	return head + "a global credential on this machine" + tail
 }
 
 // trustReason words the `jit run --trust` prompt. It names the command being

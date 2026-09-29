@@ -15,7 +15,8 @@ import (
 // This file is the session state machine: obtaining, extending, reporting and
 // dropping the one unlocked session the service holds, plus every challenge
 // that creates one and the disclosed challenges that confirm a specific
-// authorization without creating one.
+// authorization (without creating one, except the consent and --with prompts
+// that stand in front of an unlock: see forceDisclosedChallengeUnlocking).
 //
 // It exists as its own file because the Server's fields live under three
 // distinct locking regimes and reconstructing which field belongs to which
@@ -141,8 +142,9 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 // distinguishable in history.
 //
 // On approval it also returns the challenge's MEK instead of discarding it.
-// Session state is still never touched — a disclosed challenge remains a
-// confirmation, not an unlock — but grant creation needs the key for exactly
+// Session state is never touched here — a disclosed challenge through this
+// entry point remains a confirmation, not an unlock (the one exception has its
+// own entry point, forceDisclosedChallengeUnlocking) — but grant creation needs the key for exactly
 // as long as it takes to unwrap the covered DEKs (grant.go), and fetching it
 // twice would mean two prompts for one decision. Callers that only wanted the
 // confirmation wipe it immediately (forceDisclosedChallenge); every caller
@@ -154,6 +156,102 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 // discloseChallenge is discloseChallengeOp with the AI job the prompt is
 // about stamped on the pending and outcome events (SessionEvent.Job).
 func (s *Server) discloseChallenge(reason, op, jobName string, c *caller) (*SessionEvent, []byte, error) {
+	d := s.discloseChallengeFull(func(bool) string { return reason }, op, jobName, c, "")
+	return d.event, d.mek, d.err
+}
+
+// forceDisclosedChallengeUnlocking is forceDisclosedChallenge for a request
+// that goes straight on to unlock (unlockOp is its op; "" offers nothing):
+// the consent gate in front of an unwrap, and a `jit run --with` grant.
+//
+// Against a locked vault those used to cost two Touch IDs for one decision.
+// The disclosed prompt fetched the vault key and wiped it ("a confirmation,
+// not an unlock"), and the request then asked again to unlock. Now, when the
+// vault is locked at the moment of asking, the one prompt says so (reasonFor
+// is called with true, and adds unlockAsWell) and its approval opens the
+// session with the key it already fetched. The session it opens is exactly
+// the one the second prompt would have opened, for the same caller, so
+// nothing is authorized that the two prompts did not.
+//
+// Grants, job runs and --trust never use this: nothing follows them that
+// needs the session, so an unlock there would give more than was asked.
+func (s *Server) forceDisclosedChallengeUnlocking(reasonFor func(unlocking bool) string, c *caller, unlockOp string) error {
+	d := s.discloseChallengeFull(reasonFor, OpRevealPID, "", c, unlockOp)
+	wipe(d.mek)
+	// Outside challengeMu, as every session callback is (ensureUnlockedFresh
+	// has the deadlock this ordering avoids). The approval first, then the
+	// unlock it caused: the order they happened in.
+	if d.event != nil && s.OnSessionEvent != nil {
+		s.OnSessionEvent(*d.event)
+	}
+	if d.unlock != nil {
+		if s.OnSessionEvent != nil {
+			s.OnSessionEvent(*d.unlock)
+		}
+		// A fresh session resolves the mounts, as any fresh unlock does.
+		s.notifyFresh(s.OnUnlock)
+	}
+	return d.err
+}
+
+// disclosure is what one disclosed challenge produced: the approval or
+// denial event (nil when no prompt happened), the unlock event when its
+// approval also opened the session, the vault key (the caller's to wipe),
+// and the error.
+type disclosure struct {
+	event  *SessionEvent
+	unlock *SessionEvent
+	mek    []byte
+	err    error
+}
+
+// canOfferUnlock reports whether a disclosed prompt may also offer to unlock:
+// the vault is locked, and the denial cooldown is not running. A human who
+// just refused an unlock is not asked to unlock again inside the pause, not
+// even folded into another question; the request then gets today's plain
+// prompt, and its own unlock is turned away by the cooldown as before.
+// Caller must hold challengeMu, so no other challenge can open a session
+// between this answer and the prompt it words.
+func (s *Server) canOfferUnlock() bool {
+	// peekSession, not status: a session that lapsed without its timer
+	// firing is collected HERE, before the prompt, so its lock is recorded
+	// ahead of this prompt's approval and not between the approval and the
+	// unlock it causes (adoptDisclosedSession would otherwise collect it).
+	if mek := s.peekSession(); mek != nil {
+		wipe(mek)
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Since(s.lastDenied) >= s.denialCooldown
+}
+
+// adoptDisclosedSession opens the session with an approved disclosed
+// challenge's key, if the vault is still locked. It returns the unlock event
+// to notify on, or nil when a session was live after all (then the request
+// simply rides it). mek stays the caller's: the session takes a copy.
+// Caller must hold challengeMu.
+func (s *Server) adoptDisclosedSession(mek []byte, op string, c *caller, consentID string) *SessionEvent {
+	defer s.notifyPendingLock() // a collected session's lock, drained outside mu
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mek != nil && !s.collectIfDoneLocked(time.Now()) {
+		return nil
+	}
+	own := make([]byte, len(mek))
+	copy(own, mek)
+	event := unlockEvent(op, c)
+	event.AuthMethod = s.authMethod()
+	event.ConsentID = consentID
+	s.installSessionLocked(own, event)
+	return event
+}
+
+// discloseChallengeFull is every disclosed challenge. reasonFor words the
+// prompt; it is called once, inside challengeMu, with whether the approval
+// will also unlock (only ever true when unlockOp is set and canOfferUnlock
+// holds at that moment).
+func (s *Server) discloseChallengeFull(reasonFor func(unlocking bool) string, op, jobName string, c *caller, unlockOp string) disclosure {
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
@@ -172,8 +270,11 @@ func (s *Server) discloseChallenge(reason, op, jobName string, c *caller) (*Sess
 	// the ring disagreed too). The one real KindDenied from the refusal that
 	// armed the pause is the whole truth of the episode.
 	if err := s.discloseBackoffLocked(op, c); err != nil {
-		return nil, nil, err
+		return disclosure{err: err}
 	}
+
+	unlocking := unlockOp != "" && s.canOfferUnlock()
+	reason := reasonFor(unlocking)
 
 	pending := unlockEvent(op, c)
 	pending.Cause = reason
@@ -213,9 +314,15 @@ func (s *Server) discloseChallenge(reason, op, jobName string, c *caller) (*Sess
 	s.noteDiscloseOutcomeLocked(op, c, err == nil)
 
 	if err != nil {
-		return event, nil, fmt.Errorf("disclosed grant declined: %w", err)
+		return disclosure{event: event, err: fmt.Errorf("disclosed grant declined: %w", err)}
 	}
-	return event, mek, nil
+	d := disclosure{event: event, mek: mek}
+	if unlocking {
+		// Still under challengeMu, so no other challenge has opened a session
+		// since canOfferUnlock; adoptDisclosedSession checks anyway.
+		d.unlock = s.adoptDisclosedSession(mek, unlockOp, c, pending.ConsentID)
+	}
+	return d
 }
 
 // discloseRefusal is one key's consecutive-refusal state for the disclosed
@@ -542,18 +649,30 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 		s.mu.Unlock()
 		return nil, event, fmt.Errorf("unlocking: %w", err)
 	}
-	s.mek = mek
-	// Best-effort: keep the long-lived cached MEK off swap. The transient
-	// copies handed to callers are wiped within the request; this is the
-	// one buffer that persists for the whole TTL.
-	lockMemory(s.mek)
-	out := s.mekCopy()
 	event := unlockEvent(op, c)
 	event.AuthMethod = s.authMethod()
 	event.ConsentID = pending.ConsentID
 	if label != "" {
 		event.Labels = []string{label}
 	}
+	s.installSessionLocked(mek, event)
+	out := s.mekCopy()
+	s.mu.Unlock()
+
+	return out, event, nil
+}
+
+// installSessionLocked makes mek the live session, taking ownership of it,
+// and records event as the unlock that opened it. It is the one place a
+// session begins: challengeUnlock's own prompt, and a disclosed prompt whose
+// approval also unlocked (adoptDisclosedSession). Caller must hold s.mu, and
+// must have established that no live session exists.
+func (s *Server) installSessionLocked(mek []byte, event *SessionEvent) {
+	s.mek = mek
+	// Best-effort: keep the long-lived cached MEK off swap. The transient
+	// copies handed to callers are wiped within the request; this is the
+	// one buffer that persists for the whole TTL.
+	lockMemory(s.mek)
 	s.lastUnlock = event
 	s.lastDenied = time.Time{}
 	s.lastDeniedCause = ""
@@ -564,9 +683,6 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	s.sessionStart = time.Now()
 	s.expiry = time.Now().Add(s.ttl)
 	s.armLockTimer()
-	s.mu.Unlock()
-
-	return out, event, nil
 }
 
 // touchSession returns a copy of the MEK if the session is still valid —
@@ -681,6 +797,21 @@ func (s *Server) notifyPendingLock() {
 	events := s.pendingLockNotify
 	s.pendingLockNotify = nil
 	s.mu.Unlock()
+	// A collected session is a lock, and a lock ends every approval that rode
+	// in it, as lockIfGen's does. This path used to skip that and lean on the
+	// stale idle timer running lockIfGen later, which never happens once a new
+	// unlock has re-armed the timer: an approval from the collected session
+	// then carried into the next one. Both calls take only their own locks,
+	// so running under challengeMu (see the file header) is safe.
+	for _, e := range events {
+		if e.Kind == KindLock {
+			if s.Consent != nil {
+				s.Consent.Clear()
+			}
+			s.clearTrust()
+			break
+		}
+	}
 	if s.OnSessionEvent != nil {
 		for _, e := range events {
 			s.OnSessionEvent(e)

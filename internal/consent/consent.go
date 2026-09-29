@@ -64,8 +64,9 @@ const (
 	// re-decides.
 	Once Scope = iota
 	// Session caches until the vault session re-locks (Engine.Clear) or the
-	// configured TTL elapses, whichever comes first. This is the "approve
-	// gcloud, glide for the session" case.
+	// decision goes unused for the configured TTL, whichever comes first:
+	// every use slides it, as every use slides the session. This is the
+	// "approve gcloud, glide for the session" case.
 	Session
 	// Always caches with no expiry. The prompter is expected to also perform
 	// the durable side effect (installing a --grant shim); the engine only
@@ -129,6 +130,9 @@ type Prompter func(Request) (Decision, Scope, error)
 type cached struct {
 	decision Decision
 	expires  time.Time // zero means no expiry (Always)
+	// born is when the prompt was answered. A Session decision slides on use
+	// (lookup), so born is what bounds it absolutely (Engine.maxAge).
+	born time.Time
 }
 
 // refusal tracks consecutive non-approvals for one key, and until when the
@@ -234,7 +238,18 @@ type Engine struct {
 	// reason to decline to ask again just yet.
 	refusals   map[string]refusal
 	sessionTTL time.Duration
-	now        func() time.Time // injectable for tests
+	// maxAge caps a Session decision from the moment it was answered,
+	// however much use has slid it (SetMaxAge; zero means no cap). It is the
+	// unlock session's own hard ceiling, so an approval can never outlast
+	// the longest session it could have ridden in, even on a path where
+	// no Clear reaches it.
+	maxAge time.Duration
+	// clears counts Clear calls. Decide caches a prompt's answer only if no
+	// Clear ran while that prompt was up: a lock that lands between the
+	// approval and the caching means the answer belongs to a session that
+	// has already ended.
+	clears uint64
+	now    func() time.Time // injectable for tests
 }
 
 // New returns an Engine whose Session-scoped decisions live at most sessionTTL
@@ -248,6 +263,14 @@ func New(sessionTTL time.Duration) *Engine {
 		sessionTTL: sessionTTL,
 		now:        time.Now,
 	}
+}
+
+// SetMaxAge caps every Session decision at d from when it was answered,
+// however much use has slid it. The agent passes its session ceiling.
+func (e *Engine) SetMaxAge(d time.Duration) {
+	e.mu.Lock()
+	e.maxAge = d
+	e.mu.Unlock()
 }
 
 // Decide resolves one access. It prompts only when there is neither a grant
@@ -296,10 +319,11 @@ func (e *Engine) Decide(req Request, prompt Prompter) (Decision, error) {
 			continue
 		}
 		req.PriorRefusals = e.refusalCount(key)
+		clears := e.clearCount()
 		d, scope, err := prompt(req)
 		if err == nil {
 			if cacheable {
-				e.remember(key, d, scope)
+				e.remember(key, d, scope, clears)
 			}
 			e.score(key, d)
 		}
@@ -414,24 +438,51 @@ func (e *Engine) lookup(key string) (Decision, bool) {
 	if !ok {
 		return Undecided, false
 	}
-	if !c.expires.IsZero() && !c.expires.After(e.now()) {
+	now := e.now()
+	aged := !c.expires.IsZero() && e.maxAge > 0 && !now.Before(c.born.Add(e.maxAge))
+	if aged || (!c.expires.IsZero() && !c.expires.After(now)) {
 		delete(e.cache, key)
 		return Undecided, false
+	}
+	// A Session decision slides on use, the same way the unlock session it
+	// rides in does. It used to expire a fixed sessionTTL after the prompt,
+	// while the session itself slid (agent touchSession): a tool reading its
+	// credential in a loop was asked again every five minutes of CONTINUOUS
+	// use, in a session that was never idle, which is the prompt the idle
+	// timeout exists to avoid. It still ends with the session: the agent
+	// clears this cache on every lock, and maxAge caps it at the session's
+	// hard ceiling on any path where no lock reaches it.
+	if !c.expires.IsZero() {
+		c.expires = now.Add(e.sessionTTL)
+		e.cache[key] = c
 	}
 	return c.decision, true
 }
 
-func (e *Engine) remember(key string, d Decision, scope Scope) {
+// remember caches a prompt's answer for its scope, unless a Clear ran since
+// clears was read (before the prompt): then the session the answer was given
+// in has already ended, and caching it would carry it into the next one.
+func (e *Engine) remember(key string, d Decision, scope Scope, clears uint64) {
 	if scope == Once {
 		return // never cached: the next access re-decides
 	}
+	now := e.now()
 	var expires time.Time
 	if scope == Session {
-		expires = e.now().Add(e.sessionTTL)
+		expires = now.Add(e.sessionTTL)
 	}
 	e.mu.Lock()
-	e.cache[key] = cached{decision: d, expires: expires}
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	if e.clears != clears {
+		return
+	}
+	e.cache[key] = cached{decision: d, expires: expires, born: now}
+}
+
+func (e *Engine) clearCount() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.clears
 }
 
 // Clear drops every standing decision. Call it when the vault session re-locks
@@ -440,6 +491,7 @@ func (e *Engine) remember(key string, d Decision, scope Scope) {
 func (e *Engine) Clear() {
 	e.mu.Lock()
 	e.cache = make(map[string]cached)
+	e.clears++
 	// Backoff state is session state too. A re-lock is a human coming back to
 	// the machine, and making them wait out a pause earned by whatever was
 	// asking while they were away would be the throttle punishing the wrong
