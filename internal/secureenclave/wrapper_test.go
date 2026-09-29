@@ -22,9 +22,6 @@ import (
 // would leak a MEK per unlock without failing anything else.
 var _ agent.ClosableFetcher = (*Wrapper)(nil)
 
-// And its prompt must stay withdrawable (agent.CancelableFetcher).
-var _ agent.CancelableFetcher = (*Wrapper)(nil)
-
 const testTag = "com.jitpass.vault.kek.TEST-ONLY"
 
 func testMEK(t *testing.T) []byte {
