@@ -803,10 +803,10 @@ func TestRefusedConsentPausesRatherThanStandingDeny(t *testing.T) {
 		ancestors: []lineage.Process{{PID: 424243, ExecPath: "/usr/local/bin/aws"}},
 	}
 
-	if err := s.gateConsent(class, c); err == nil {
+	if err := s.gateConsent(class, c, ""); err == nil {
 		t.Fatal("a declined challenge granted access")
 	}
-	err := s.gateConsent(class, c)
+	err := s.gateConsent(class, c, "")
 	if err == nil {
 		t.Fatal("second attempt granted access after a refusal")
 	}

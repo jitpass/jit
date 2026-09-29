@@ -663,7 +663,10 @@ func (s *Server) handle(req Request, c *caller) Response {
 					return Response{OK: false, Error: err.Error()}
 				}
 			}
-			if err := s.forceDisclosedChallenge(s.grantReason(req.RunMounts), c); err != nil {
+			// The run unlocks next (ensureUnlockedNotify below), so on a locked
+			// vault this one prompt says so and opens the session.
+			reasonFor := func(unlocking bool) string { return s.grantReasonFor(req.RunMounts, unlocking) }
+			if err := s.forceDisclosedChallengeUnlocking(reasonFor, c, req.Op); err != nil {
 				return Response{OK: false, Error: err.Error()}
 			}
 		}
@@ -836,7 +839,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// use. It needs no MEK (only the caller and the AEAD-bound class), and a
 		// consent decline never arms the unlock cooldown, so this reordering
 		// costs a cached session nothing and only ever avoids work on a denial.
-		if err := s.gateConsent(req.Class, c); err != nil {
+		if err := s.gateConsent(req.Class, c, req.Op); err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		mek, err := s.ensureUnlocked(req.Op, c, req.Label)
