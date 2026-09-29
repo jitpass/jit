@@ -26,6 +26,11 @@ const maxContentScanSize = 5 << 20 // 5 MiB
 // sits on may not be.
 const maxContentLineSize = 1 << 20 // 1 MiB
 
+// lineLimit is the limit newLineScanner cuts at: maxContentLineSize, and
+// smaller only in a test that needs a line past it without a megabyte of
+// input for every regex (no test in this package runs in parallel).
+var lineLimit = maxContentLineSize
+
 // credentialFileNameHints gate which files the MACHINE-WIDE walk will content
 // -scan (see classifyCredentialDump). A file whose own name announces that it
 // holds credentials is worth opening; everything else is left to the
