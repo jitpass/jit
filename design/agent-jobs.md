@@ -766,6 +766,78 @@ it too.
 Tests: `TestJobRunLeavesOutASecretGoneFromTheVault`,
 `TestJobRunIgnoresProfileManifestEdits` (both fail on the code before).
 
+## Decided 2026-09-29: a moved value follows the job, or stops it
+
+Reported: the day before's rule had a hole. Jobs approved in the morning
+got values that `vault move-out` then moved into plain settings. The jobs
+kept the old vault paths, so each run left those values out, stayed "ready"
+in `jit job list`, and failed at its first use of them (a URL, a client id).
+Only the app's job row said anything ("left out, no longer in the vault").
+
+- **Move-out carries the job along** (`internal/agent/jobcarry.go`). Between
+  writing the setting and removing the vault copy, the move asks the service
+  (`job_carry`) about each job that gets the value. The service opens the
+  vault copy **itself**, with the job's own key for a job that never asks,
+  or with the session already open for one that asks each time. It never
+  prompts: the move took its own Touch ID. It then compares the vault copy
+  with the setting file. Only an exact match moves the job over: the secret
+  becomes a `job.Setting`, and the setting's file joins `Extra` and the
+  fingerprint, as approval would have done. Nothing else may differ from
+  approval. A job whose files changed is not approved again on the way.
+- **Why the service checks, not the CLI.** The caller is any program running
+  as the user. If it could point a job at a setting of its own choosing, it
+  would pick where the job sends its other secrets (`job.Setting`'s
+  comment). Comparing against the vault copy, which only the service can
+  open this way, is what makes the move safe without a new approval.
+- **A setting that doesn't match stops the job.** A move copies the value
+  exactly, so only someone else's setting can mismatch. If a mismatch just
+  answered "not carried", `job_carry` would be a free test of guesses at the
+  job's secret, with no prompt, even with the vault locked for a job that
+  never asks. Stopping the job allows one guess per approval. For that to
+  hold, carries run one at a time; the setting is read once per call; the
+  first mismatch stops every job that gets the value without comparing
+  again; and the comparison is of hashes, so its timing says nothing about
+  length. The stop is recorded as a run's stop, the event the app announces.
+  The file the job fingerprints must hash to the bytes compared, so a
+  setting swapped in after the comparison is refused.
+- **The CLI asks only when a job gets the value.** It reads `jobs.json`
+  first, so a move nobody's job cares about never contacts or starts the
+  service, and never warns about jobs that don't exist.
+- **A job that can't be carried stops.** That covers an each-time job while
+  the vault is locked, a value that doesn't match, a changed folder, or a
+  service that wasn't running. Once the vault copy is gone, a gone secret
+  that now has a setting is **moved**, not deleted. The job shows as Changed
+  with "X was moved out of the vault into settings since you approved it",
+  and a run refuses with the same sentence. The profile still sets the
+  value, so a run without it would only fail. A secret simply deleted is
+  still left out, per the 2026-09-28 rule. The move prints each stopped
+  job's re-approve line, and `jit job list` now prints one for every stopped
+  job, not only the first.
+- **Move-in** needs nothing new. It deletes the setting file, which the
+  job's fingerprint covers, so the job stops as changed.
+- A carried setting is never hidden in output, like every setting. The user
+  moved it out of the vault, where any program can read it anyway.
+
+Tests: `TestMoveOutCarriesANeverJobToTheSetting`,
+`TestJobCarryToADifferentValueStopsTheJob`,
+`TestAJobNotCarriedStopsOnceTheVaultCopyIsGone`,
+`TestMoveOutCarriesAnEachTimeJobOnlyWhileUnlocked`,
+`TestMoveOutDoesNotCarryAJobWhoseFilesChanged`,
+`TestVaultMoveOutCarriesAIJobsWhileBothCopiesExist`,
+`TestVaultMoveOutAsksNoServiceWhenNoJobGetsTheValue`,
+`TestJobCarryRefusesASettingSwappedAfterTheComparison`,
+`TestJobCarryDoesNotStoreOverAChangedJob`, `TestJobCarriesRunOneAtATime`,
+`TestJobCarryMismatchStopsEveryJobThatGetsTheValue`,
+`TestJobCarrySkipsARotatedSecretWithoutStopping`. Each was checked against
+the code with its safeguard removed, and failed: no carry, no value
+comparison, a mismatch not stopping the job, no fingerprint check, the
+setting not fingerprinted, a moved value not stopping the job, the session
+key used while locked, carrying after the vault copy is gone, asking the
+service when no job gets the value, no swap check, no check that the stored
+job is unchanged, no lock between carries, later jobs not stopped after a
+mismatch, and a stop the app doesn't announce. An independent review found
+the last five gaps before this was committed.
+
 ## Open decisions
 
 1. **The name.** Decided 2026-09-25: **AI Jobs** in the app (window,

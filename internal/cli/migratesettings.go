@@ -46,6 +46,9 @@ type migrateSettingsResult struct {
 	// Skipped are settings-shaped entries left alone, each with why.
 	Skipped []migrateSettingsSkip `json:"skipped"`
 	DryRun  bool                  `json:"dry_run,omitempty"`
+	// Jobs are the moved entries some AI job gets, each with what the move
+	// did to those jobs (vault move-out's settingMovedEntry.Jobs).
+	Jobs []settingMovedEntry `json:"jobs,omitempty"`
 }
 
 type migrateSettingsSkip struct {
@@ -188,8 +191,13 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 			result.Moved = append(result.Moved, c.path)
 			continue
 		}
-		if _, err := settingMoveOne(v, store, classes, c.settingMoveTarget, true); err != nil {
+		_, jobs, err := settingMoveOne(v, store, classes, c.settingMoveTarget, true)
+		if err != nil {
+			reportJobsOnError(cmd.ErrOrStderr(), c.path, jobs)
 			return fmt.Errorf("jit migrate settings: %w (moved so far: %d)", err, len(result.Moved))
+		}
+		if len(jobs.jobs) > 0 || jobs.unchecked != "" {
+			result.Jobs = append(result.Jobs, settingMovedEntry{Path: c.path, Jobs: jobs.jobs, JobsUnchecked: jobs.unchecked})
 		}
 		if classes != nil {
 			classes.Set(c.path, "")
@@ -202,6 +210,7 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 	if classes != nil && !migrateDryRun {
 		_ = classes.Save()
 	}
+	addApproveLines(result.Jobs)
 
 	if migrateSettingsFormat == "json" {
 		return writeJSON(w, result)
@@ -223,6 +232,10 @@ func runMigrateSettings(cmd *cobra.Command, _ []string) error {
 	}
 	for _, s := range result.Skipped {
 		fmt.Fprintf(w, "  %s %s: %s\n", glyphWarn, s.Path, s.Reason)
+	}
+	for _, m := range result.Jobs {
+		fmt.Fprintf(w, "  %s:\n", m.Path)
+		printMovedJobs(w, m)
 	}
 	return nil
 }

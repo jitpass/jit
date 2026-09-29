@@ -203,6 +203,9 @@ type Request struct {
 	// ProposalID ("job_allow", "job_dismiss") names the proposal being
 	// approved or dismissed, so it stops waiting.
 	ProposalID string `json:"proposal_id,omitempty"`
+	// CarryPath ("job_carry") is the vault path `jit vault move-out` is
+	// moving into a plain setting.
+	CarryPath string `json:"carry_path,omitempty"`
 }
 
 // JobSpec is a job as the approving client describes it.
@@ -344,6 +347,13 @@ const (
 	// the app's New AI Job sheet shows before the human spends a Touch ID,
 	// and what `jit job allow --dry-run` prints.
 	OpJobPreview = "job_preview"
+	// OpJobCarry is `jit vault move-out` asking the service to carry every
+	// job that gets the value along to its new plain setting (jobcarry.go),
+	// while the vault copy still exists. Prompt-free: the service compares
+	// the two copies itself and trusts nothing the caller says about them.
+	// A job it cannot check is left as it was; a setting that doesn't hold
+	// the approved value stops every job that gets it.
+	OpJobCarry = "job_carry"
 )
 
 // SessionEvent.Kind values.
@@ -582,6 +592,9 @@ type Response struct {
 	Proposals []JobProposal `json:"proposals,omitempty"`
 	// Preview answers job_preview.
 	Preview *JobPreview `json:"preview,omitempty"`
+	// Carried answers job_carry: one entry per job that gets the value,
+	// carried along or not.
+	Carried []JobCarry `json:"carried,omitempty"`
 }
 
 // GrantStatus is one process grant as the agent reports it — deliberately
@@ -695,6 +708,22 @@ type JobSecretStatus struct {
 	// Gone: no longer in the vault. The job runs without it; only a
 	// rotated secret stops it.
 	Gone bool `json:"gone,omitempty"`
+	// Moved: gone from the vault because it was moved into a plain setting
+	// the job was not carried along to (jobcarry.go). Unlike Gone, this
+	// stops the job: its profile still sets the value, so a run without it
+	// would only fail.
+	Moved bool `json:"moved,omitempty"`
+}
+
+// JobCarry is what job_carry did for one job that gets the value.
+type JobCarry struct {
+	Job string `json:"job"`
+	Var string `json:"var"`
+	// Carried says the job now reads the value from its setting. When not,
+	// Why says what stopped it in a few words ("the vault is locked"), and
+	// the job stops once the vault copy is gone, until approved again.
+	Carried bool   `json:"carried"`
+	Why     string `json:"why,omitempty"`
 }
 
 // JobStatus.State values.

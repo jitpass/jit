@@ -8,11 +8,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/settings"
@@ -279,5 +282,107 @@ func TestMoveOutRefusesAnUnreadableIndex(t *testing.T) {
 	}
 	if ok, _ := r.v.Exists("billing/EXPORT_SECRETS_FILE"); !ok {
 		t.Error("a refused move removed the value")
+	}
+}
+
+// A move out asks the service to carry the AI jobs that get the value along
+// while both copies exist (the service compares them), and says what it did
+// to each: carried, or stopped with the line that approves it again. Asked
+// after the vault copy is gone, the service would have nothing to compare.
+func TestVaultMoveOutCarriesAIJobsWhileBothCopiesExist(t *testing.T) {
+	r := newMoveRig(t)
+	const p = "billing/EXPORT_SECRETS_FILE"
+	var inVault, inSettings bool
+	origCarry, origList, origUse := carryMovedJobs, listJobsForMove, jobsMayUse
+	t.Cleanup(func() { carryMovedJobs, listJobsForMove, jobsMayUse = origCarry, origList, origUse })
+	jobsMayUse = func(string) bool { return true }
+	carryMovedJobs = func(path string) ([]agent.JobCarry, error) {
+		if path != p {
+			t.Errorf("carry asked for %q, want %q", path, p)
+		}
+		inVault, _ = r.v.Exists(p)
+		inSettings, _ = settings.New(r.root).Exists(p)
+		return []agent.JobCarry{
+			{Job: "billing-sync", Var: "EXPORT_SECRETS_FILE", Carried: true},
+			{Job: "billing-report", Var: "EXPORT_SECRETS_FILE", Why: "the vault is locked"},
+		}, nil
+	}
+	listJobsForMove = func() ([]agent.JobStatus, error) {
+		return []agent.JobStatus{{Name: "billing-report", Dir: "/work/billing", Argv: []string{"./report.sh"}, Ask: "each-time", Profile: "billing"}}, nil
+	}
+
+	out, err := execVaultMove(t, "move-out", p, "--yes")
+	if err != nil {
+		t.Fatalf("move-out: %v\n%s", err, out)
+	}
+	if !inVault || !inSettings {
+		t.Fatalf("carry asked with vault copy %v, setting %v; want both there", inVault, inSettings)
+	}
+	for _, want := range []string{
+		"AI job billing-sync reads it from the setting now",
+		"AI job billing-report stops until you approve it again: the vault is locked",
+		"cd /work/billing && jit job allow billing-report --replace --profile billing -- ./report.sh",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+
+	if _, err := execVaultMove(t, "move-in", p, "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = execVaultMove(t, "move-out", p, "--yes", "--format", "json")
+	if err != nil {
+		t.Fatalf("move-out json: %v\n%s", err, out)
+	}
+	var res settingMoveResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not one JSON document: %v\n%s", err, out)
+	}
+	jobs := res.Moved[0].Jobs
+	if len(jobs) != 2 || !jobs[0].Carried || jobs[1].Carried || jobs[1].Approve == "" {
+		t.Fatalf("jobs = %+v, want one carried and one stopped with its approve line", jobs)
+	}
+}
+
+// A service that can't be asked never fails the move: the value is already
+// in its setting, and the output says the jobs weren't checked.
+func TestVaultMoveOutSaysWhenAIJobsWerentChecked(t *testing.T) {
+	newMoveRig(t)
+	orig, origUse := carryMovedJobs, jobsMayUse
+	t.Cleanup(func() { carryMovedJobs, jobsMayUse = orig, origUse })
+	jobsMayUse = func(string) bool { return true }
+	carryMovedJobs = func(string) ([]agent.JobCarry, error) {
+		return nil, errors.New(`agent: unknown op "job_carry"`)
+	}
+	out, err := execVaultMove(t, "move-out", "billing/EXPORT_SECRETS_FILE", "--yes")
+	if err != nil {
+		t.Fatalf("move-out: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "AI jobs weren't checked (the jit service is older than this jit)") {
+		t.Errorf("output lacks the unchecked note:\n%s", out)
+	}
+}
+
+// A value no AI job gets moves without asking the service or saying anything
+// about jobs: the job list on disk answers first.
+func TestVaultMoveOutAsksNoServiceWhenNoJobGetsTheValue(t *testing.T) {
+	r := newMoveRig(t)
+	orig := carryMovedJobs
+	t.Cleanup(func() { carryMovedJobs = orig })
+	asked := false
+	carryMovedJobs = func(string) ([]agent.JobCarry, error) {
+		asked = true
+		return nil, errors.New("no service")
+	}
+	if err := os.WriteFile(job.StorePath(r.root), []byte(`{"version":1,"jobs":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execVaultMove(t, "move-out", "billing/EXPORT_SECRETS_FILE", "--yes")
+	if err != nil {
+		t.Fatalf("move-out: %v\n%s", err, out)
+	}
+	if asked || strings.Contains(out, "AI job") {
+		t.Fatalf("asked the service %v, output:\n%s", asked, out)
 	}
 }

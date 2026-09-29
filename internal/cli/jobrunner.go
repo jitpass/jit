@@ -135,6 +135,42 @@ func (k jobKeys) UnwrapKey(wrapped []byte) ([]byte, error) {
 	return append([]byte(nil), dek...), nil
 }
 
+// movedSettingReader is the service's OnMovedSetting: the plain setting a
+// vault path's value was moved to (`jit vault move-out` keeps it at the same
+// path), if there is one.
+func movedSettingReader(root string) func(path string) (agent.MovedSetting, bool) {
+	return func(path string) (agent.MovedSetting, bool) {
+		store := settings.New(root)
+		if ok, err := store.Exists(path); err != nil || !ok {
+			return agent.MovedSetting{}, false
+		}
+		file, err := store.File(path)
+		if err != nil {
+			return agent.MovedSetting{}, false
+		}
+		return agent.MovedSetting{Pointer: settings.Pointer(path), File: file}, true
+	}
+}
+
+// vaultValueReader is the service's OnReadVaultValue: path's current value,
+// decrypted with the one DEK the agent unwrapped for it, and only if that
+// DEK is the envelope's own (jobKeys looks it up by the wrapped bytes).
+func vaultValueReader(root string) func(path string, dek []byte) ([]byte, error) {
+	return func(path string, dek []byte) ([]byte, error) {
+		deviceID, err := vault.EnsureDeviceID(root)
+		if err != nil {
+			return nil, fmt.Errorf("determining device recipient ID: %w", err)
+		}
+		v := &vault.Vault{Root: root, RecipientID: deviceID}
+		wrapped, _, err := v.WrappedDEK(path)
+		if err != nil {
+			return nil, err
+		}
+		v.KeyWrapper = jobKeys{agent.WrappedDigest(wrapped): dek}
+		return v.Get(path)
+	}
+}
+
 // jobRunMarker is the mount manager's view of a running job: its process
 // and folder, for as long as the job runs (mountjobs.go). Nil marks nothing.
 type jobRunMarker interface {

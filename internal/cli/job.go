@@ -371,16 +371,36 @@ func renderJobRows(out io.Writer, jobs []agent.JobStatus, now time.Time) {
 		fmt.Fprintf(out, "%s  %s\n", strings.Repeat(" ", widest-len([]rune(j.Name))), state)
 		fmt.Fprintf(out, "    %s %s\n", glyphBranch, truncateRunes(strings.Join(j.Argv, " "), 64))
 	}
+	// Every stopped job's line, not only the first: one move out of the
+	// vault can stop several at once, and each needs its own approval.
+	shown := 0
 	for _, j := range jobs {
 		if j.State == agent.JobChanged || j.State == agent.JobRotated {
 			fmt.Fprintln(out)
 			fmt.Fprint(out, "  ")
 			_, _ = cPath.Fprintf(out, "%s %s", glyphAction, reapproveCommand(j))
 			fmt.Fprintln(out)
-			fmt.Fprintln(out, "    once you have looked at the change")
-			break
+			shown++
 		}
 	}
+	if shown > 0 {
+		fmt.Fprintln(out, "    once you have looked at the change")
+	}
+}
+
+// goneLine names the secrets a ready job runs without, deleted from the vault
+// since it was approved (agent's JobSecretStatus.Gone), or "".
+func goneLine(j agent.JobStatus) string {
+	var gone []string
+	for _, sec := range j.Secrets {
+		if sec.Gone {
+			gone = append(gone, sec.Var)
+		}
+	}
+	if len(gone) == 0 {
+		return ""
+	}
+	return "runs without " + strings.Join(gone, ", ") + " (no longer in the vault)"
 }
 
 // reapproveCommand is the exact line that approves j again with every
@@ -431,6 +451,9 @@ func jobReadyLine(j agent.JobStatus, now time.Time) string {
 		ready = "ready, runs unasked"
 	}
 	if j.LastRunUnix == 0 {
+		if g := goneLine(j); g != "" {
+			return ready + " · not run yet · " + g
+		}
 		return ready + " · not run yet"
 	}
 	s := fmt.Sprintf("%s · %s ran it %s", ready, j.LastCaller, agoPhrase(now.Sub(time.Unix(j.LastRunUnix, 0))))
@@ -439,6 +462,9 @@ func jobReadyLine(j agent.JobStatus, now time.Time) string {
 	}
 	if j.LastHidden > 0 {
 		s += fmt.Sprintf(" · hid %s", countWord(j.LastHidden, "value", "values"))
+	}
+	if g := goneLine(j); g != "" {
+		s += " · " + g
 	}
 	return s
 }

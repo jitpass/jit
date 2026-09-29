@@ -410,6 +410,27 @@ func hashFileStamp(path string) (fileHash, error) {
 	return fileHash{sum: sum, n: n, stamp: ctimeStamp(info), mode: info.Mode(), macho: isMachO}, nil
 }
 
+// WithEntry returns fp with key's entry and change-time taken from now, and
+// its root hash taken again: one file joining an approved fingerprint and
+// nothing else, for a moved setting (agent's job_carry). fp is not changed.
+func (fp Fingerprint) WithEntry(key string, now Fingerprint) Fingerprint {
+	files := make(map[string]string, len(fp.Files)+1)
+	for k, v := range fp.Files {
+		files[k] = v
+	}
+	files[key] = now.Files[key]
+	stamps := make(map[string]string, len(fp.Stamps)+1)
+	for k, v := range fp.Stamps {
+		stamps[k] = v
+	}
+	if st, ok := now.Stamps[key]; ok {
+		stamps[key] = st
+	}
+	fp.Files, fp.Stamps = files, stamps
+	fp.Root = fp.rootHash()
+	return fp
+}
+
 func (fp Fingerprint) rootHash() string {
 	keys := make([]string, 0, len(fp.Files))
 	for k := range fp.Files {

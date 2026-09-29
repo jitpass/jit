@@ -640,13 +640,23 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 		ProfileGlobal: j.Profile != "" && j.ProfileRoot == "", ProfileRoot: j.ProfileRoot,
 	}
 	rotated, gone := s.rotatedSecrets(j)
+	moved := s.movedSecrets(gone)
+	var movedVars []string
 	for _, sec := range j.Secrets {
 		st.Secrets = append(st.Secrets, JobSecretStatus{
-			Var: sec.Var, Path: sec.Path, Shown: sec.Shown, Rotated: rotated[sec.Path], Gone: gone[sec.Path],
+			Var: sec.Var, Path: sec.Path, Shown: sec.Shown, Rotated: rotated[sec.Path],
+			Gone: gone[sec.Path] && !moved[sec.Path], Moved: moved[sec.Path],
 		})
+		if moved[sec.Path] {
+			movedVars = append(movedVars, sec.Var)
+		}
 	}
 	if len(rotated) > 0 {
 		st.State = JobRotated
+	}
+	if len(movedVars) > 0 && st.State == JobReady {
+		st.State = JobChanged
+		st.LastRefusal = movedReason(movedVars)
 	}
 	if j.Stopped != "" {
 		st.State = JobChanged
@@ -689,7 +699,10 @@ func (s *Server) jobChanges(j *job.Job) []job.Change {
 // the job's folder. A job never reads them when it runs: it carries the
 // secret paths it was approved with (TestJobRunIgnoresAProfileRemappedAfter
 // Approval), and jit itself rewrites them (vault move-out, move-in). So an
-// edit there changes nothing a run does, and stopped jobs for nothing.
+// edit there changes nothing a run does, and stopped jobs for nothing. What
+// a move does to the value itself is handled where it happens: move-out
+// carries the job along or it stops (jobcarry.go), and move-in removes a
+// setting file the job's fingerprint covers.
 // Filtered from the comparison rather than the fingerprint, so a job
 // approved before this still matches.
 const profileManifests = ".jit/profiles/"
@@ -711,7 +724,8 @@ func jobProgram(j *job.Job) job.Program {
 
 // rotatedSecrets maps each secret path whose wrapped bytes no longer match
 // approval to true, and separately each that is gone from the vault. A
-// rotated secret stops the job; a gone one is left out of its runs. Without
+// rotated secret stops the job; a gone one is left out of its runs, unless
+// it was moved into settings (movedSecrets), which stops it too. Without
 // OnWrappedDEK nothing can be checked, and a run then fails at unwrap
 // instead: closed either way.
 func (s *Server) rotatedSecrets(j *job.Job) (rotated, gone map[string]bool) {
@@ -776,15 +790,22 @@ func (s *Server) runJob(name string, c *caller) Response {
 	if s.OnWrappedDEK == nil {
 		return Response{OK: false, Error: "job_run: this service cannot read the vault's wrapped keys"}
 	}
-	// A secret gone from the vault is left out of this run, not a reason
+	// A secret deleted from the vault is left out of this run, not a reason
 	// to refuse it: the job can only get less than was approved, never
-	// more. A rotated one is a different value, and still stops the job.
+	// more. One moved into a plain setting stops the job instead, because
+	// its profile still sets it and a run without it would only fail (the
+	// job was not carried along, jobcarry.go). A rotated one is a different
+	// value, and stops the job too.
 	var current [][]byte
 	var present []job.Secret
-	var gone []string
+	var gone, movedVars []string
 	for _, sec := range j.Secrets {
 		wrapped, _, err := s.OnWrappedDEK(sec.Path)
 		if err != nil {
+			if len(s.movedSecrets(map[string]bool{sec.Path: true})) > 0 {
+				movedVars = append(movedVars, sec.Var)
+				continue
+			}
 			gone = append(gone, sec.Var)
 			continue
 		}
@@ -793,6 +814,9 @@ func (s *Server) runJob(name string, c *caller) Response {
 		}
 		present = append(present, sec)
 		current = append(current, wrapped)
+	}
+	if len(movedVars) > 0 {
+		return s.refuseJob(&j, c, requester, movedReason(movedVars))
 	}
 	j.Secrets = present
 
