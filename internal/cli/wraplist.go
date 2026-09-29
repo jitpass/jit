@@ -5,7 +5,6 @@ package cli
 
 import (
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/jitpass/jit/internal/profile"
@@ -275,13 +274,12 @@ func (l *wrapVaultLookup) classCount(class string) int {
 	}
 	if l.counts == nil {
 		l.counts = map[string]int{}
-		paths, err := l.v.List()
+		infos, err := l.v.Infos()
 		if err != nil {
 			return 0
 		}
-		sort.Strings(paths)
-		for _, p := range paths {
-			if info, err := l.v.Info(p); err == nil && info.Class != "" {
+		for _, info := range infos {
+			if info.Class != "" {
 				l.counts[info.Class]++
 			}
 		}
