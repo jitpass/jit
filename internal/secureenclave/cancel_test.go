@@ -147,11 +147,21 @@ func TestHardwareOpenWithdrawn(t *testing.T) {
 	}
 	w.Close()
 
+	// On a key from the keychain, as the vault's is: the open must ask on
+	// its own context first, or the dialog cannot be taken down at all
+	// (FINDINGS.md, "A key from the keychain").
+	direct := 0
+	OnUnwithdrawable = func() { direct++ }
+	t.Cleanup(func() { OnUnwithdrawable = func() {} })
+
 	withdraw := make(chan struct{})
 	start := time.Now()
 	go func() { time.Sleep(time.Second); close(withdraw) }()
 	_, err := w.FetchMEKCancel("check that jit can take its own prompt down (jit test; don't touch the sensor)", withdraw)
 	elapsed := time.Since(start)
+	if direct != 0 {
+		t.Errorf("the withdrawable open prompted by itself %d time(s): the key's access control was not asked first", direct)
+	}
 	if !errors.Is(err, authprompt.ErrWithdrawn) {
 		t.Fatalf("withdrawn open = %v, want ErrWithdrawn", err)
 	}

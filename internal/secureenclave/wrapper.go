@@ -284,10 +284,11 @@ func (w *Wrapper) FetchMEK(reason string) ([]byte, error) {
 // FetchMEKCancel is FetchMEK whose dialog is taken down if withdraw closes
 // before it is answered (design/consent-side-panel-plan.md, step 2); the
 // failure is then authprompt.ErrWithdrawn, and a withdraw already closed
-// shows no dialog at all. The decrypt runs on the same context after an
-// approval, so a withdrawal in that instant may still fail it; it is then
-// reported as withdrawn too, never as a wrong key. A cached MEK returns at
-// once.
+// shows no dialog at all. The dialog is the key's user presence, asked on
+// the fetch's own context; the decrypt runs on that context after an
+// approval, so a withdrawal in that instant may still fail it, and it is
+// then reported as withdrawn too, never as a wrong key. A cached MEK returns
+// at once.
 func (w *Wrapper) FetchMEKCancel(reason string, withdraw <-chan struct{}) ([]byte, error) {
 	return w.fetchMEK(reason, withdraw)
 }

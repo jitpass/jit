@@ -116,8 +116,10 @@ experiment and not a test.
 
 ## Not covered
 
-- The real JitPass panel (warm) and the real service (the signed helper
-  under launchd). The timings above come from standalone binaries.
+- The real JitPass panel (warm) and the real service's timings (the
+  signed helper under launchd). The timings above come from standalone
+  binaries; the real service was only measured failing, in the section
+  above.
 - A cancel racing an approval in the same instant. `arm` and `cancel_prompt`
   handle a cancel that arrives before the prompt, but the approve-and-deny
   race was not driven.
