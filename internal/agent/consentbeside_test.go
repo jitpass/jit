@@ -231,7 +231,7 @@ func TestBesideTouchIDAppearsWhenShownWithoutAnAllow(t *testing.T) {
 // the socket the reply always follows the unpark and cannot see the window.
 func TestSettleTakesTheRequestOffTheTableWithTheCheck(t *testing.T) {
 	s := NewServer(shortSocketPath(t), newDialog().fetcher, time.Minute)
-	sub := s.subscribe(true, true)
+	sub := s.subscribe(true, true, false)
 	defer s.unsubscribe(sub)
 	pending := unlockEvent(OpRevealPID, nil)
 	p, unpark := s.parkWithBrokers(pending)

@@ -25,6 +25,43 @@ import (
 // proposal. The proposer falls back to the `jit job allow` line.
 var ErrNoJobBroker = errors.New("JitPass is not running to show the proposal")
 
+// proposalViewers is how many live streams belong to an app that shows
+// proposals.
+func (s *Server) proposalViewers() int {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	n := 0
+	for sub := range s.subscribers {
+		if sub.proposals {
+			n++
+		}
+	}
+	return n
+}
+
+// publishProposal is publish restricted to the apps that show proposals: a
+// proposal is a question for whoever will show it, not an event in the
+// trail, so a plain `jit audit -f` never sees one. Never blocks, like
+// publish.
+func (s *Server) publishProposal(e SessionEvent) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for sub := range s.subscribers {
+		if !sub.proposals {
+			continue
+		}
+		select {
+		case sub.ch <- e:
+		default:
+			select {
+			case <-sub.lagged:
+			default:
+				close(sub.lagged)
+			}
+		}
+	}
+}
+
 const (
 	maxJobProposals  = 8
 	jobProposalTTL   = time.Hour
@@ -55,7 +92,7 @@ func (s *Server) requestJob(req Request, c *caller) Response {
 	if !filepath.IsAbs(spec.Dir) {
 		return Response{OK: false, Error: "job_request: the folder must be an absolute path"}
 	}
-	if s.brokerCount() == 0 {
+	if s.proposalViewers() == 0 {
 		return Response{OK: false, Error: "job_request: " + ErrNoJobBroker.Error()}
 	}
 	why := req.Why
@@ -95,7 +132,7 @@ func (s *Server) requestJob(req Request, c *caller) Response {
 	e.Job = p.Name
 	e.Cause = why
 	e.UnixTime = p.UnixTime
-	s.publishBrokers(*e)
+	s.publishProposal(*e)
 	s.recordJobEvent(KindUse, OpJobRequest, c, &job.Job{Name: p.Name}, fmt.Sprintf("proposed %s (%s) to the user", p.Name, jobLabel(spec.Dir, spec.Argv)), "")
 	return Response{OK: true, Proposals: []JobProposal{p}}
 }

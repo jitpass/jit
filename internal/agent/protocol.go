@@ -101,6 +101,13 @@ type Request struct {
 	// they prompt (OpConsentList). An agent that predates it ignores the
 	// field and the stream simply never carries a pending request.
 	Broker bool `json:"broker,omitempty"`
+	// ShowsProposals, on "subscribe", says this stream belongs to an app that
+	// shows the human what an AI tool proposes ("job_request"): it is sent
+	// each KindJobProposal, and job_request only accepts a proposal while
+	// one such stream is open. It has nothing to do with consent: a stream
+	// that sets it and not Broker is never asked about a prompt. Broker
+	// implies it, for the apps that predate it.
+	ShowsProposals bool `json:"shows_proposals,omitempty"`
 	// TouchIDFollows, with Broker on "subscribe", says the broker shows each
 	// request BESIDE its Touch ID instead of in front of it: it never sends
 	// an allow, only a deny or "consent_shown" (consentbroker.go). The agent

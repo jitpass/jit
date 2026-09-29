@@ -213,7 +213,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			_ = json.NewEncoder(conn).Encode(resp)
 			return
 		}
-		s.serveSubscription(conn, req.Broker, req.TouchIDFollows)
+		s.serveSubscription(conn, req)
 		return
 	}
 	resp := s.handle(req, c)

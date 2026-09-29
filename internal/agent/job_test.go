@@ -1591,3 +1591,53 @@ func TestJobRunIgnoresProfileManifestEdits(t *testing.T) {
 		t.Fatal("an edit to the job's own script no longer stops it")
 	}
 }
+
+// An app that shows proposals and brokers nothing (JitPass, since the Touch
+// ID dialog became the whole question) is still shown a proposal, and is
+// never asked about a prompt: the job's own approval goes straight to the
+// Touch ID.
+func TestJobProposalsReachAnAppThatBrokersNothing(t *testing.T) {
+	r := newJobRig(t)
+	events := make(chan SessionEvent, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.c.SubscribeShowingProposals(ctx, func(e SessionEvent) {
+			if e.Kind == KindJobProposal || e.Kind == KindPending {
+				events <- e
+			}
+		})
+	}()
+	defer func() { cancel(); <-done }()
+	waitFor(t, "the app's stream", func() bool { return r.s.proposalViewers() == 1 })
+	if n := r.s.brokerCount(); n != 0 {
+		t.Fatalf("an app that only shows proposals counts as %d consent brokers", n)
+	}
+
+	p, err := r.c.JobRequest("guest-report", r.spec(), "access review")
+	if err != nil {
+		t.Fatalf("JobRequest with an app showing proposals: %v", err)
+	}
+	select {
+	case e := <-events:
+		if e.Kind != KindJobProposal || e.ConsentID != p.ID {
+			t.Fatalf("the app was shown %+v, want the proposal %s", e, p.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the app was never shown the proposal")
+	}
+
+	// The approval prompts at once, with nothing parked for the app.
+	if _, err := r.c.JobAllow("guest-report", r.spec()); err != nil {
+		t.Fatalf("JobAllow: %v", err)
+	}
+	if r.prompts() != 1 {
+		t.Errorf("prompts = %d, want the one Touch ID", r.prompts())
+	}
+	select {
+	case e := <-events:
+		t.Errorf("the app was sent %+v for a prompt it does not broker", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
