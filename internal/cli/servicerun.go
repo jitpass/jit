@@ -167,6 +167,9 @@ var agentRunCmd = &cobra.Command{
 			mounts.consent = server
 			fmt.Fprintln(stdout, "jit service: per-process credential consent ENABLED (prompting on credential reads)")
 		}
+		secureenclave.OnUnwithdrawable = func() {
+			fmt.Fprintln(stdout, "jit service: the vault key could not be asked for approval first; a Deny is still refused, but cannot close that Touch ID dialog")
+		}
 		server.OnUnlock = mounts.start
 		server.OnLock = mounts.stop
 		server.OnRefresh = mounts.start

@@ -120,9 +120,9 @@ plaintext exists at all*.
 
 ## 4. Every prompt names who asked
 
-When jit asks for Touch ID, it names what it is asking for and what set it off:
+When jit asks for Touch ID, it names who asked and for which profile:
 
-> jit is trying to **unlock the vault for profile "mcp-jamf", launched by claude**.
+> jit is trying to **unlock the vault for claude, profile "mcp-tickets"**.
 
 The caller identity comes from the kernel (its process id on the socket, then
 its command line and parent chain), never from anything the caller says about

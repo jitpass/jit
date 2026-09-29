@@ -138,12 +138,78 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 }
 
 static SEResult seOpenWith(LAContext *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                           const char *reason, unsigned char **out, int *out_len, int *decrypting);
+                           const char *reason, unsigned char **out, int *out_len, int *decrypting, int *asked_first);
+
+// What evaluateAccessControl answers when the access control defines no such
+// operation (measured 2026-09-29; not in the public LAError list).
+static const NSInteger kLAOperationNotAllowed = -1009;
+
+// How long an unanswered dialog stays, the keychain path's bound
+// (keychain.m).
+static const int64_t kAuthorizeTimeoutSeconds = 120;
+
+// seAuthorize asks for the key's user presence on ctx itself, before the key
+// is used, so that invalidating ctx takes the dialog down.
+//
+// A key from SecItemCopyMatching carries ctx's credential, not ctx. When a
+// decrypt then needs the human, Security runs the prompt on a context of its
+// own made from that credential, and invalidating ctx does not reach it: the
+// dialog stays until it is answered (measured in JitPass test build 0.0.10,
+// and reproduced in spike/consent-sync/credref). The spike's first run never
+// saw this because its key was made in-process with ctx on it.
+//
+// An evaluation started here is ctx's own, so invalidate ends it, and the
+// decrypt that follows finds the credential satisfied and does not ask
+// again. On the experiment's key: dialog gone in 55 ms, decrypt in 6 ms with
+// no second dialog.
+//
+// Returns 1 when authorized, 0 with *res set when refused or unanswered, and
+// -1 when the key's access control cannot be asked this way: the caller then
+// decrypts directly, which prompts as it always did and cannot be withdrawn.
+static int seAuthorize(LAContext *ctx, SecKeyRef k, NSString *reason, SEResult *res) {
+    NSDictionary *attrs = (__bridge_transfer NSDictionary *)SecKeyCopyAttributes(k);
+    id acl = attrs[(id)kSecAttrAccessControl];
+    // Only a real access control is handed to LocalAuthentication: a key
+    // whose attributes hold it in another form (or not at all) is opened
+    // directly.
+    if (!acl || CFGetTypeID((__bridge CFTypeRef)acl) != SecAccessControlGetTypeID()) return -1;
+    // The enclave files an ECIES open under key exchange; UseKeyDecrypt is
+    // "not allowed" by this key's access control (measured). It is still
+    // tried second, for a macOS that files it there.
+    const LAAccessControlOperation ops[] = {LAAccessControlOperationUseKeyKeyExchange, LAAccessControlOperationUseKeyDecrypt};
+    for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        __block BOOL ok = NO;
+        __block NSError *err = nil;
+        [ctx evaluateAccessControl:(__bridge SecAccessControlRef)acl
+                         operation:ops[i]
+                   localizedReason:reason
+                             reply:^(BOOL success, NSError *error) {
+            ok = success;
+            err = error;
+            dispatch_semaphore_signal(done);
+        }];
+        if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, kAuthorizeTimeoutSeconds * NSEC_PER_SEC)) != 0) {
+            [ctx invalidate]; // nobody answered: the dialog goes with the context
+            SEResult r = {0, 0, strdup("local authentication timed out waiting for a response")};
+            *res = r;
+            return 0;
+        }
+        if (ok) return 1;
+        if (err.code == kLAOperationNotAllowed) continue;
+        SEResult r = {0, (int)err.code, NULL};
+        r.error_message = dupNSString([NSString stringWithFormat:@"asking for the Secure Enclave key: %@",
+                                       err.localizedDescription ?: @"unknown error"]);
+        *res = r;
+        return 0;
+    }
+    return -1;
+}
 
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
                  const char *reason, unsigned char **out, int *out_len, int *decrypting) {
     @autoreleasepool {
-        return seOpenWith([[LAContext alloc] init], tag, group, ct, ct_len, reason, out, out_len, decrypting);
+        return seOpenWith([[LAContext alloc] init], tag, group, ct, ct_len, reason, out, out_len, decrypting, NULL);
     }
 }
 
@@ -152,9 +218,9 @@ void *se_context_new(void) {
 }
 
 void se_context_invalidate(void *ctx) {
-    // Callable from any thread; takes the dialog of a decrypt that is
-    // waiting on this context down with it (spike/consent-sync, measured on
-    // a user-presence enclave key).
+    // Callable from any thread; takes down the dialog of an evaluation that
+    // runs on this context (seAuthorize). It does NOT take down the dialog
+    // of a decrypt on a key that only carries the context's credential.
     [(__bridge LAContext *)ctx invalidate];
 }
 
@@ -163,20 +229,34 @@ void se_context_free(void *ctx) {
 }
 
 SEResult se_open_ctx(void *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                     const char *reason, unsigned char **out, int *out_len, int *decrypting) {
+                     const char *reason, unsigned char **out, int *out_len, int *decrypting, int *asked_first) {
     @autoreleasepool {
-        return seOpenWith((__bridge LAContext *)ctx, tag, group, ct, ct_len, reason, out, out_len, decrypting);
+        *asked_first = 0;
+        return seOpenWith((__bridge LAContext *)ctx, tag, group, ct, ct_len, reason, out, out_len, decrypting, asked_first);
     }
 }
 
 static SEResult seOpenWith(LAContext *ctx, const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                           const char *reason, unsigned char **out, int *out_len, int *decrypting) {
+                           const char *reason, unsigned char **out, int *out_len, int *decrypting, int *asked_first) {
     @autoreleasepool {
         *decrypting = 0;
-        ctx.localizedReason = [NSString stringWithUTF8String:reason];
+        // Never nil or empty: evaluateAccessControl raises on either, and
+        // stringWithUTF8String is nil for bytes that are not UTF-8.
+        NSString *why = reason ? [NSString stringWithUTF8String:reason] : nil;
+        if (why.length == 0) why = @"use the vault key";
+        ctx.localizedReason = why;
         OSStatus st = 0;
         SecKeyRef k = copyKey(tag, group, ctx, &st);
         if (!k) return fail(@"finding the Secure Enclave key", st);
+        if (asked_first) {
+            SEResult refused = {0, 0, NULL};
+            int asked = seAuthorize(ctx, k, why, &refused);
+            *asked_first = asked >= 0;
+            if (asked == 0) {
+                CFRelease(k);
+                return refused;
+            }
+        }
         CFErrorRef e = NULL;
         NSData *in = [NSData dataWithBytesNoCopy:(void *)ct length:ct_len freeWhenDone:NO];
         CFDataRef pt = SecKeyCreateDecryptedData(k, kSEAlgorithm, (__bridge CFDataRef)in, &e);

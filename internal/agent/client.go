@@ -653,7 +653,7 @@ func (c *Client) History() ([]SessionEvent, error) {
 // Like History it never triggers a challenge: it is the "why do you keep
 // prompting me?" question, asked continuously.
 func (c *Client) Subscribe(ctx context.Context, fn func(SessionEvent)) error {
-	return c.subscribe(ctx, false, false, fn)
+	return c.subscribe(ctx, Request{}, fn)
 }
 
 // SubscribeAsBroker is Subscribe for a client that will ANSWER consent
@@ -664,7 +664,14 @@ func (c *Client) Subscribe(ctx context.Context, fn func(SessionEvent)) error {
 // turns every prompt into a refusal; it must render each request or not
 // subscribe this way.
 func (c *Client) SubscribeAsBroker(ctx context.Context, fn func(SessionEvent)) error {
-	return c.subscribe(ctx, true, false, fn)
+	return c.subscribe(ctx, Request{Broker: true}, fn)
+}
+
+// SubscribeShowingProposals is Subscribe for an app that shows the human
+// what an AI tool proposes (Request.ShowsProposals): the stream also carries
+// each KindJobProposal. It is never asked about a prompt.
+func (c *Client) SubscribeShowingProposals(ctx context.Context, fn func(SessionEvent)) error {
+	return c.subscribe(ctx, Request{ShowsProposals: true}, fn)
 }
 
 // SubscribeBesideTouchID is SubscribeAsBroker for a broker that shows each
@@ -674,7 +681,7 @@ func (c *Client) SubscribeAsBroker(ctx context.Context, fn func(SessionEvent)) e
 // without the flag came from an agent that predates this mode and still
 // waits for ConsentAnswer.
 func (c *Client) SubscribeBesideTouchID(ctx context.Context, fn func(SessionEvent)) error {
-	return c.subscribe(ctx, true, true, fn)
+	return c.subscribe(ctx, Request{Broker: true, TouchIDFollows: true}, fn)
 }
 
 // ConsentList is the requests waiting on a broker right now, oldest first,
@@ -708,7 +715,7 @@ func (c *Client) ConsentShown(consentID string) error {
 	return err
 }
 
-func (c *Client) subscribe(ctx context.Context, broker, follows bool, fn func(SessionEvent)) error {
+func (c *Client) subscribe(ctx context.Context, req Request, fn func(SessionEvent)) error {
 	conn, err := c.dial()
 	if err != nil {
 		return fmt.Errorf("connecting to agent: %w: %v", dialSentinel(err), err)
@@ -727,7 +734,8 @@ func (c *Client) subscribe(ctx context.Context, broker, follows bool, fn func(Se
 		}
 	}()
 
-	if err := json.NewEncoder(conn).Encode(Request{Op: OpSubscribe, Broker: broker, TouchIDFollows: follows}); err != nil {
+	req.Op = OpSubscribe
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
 	dec := json.NewDecoder(conn)

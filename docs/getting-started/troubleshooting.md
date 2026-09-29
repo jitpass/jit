@@ -31,8 +31,8 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, MCP s
   vault path that's gone (usually a `jit vault rm` after migration).
   Re-set it with `jit vault set <path>`, or update the profile.
 - **A Touch ID prompt appeared and you don't know why.** Read it - it names
-  what it's for and what set it off ("unlock the vault for profile
-  `mcp-jamf`, launched by claude"). If it's already gone, `jit service status`
+  who asked and for which profile ("unlock the vault for claude, profile
+  `mcp-tickets`"). If it's already gone, `jit service status`
   shows who unlocked the current session and what dropped it, and
   `jit audit` lists every command, unlock, and lock, newest first:
 

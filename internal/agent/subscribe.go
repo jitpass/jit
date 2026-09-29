@@ -37,10 +37,16 @@ type subscriber struct {
 	// follows marks a broker that shows requests beside their Touch ID and
 	// never answers allow (Request.TouchIDFollows).
 	follows bool
+	// proposals marks a stream whose app shows job proposals
+	// (Request.ShowsProposals). Every broker is one.
+	proposals bool
 }
 
-func (s *Server) subscribe(broker, follows bool) *subscriber {
-	sub := &subscriber{ch: make(chan SessionEvent, s.subscribeBuffer), lagged: make(chan struct{}), broker: broker, follows: broker && follows}
+func (s *Server) subscribe(broker, follows, proposals bool) *subscriber {
+	sub := &subscriber{
+		ch: make(chan SessionEvent, s.subscribeBuffer), lagged: make(chan struct{}),
+		broker: broker, follows: broker && follows, proposals: proposals || broker,
+	}
 	s.subMu.Lock()
 	if s.subscribers == nil {
 		s.subscribers = map[*subscriber]struct{}{}
@@ -98,8 +104,8 @@ func (s *Server) PublishLive(e SessionEvent) {
 // serveSubscription owns conn for the life of the stream. The peer has
 // already been verified same-user and its request decoded; nothing here
 // needs the vault, so it never touches the session and never prompts.
-func (s *Server) serveSubscription(conn net.Conn, broker, follows bool) {
-	sub := s.subscribe(broker, follows)
+func (s *Server) serveSubscription(conn net.Conn, req Request) {
+	sub := s.subscribe(req.Broker, req.TouchIDFollows, req.ShowsProposals)
 	defer s.unsubscribe(sub)
 
 	// One document acknowledges the subscription, in the same shape every

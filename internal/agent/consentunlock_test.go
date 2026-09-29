@@ -119,10 +119,10 @@ func TestLockedConsentAsksOnceAndUnlocks(t *testing.T) {
 	if len(prompts) != 1 {
 		t.Fatalf("a consent read on a locked vault cost %d prompts, want 1: %q", len(prompts), prompts)
 	}
-	if !strings.Contains(prompts[0], "use your aws credential"+unlockAsWell) {
+	if !strings.Contains(prompts[0], " "+unlockAnd+"use aws") {
 		t.Errorf("the one prompt must say it also unlocks; got %q", prompts[0])
 	}
-	if strings.HasPrefix(prompts[0], "unlock the vault") {
+	if strings.HasPrefix(prompts[0], unlockTheVault) {
 		t.Errorf("the prompt must not LEAD with the unlock (it would read as a plain unlock): %q", prompts[0])
 	}
 	if !s.SessionUnlocked() {
@@ -138,7 +138,7 @@ func TestLockedConsentAsksOnceAndUnlocks(t *testing.T) {
 	approved, unlocked := -1, -1
 	for i, e := range events {
 		switch {
-		case e.Kind == KindApproved && strings.Contains(e.Cause, unlockAsWell):
+		case e.Kind == KindApproved && strings.Contains(e.Cause, unlockAnd):
 			approved = i
 		case e.Kind == KindUnlock && approved >= 0 && unlocked < 0:
 			unlocked = i
@@ -245,8 +245,8 @@ func TestAdoptNeverReplacesALiveSession(t *testing.T) {
 	}
 }
 
-// The unlock rides in the protected head, so no caller-chosen length pushes
-// it out of the dialog, and the sentence still fits.
+// The unlock and the warnings are the fixed half, so no caller-chosen length
+// pushes them out of the dialog, and the sentence still fits.
 func TestUnlockWordingSurvivesTruncation(t *testing.T) {
 	for _, class := range []string{"aws", "shell_history", "k8s_secret", "1password"} {
 		for _, n := range []int{0, 1, 12} {
@@ -257,14 +257,17 @@ func TestUnlockWordingSurvivesTruncation(t *testing.T) {
 					PID:      1,
 					ExecPath: "/Users/someone/" + strings.Repeat("very-long-directory/", 8) + "tool",
 					Lineage:  "launched by " + strings.Repeat("x", 60),
-					Strength: consent.Hard,
+					Strength: consent.BestEffort,
 				},
 			}, true)
-			if !strings.Contains(got, class+" credential"+unlockAsWell) {
+			if !strings.Contains(got, " "+unlockAnd+"use "+class) {
 				t.Errorf("class=%s n=%d: the unlock was cut from %q", class, n, got)
 			}
-			if !strings.HasSuffix(got, "tool") && !strings.Contains(got, "tool,") {
+			if !strings.Contains(got, "tool "+unlockAnd) {
 				t.Errorf("class=%s n=%d: the caller's own name was cut from %q", class, n, got)
+			}
+			if !strings.Contains(got, "(unverified") || (n > 0 && !strings.HasSuffix(got, "refused once)") && !strings.HasSuffix(got, "refused 12 times)")) {
+				t.Errorf("class=%s n=%d: a warning was cut from %q", class, n, got)
 			}
 			if len([]rune(got)) > maxReasonLen {
 				t.Errorf("class=%s n=%d: %d runes, want <= %d: %q", class, n, len([]rune(got)), maxReasonLen, got)
@@ -275,7 +278,7 @@ func TestUnlockWordingSurvivesTruncation(t *testing.T) {
 	s := NewServer(shortSocketPath(t), func() MEKFetcher { return nil }, time.Minute)
 	s.OnDescribeGrant = func([]RunMount) string { return strings.Repeat("a very long credential description ", 5) }
 	got := s.grantReasonFor(nil, true)
-	if !strings.HasSuffix(got, unlockAsWell) {
+	if !strings.HasPrefix(got, "let this run "+unlockAnd+"use ") {
 		t.Errorf("--with: the unlock was cut from %q", got)
 	}
 	if len([]rune(got)) > maxReasonLen {
@@ -315,7 +318,7 @@ func TestLapsedSessionEndsItsApprovalsAndTheNextOneSticks(t *testing.T) {
 		t.Fatalf("read after the lapse: %v", err)
 	}
 	prompts := log.since(before)
-	if len(prompts) != 1 || !strings.Contains(prompts[0], "use your aws credential"+unlockAsWell) {
+	if len(prompts) != 1 || !strings.Contains(prompts[0], " "+unlockAnd+"use aws") {
 		t.Fatalf("after a lapse the approval must be asked again, with the unlock, in one prompt; got %q", prompts)
 	}
 
@@ -352,7 +355,7 @@ func TestGrantGlobalOnLockedVaultAsksOnce(t *testing.T) {
 	fetcher.mu.Lock()
 	reasons := append([]string(nil), fetcher.reasons...)
 	fetcher.mu.Unlock()
-	want := "grant this run access to your gcp credential on this machine" + unlockAsWell
+	want := "let this run " + unlockAnd + "use your gcp credential on this machine"
 	if len(reasons) != 1 || reasons[0] != want {
 		t.Errorf("reasons = %q, want exactly [%q]", reasons, want)
 	}
@@ -390,5 +393,63 @@ func TestGateSettlesALapseBeforeDeciding(t *testing.T) {
 	}
 	if n := len(log.since(before)); n != 1 {
 		t.Errorf("two reads after a lapse cost %d prompts, want 1 (the approval must stick)", n)
+	}
+}
+
+// The review's case: an approval given while the vault stayed locked (the
+// unlock cooldown was running, so the prompt could not open a session) used
+// to live on, slid by every retry, and answered for the session the human
+// opened later for something else. It is only good in the session it was
+// given in. The combined prompt's approval, which opens its session, still
+// sticks.
+func TestApprovalGivenWhileLockedDoesNotCarryIntoALaterSession(t *testing.T) {
+	s, c, log := startUnlockConsentServer(t)
+	wrapped := wrapThenLock(t, s, c)
+	s.mu.Lock()
+	s.lastDenied = time.Now()
+	s.lastDeniedCause = "test: refused"
+	s.mu.Unlock()
+
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Fatal("setup: inside the cooldown the read should fail at the unlock")
+	}
+	// The human opens a session later, for something else.
+	s.mu.Lock()
+	s.lastDenied = time.Time{}
+	s.mu.Unlock()
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	before := log.count()
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("unwrap in the new session: %v", err)
+	}
+	if n := len(log.since(before)); n != 1 {
+		t.Fatalf("the read in the new session cost %d prompts, want 1: the approval from the locked vault answered for it", n)
+	}
+	before = log.count()
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("second unwrap: %v", err)
+	}
+	if n := len(log.since(before)); n != 0 {
+		t.Errorf("the new session's own approval did not stick: %d prompt(s)", n)
+	}
+}
+
+// The combined prompt opens its session during the prompt; the approval is
+// cached after, so it belongs to that session and the next read asks nothing.
+func TestCombinedApprovalSticksInTheSessionItOpened(t *testing.T) {
+	s, c, log := startUnlockConsentServer(t)
+	wrapped := wrapThenLock(t, s, c)
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("unwrap: %v", err)
+	}
+	before := log.count()
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("second unwrap: %v", err)
+	}
+	if n := len(log.since(before)); n != 0 {
+		t.Errorf("the combined approval did not stick in the session it opened: %d prompt(s)", n)
 	}
 }

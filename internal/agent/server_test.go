@@ -754,7 +754,7 @@ func TestGrantGlobalForcesDisclosedChallengeEvenWhenUnlocked(t *testing.T) {
 	fetcher.mu.Lock()
 	reasons := fetcher.reasons
 	fetcher.mu.Unlock()
-	want := "grant this run access to your gcp credential on this machine"
+	want := "let this run use your gcp credential on this machine"
 	if len(reasons) != 1 || reasons[0] != want {
 		t.Errorf("disclosed challenge reasons = %v, want exactly [%q] (a FRESH prompt fired despite the unlocked session, worded by the agent)", reasons, want)
 	}
@@ -810,7 +810,7 @@ func TestGrantGlobalPromptIsAgentWordedNotCallerSupplied(t *testing.T) {
 	if strings.Contains(reasons[0], "profile") {
 		t.Errorf("prompt = %q, want the agent's own wording — caller-supplied text reached the dialog", reasons[0])
 	}
-	if reasons[0] != "grant this run access to your gcp credential on this machine" {
+	if reasons[0] != "let this run use your gcp credential on this machine" {
 		t.Errorf("prompt = %q, want the OnDescribeGrant-derived wording", reasons[0])
 	}
 }

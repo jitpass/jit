@@ -17,7 +17,7 @@ you are at the keyboard, one disclosed Touch ID approves that a program (and
 everything it launches) may use the secrets of one or more profiles:
 
 ```sh
-jit grant --process claude --profile jamf --profile aws-ci --for 8h
+jit grant --process claude --profile deploy --profile aws-ci --for 8h
 ```
 
 You choose how it ends, and the two shapes differ in more than duration.
@@ -34,7 +34,7 @@ the second shape: what it stores, where, and what it costs you.
 
 The prompt says exactly what you are signing:
 
-> jit is trying to **let claude under iTerm2 use 3 secrets (jamf, aws-ci) unattended for 8h**.
+> jit is trying to **let claude use "deploy", "aws-ci" for 8 hours**.
 
 From then until it expires, credential reads from claude sessions in this
 terminal succeed with no prompts - including while the screen is locked,
@@ -141,11 +141,11 @@ everything it did. Each stage is a durable
 
 ```
 $ jit audit --kind grant
-time=... kind=grant status=approved reason="let claude under iTerm2 use 2 secrets (jamf) unattended for 8h"
+time=... kind=grant status=approved reason="let claude use \"deploy\" for 8 hours"
 time=... kind=grant status=ended grant=g-7f3a2c81 reason="claude's grant expired"
 # ... or "revoked", "process exited", "ended when the service stopped"
 $ jit audit --kind use
-time=... kind=use op="read a secret via grant" count=2 parent=claude secrets="jamf/api-user, jamf/api-pass"
+time=... kind=use op="read a secret via grant" count=2 parent=claude secrets="deploy/api-user, deploy/api-pass"
 ```
 
 Serves under a grant carry their own op (`read a secret via grant`), so

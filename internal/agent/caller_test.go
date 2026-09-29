@@ -28,32 +28,32 @@ func callerFor(argv []string, ancestors ...string) *caller {
 
 // TestChallengeReasonNamesTheProfileNotTheFlag is the whole point of the
 // reason string, in one assertion. The real report: an MCP server launched by
-// Claude Code as `jit run --profile mcp-jamf -- uv --directory /very/long/...`
+// Claude Code as `jit run --profile mcp-tickets -- uv --directory /very/long/...`
 // triggered a Touch ID prompt that said only "jit is trying to unlock jit
 // agent", and working out why took cross-referencing the agent log against
 // shell history.
 //
-// The prompt must name the PROFILE ("mcp-jamf" — the user's own label for a
+// The prompt must name the PROFILE ("mcp-tickets" — the user's own label for a
 // set of secrets, and the thing they're actually being asked to authorize),
 // never the flag: "--profile" in the dialog invites the reading that jit has
 // some notion of "mcp", which it does not. And it must stay short enough to
 // read inside a modal, which the raw argv is not.
 func TestChallengeReasonNamesTheProfileNotTheFlag(t *testing.T) {
 	c := callerFor(
-		[]string{"jit", "run", "--profile", "mcp-jamf", "--", "uv", "--directory", "/Users/x/Documents/ai_security_workspace/ai_tooling/mcp_servers/jamf", "run", "jamf-mcp"},
+		[]string{"jit", "run", "--profile", "mcp-tickets", "--", "uv", "--directory", "/Users/x/Documents/workspace/tools/mcp_servers/tickets", "run", "tickets-mcp"},
 		"claude", "zsh",
 	)
 
 	got := challengeReason(OpUnwrap, c)
 
-	if !strings.Contains(got, `"mcp-jamf"`) {
-		t.Errorf("reason = %q, want it to name the profile mcp-jamf, that's the secret set being authorized", got)
+	if !strings.Contains(got, `"mcp-tickets"`) {
+		t.Errorf("reason = %q, want it to name the profile mcp-tickets, that's the secret set being authorized", got)
 	}
 	if strings.Contains(got, "--profile") {
 		t.Errorf("reason = %q, must not contain the raw flag: a dialog saying --profile implies jit understands an \"mcp\" concept it has none of", got)
 	}
-	if !strings.Contains(got, "launched by claude") {
-		t.Errorf("reason = %q, want the launching process named, \"why is this happening right now\" is the question the prompt has to answer", got)
+	if want := `unlock the vault for claude, profile "mcp-tickets"`; got != want {
+		t.Errorf("reason = %q, want %q: who asked, then the profile", got, want)
 	}
 	if strings.Contains(got, "/Users/") {
 		t.Errorf("reason = %q, must not carry absolute paths from the child command into a modal dialog", got)
@@ -91,7 +91,7 @@ func TestChallengeReasonReachesPastRelaysToTheRealLauncher(t *testing.T) {
 	if !strings.Contains(got, `"aws-admin"`) {
 		t.Errorf("reason = %q, want --profile=name (equals form) parsed too", got)
 	}
-	if !strings.Contains(got, "launched by Code") {
+	if !strings.HasPrefix(got, "unlock the vault for Code, ") {
 		t.Errorf("reason = %q, want the shell relay skipped and the editor named", got)
 	}
 }
@@ -271,5 +271,40 @@ func TestGrantUseKeepsCallersSeparateWhenRedactionCollides(t *testing.T) {
 	s.mu.Unlock()
 	if len(flushed) != 2 {
 		t.Fatalf("flushed %d grant_use aggregate(s), want 2: distinct callers must not merge just because their redacted argvs match (got %+v)", len(flushed), flushed)
+	}
+}
+
+// An unlock with no profile says who asked and what for, in the same order.
+// With nobody to name (the human typed it), the sentence is the op alone.
+func TestChallengeReasonWithoutAProfile(t *testing.T) {
+	launched := callerFor([]string{"jit", "vault", "get", "release/token"}, "claude", "zsh")
+	for op, want := range map[string]string{
+		OpUnwrap: "unlock the vault for claude to read a secret",
+		OpWrap:   "unlock the vault for claude to store a secret",
+		OpUnlock: "unlock the vault for claude",
+	} {
+		if got := challengeReason(op, launched); got != want {
+			t.Errorf("challengeReason(%s) = %q, want %q", op, got, want)
+		}
+	}
+	typed := callerFor([]string{"jit", "run", "--profile", "release-bot", "--", "make"}, "-zsh", "login")
+	if got, want := challengeReason(OpUnwrap, typed), `unlock the vault for profile "release-bot"`; got != want {
+		t.Errorf("typed at a shell: %q, want %q", got, want)
+	}
+}
+
+// Neither name's author can push the other out of the dialog: the launcher is
+// bounded, and the profile takes what is left and keeps its closing quote.
+func TestChallengeReasonBoundsBothNames(t *testing.T) {
+	c := callerFor(
+		[]string{"jit", "run", "--profile", strings.Repeat("p", 200), "--", "make"},
+		strings.Repeat("L", 200), "zsh",
+	)
+	got := challengeReason(OpUnwrap, c)
+	if n := utf8.RuneCountInString(got); n > maxReasonLen {
+		t.Errorf("reason is %d runes, want <= %d: %q", n, maxReasonLen, got)
+	}
+	if !strings.HasPrefix(got, "unlock the vault for LLLL") || !strings.Contains(got, `, profile "pppp`) || !strings.HasSuffix(got, `"`) {
+		t.Errorf("reason = %q, want both names, each cut short, and the quote closed", got)
 	}
 }

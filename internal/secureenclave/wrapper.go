@@ -284,10 +284,11 @@ func (w *Wrapper) FetchMEK(reason string) ([]byte, error) {
 // FetchMEKCancel is FetchMEK whose dialog is taken down if withdraw closes
 // before it is answered (design/consent-side-panel-plan.md, step 2); the
 // failure is then authprompt.ErrWithdrawn, and a withdraw already closed
-// shows no dialog at all. The decrypt runs on the same context after an
-// approval, so a withdrawal in that instant may still fail it; it is then
-// reported as withdrawn too, never as a wrong key. A cached MEK returns at
-// once.
+// shows no dialog at all. The dialog is the key's user presence, asked on
+// the fetch's own context; the decrypt runs on that context after an
+// approval, so a withdrawal in that instant may still fail it, and it is
+// then reported as withdrawn too, never as a wrong key. A cached MEK returns
+// at once.
 func (w *Wrapper) FetchMEKCancel(reason string, withdraw <-chan struct{}) ([]byte, error) {
 	return w.fetchMEK(reason, withdraw)
 }
@@ -297,6 +298,14 @@ var errNoSealed = errors.New("this vault's key is not in the Secure Enclave (no 
 func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// Withdrawn already: no dialog, and nothing handed over, not even a key
+	// this Wrapper cached from an earlier fetch. Checked here rather than
+	// trusting Security to refuse a dead context (TestHardwareOpenWithdrawn
+	// measures that path).
+	if authprompt.Withdrawn(withdraw) {
+		return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w", ErrCanceled), true)
+	}
 
 	if w.mek == nil {
 		k, blob, err := readSealed(w.path)
@@ -312,12 +321,6 @@ func (w *Wrapper) fetchMEK(reason string, withdraw <-chan struct{}) ([]byte, err
 		enc, err := w.slotFor(k.Tag)
 		if err != nil {
 			return nil, err
-		}
-		// Withdrawn already: no dialog at all, rather than trusting Security
-		// to refuse a dead context (which the spike never measured on this
-		// path; TestHardwareOpenWithdrawn does).
-		if authprompt.Withdrawn(withdraw) {
-			return nil, authprompt.Outcome(fmt.Errorf("local authentication failed: %w", ErrCanceled), true)
 		}
 		var mek []byte
 		if c, ok := enc.(cancelableOpener); ok && withdraw != nil {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
@@ -165,33 +166,59 @@ func (c *caller) profile() string {
 const maxReasonLen = 90
 
 // challengeReason is what the human actually reads on the Touch ID/passcode
-// prompt, phrased to complete macOS's own sentence: "jit is trying to ___."
+// prompt, phrased to complete macOS's own sentence: "JitPass is trying to
+// ___." macOS writes that opening and the closing period; only the middle is
+// ours.
 //
-// It answers two questions, in the order a startled user asks them: WHAT is
-// about to happen to my secrets, and WHY now. The "why now" half (launchedBy)
-// is the one the old fixed string "unlock jit agent" could never answer.
+// It says who asked and for which profile, and no more (Meni, 2026-09-29,
+// with the dialog the only thing on screen: "we only need to know who
+// requested access and to which profile"). Who comes first after the ask,
+// because a program reaching for the vault is the fact a startled user is
+// looking for: "unlock the vault for claude, profile "wrap-gh"". The
+// sentence still says "unlock the vault": the approval opens all of it, not
+// the one profile.
 //
 // op is the RPC that forced the unlock; c may be nil (an in-process unlock,
 // or a caller the kernel wouldn't identify), in which case the reason degrades
 // to the op alone rather than inventing an explanation.
 func challengeReason(op string, c *caller) string {
-	reason := intent(op, c)
-	if by := c.launchedBy(); by != "" {
-		reason = fmt.Sprintf("%s, launched by %s", reason, by)
+	what := intent(op, c)
+	by := truncate(dialogName(c.launchedBy()), maxLauncherLen)
+	if by == "" {
+		return truncate(what, maxReasonLen)
 	}
-	return truncate(reason, maxReasonLen)
+	head := unlockTheVault + " for " + by
+	if p := dialogName(c.profile()); p != "" {
+		// The profile gives way, never the launcher: it is the user's own
+		// label, and what is left of it still names it.
+		const open, shut = `, profile "`, `"`
+		room := maxReasonLen - len([]rune(head+open+shut))
+		return head + open + truncate(p, min(room, maxProfileLen)) + shut
+	}
+	// "to store a secret", "to read a secret", or nothing.
+	return truncate(head+strings.TrimPrefix(what, unlockTheVault), maxReasonLen)
 }
+
+const (
+	// unlockTheVault opens every unlock's sentence. A reason that STARTS
+	// with it is a plain unlock to everything that reads one.
+	unlockTheVault = "unlock the vault"
+	// maxLauncherLen bounds the launcher's name, which the launcher's author
+	// chose, so it cannot push the profile out of the dialog.
+	maxLauncherLen = 24
+	maxProfileLen  = 40
+)
 
 // intent is the "what" half of challengeReason: what this unlock is FOR,
 // named in the user's own vocabulary (a profile they wrote, a file they
 // mounted) rather than jit's internal op names.
 func intent(op string, c *caller) string {
-	if p := c.profile(); p != "" {
+	if p := dialogName(c.profile()); p != "" {
 		// The profile name is the user's own label — never a flag, never a
 		// path. `--profile mcp-jamf` in a config file means nothing to jit
 		// beyond "the profile named mcp-jamf"; showing the flag would imply
 		// jit understands an "mcp" concept it has no notion of.
-		return fmt.Sprintf("unlock the vault for profile %q", truncate(p, 40))
+		return unlockTheVault + ` for profile "` + truncate(p, maxProfileLen) + `"`
 	}
 	switch op {
 	case OpWrap:
@@ -201,7 +228,7 @@ func intent(op string, c *caller) string {
 	case opServeMounts:
 		return "unlock the vault to serve this project's mounted files"
 	default: // OpUnlock, OpRefresh, and anything added later
-		return "unlock the vault"
+		return unlockTheVault
 	}
 }
 
@@ -214,39 +241,68 @@ func intent(op string, c *caller) string {
 // from the caller's own path strings: vaguer, but there is no version of this
 // sentence that a requesting process gets to influence.
 //
-// It ends with unlockAsWell when the approval will also open the session. The
+// It says unlockAnd when the approval will also open the session. The
 // credential's name is what gets shortened to fit, never the unlock: that half
 // changes what the fingerprint authorizes.
 func (s *Server) grantReasonFor(mounts []RunMount, unlocking bool) string {
-	tail := ""
+	head := "let this run use "
 	if unlocking {
-		tail = unlockAsWell
+		head = "let this run " + unlockAnd + "use "
 	}
-	const head = "grant this run access to "
 	if s.OnDescribeGrant != nil {
 		if named := s.OnDescribeGrant(mounts); named != "" {
-			return head + truncate(named, maxReasonLen-len([]rune(head))-len([]rune(tail))) + tail
+			return head + truncate(named, maxReasonLen-len([]rune(head)))
 		}
 	}
-	return head + "a global credential on this machine" + tail
+	return head + "a global credential on this machine"
 }
 
-// trustReason words the `jit run --trust` prompt. It names the command being
-// trusted (kernel-derived, via the same command()/launchedBy() provenance
-// every other prompt uses) and, above all, says what trusting it MEANS — the
-// prompt has to carry "and everything it launches", because that scope is the
-// entire point of the flag and the reason it needs a human.
+// trustReason words the `jit run --trust` prompt: the program being trusted,
+// what trusting it MEANS, and what launched it (", via claude"), as every
+// other prompt says. Meni, reading "trust true and what it launches" in the
+// live test: "what is trying to trust true?". A run the human typed at a
+// shell has no launcher to name, and says nothing about one. The prompt has to carry "and what it launches",
+// because that scope is the entire point of the flag and the reason it needs
+// a human. "trust" stands for the old sentence's "reach your credentials
+// without further prompts", which took four lines of the dialog.
 func trustReason(c *caller) string {
-	who := truncate(displayCommand(c), maxTrustWhoLen)
+	who := truncateHead(dialogName(trustedCommand(c)), maxTrustWhoLen)
 	if who == "" {
-		return "let this run reach your credentials without further prompts"
+		who = "this run"
 	}
-	return truncate(fmt.Sprintf("let %s and everything it launches reach your credentials without further prompts", who), maxReasonLen)
+	via := ""
+	if by := truncate(dialogName(c.launchedBy()), maxLauncherLen); by != "" {
+		via = ", via " + by
+	}
+	return fmt.Sprintf("trust %s and what it launches%s", who, via)
 }
 
-// maxTrustWhoLen bounds the caller's own name inside trustReason so the
-// "and everything it launches" half — the part that states the scope, and the
-// only part that changes the decision — can never be the half that gets cut.
+// trustedCommand names what a `jit run --trust -- <command>` is about to
+// become: the command after "--". The caller is jit at this point, so its own
+// name ("trust jit") told the human nothing.
+//
+// Only when the caller IS this jit, by its executable: any other process
+// trusted through the socket chooses its own argv, and "-- Finder" must not
+// make the dialog say "trust Finder". A command outside the standard tool
+// folders is shown with its folder, as every consent prompt shows a program
+// (displayExecPath). Anything else is named as before.
+func trustedCommand(c *caller) string {
+	if c == nil {
+		return ""
+	}
+	if argv := c.self.Argv; isThisBinary(c.self.ExecPath) {
+		for i, arg := range argv {
+			if arg == "--" && i+1 < len(argv) && argv[i+1] != "" {
+				return displayExecPath(argv[i+1])
+			}
+		}
+	}
+	return displayCommand(c)
+}
+
+// maxTrustWhoLen bounds the program's name inside trustReason so the "and
+// what it launches" half — the part that states the scope, and the only part
+// that changes the decision — can never be the half that gets cut.
 const maxTrustWhoLen = 24
 
 // displayCommand is the caller's program name for a prompt: argv[0]'s base,
@@ -301,6 +357,39 @@ func DescribeUse(op string) string {
 // are user-written and can be non-ASCII, and a byte-index cut through the
 // middle of a multi-byte character puts invalid UTF-8 into the one string
 // whose entire job is to be read by a human on a Touch ID dialog.
+// dialogName is a name as it may appear in the Touch ID sentence. Every name
+// there (a program, its launcher, a profile, a job's label) was chosen by
+// somebody other than the human reading it, and since the sentence says who
+// before what, a name must not be able to read as the rest of the sentence:
+//
+//   - control and format characters, line breaks included, become a space,
+//     so a name cannot push the ask below what the dialog shows;
+//   - double quotes become single ones, so a name cannot close the quotes a
+//     profile sits in and add a clause of its own;
+//   - ";" becomes ",": confirmReason cuts a sentence at its first "; ";
+//   - runs of spaces collapse to one, and the ends are trimmed.
+func dialogName(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		switch {
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r):
+			space = true
+			continue
+		case r == '"':
+			r = '\''
+		case r == ';':
+			r = ','
+		}
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func truncate(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {

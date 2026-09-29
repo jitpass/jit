@@ -182,11 +182,11 @@ now, approves a named program to use specific profiles until a deadline you
 set:
 
 ```sh
-$ jit grant --process claude --profile jamf --for 8h
+$ jit grant --process claude --profile deploy --for 8h
 ```
 
-The prompt names exactly what you're signing ("let claude under iTerm2 use
-2 secrets (jamf) unattended for 8h"), and the grant is scoped to the terminal
+The prompt names exactly what you're signing ("let claude use "deploy" for
+8 hours"), and the grant is scoped to the terminal
 you typed it in, including sessions you start later inside that window.
 Everything else keeps prompting as usual. `jit grant list` shows what's open,
 `jit grant revoke` ends one early, and every grant and every use of it lands

@@ -231,7 +231,7 @@ func TestBesideTouchIDAppearsWhenShownWithoutAnAllow(t *testing.T) {
 // the socket the reply always follows the unpark and cannot see the window.
 func TestSettleTakesTheRequestOffTheTableWithTheCheck(t *testing.T) {
 	s := NewServer(shortSocketPath(t), newDialog().fetcher, time.Minute)
-	sub := s.subscribe(true, true)
+	sub := s.subscribe(true, true, false)
 	defer s.unsubscribe(sub)
 	pending := unlockEvent(OpRevealPID, nil)
 	p, unpark := s.parkWithBrokers(pending)
@@ -389,7 +389,7 @@ func TestLateTouchNeverOvertakesADeny(t *testing.T) {
 		errc <- err
 	}()
 	req := receive(t, pending, "the pending request")
-	if !strings.Contains(req.Cause, unlockAsWell) {
+	if !strings.Contains(req.Cause, unlockAnd) {
 		t.Fatalf("setup: the prompt should offer the unlock; said %q", req.Cause)
 	}
 	receive(t, d.raised, "the Touch ID")

@@ -312,7 +312,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 		name: req.JobName, dir: dir, exe: exe, spec: spec, ask: ask, outputs: outputs, extra: extra,
 		sources: sources, settings: pjSettings, profileName: profileName, profileRoot: profileRoot, before: before,
 		shownCount: shownCount, exists: exists, unfingerprinted: gap,
-		reason: jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask),
+		reason: jobAllowReason(jobLabel(dir, spec.Argv), len(sources), shownCount, ask),
 	}, ""
 }
 
@@ -464,34 +464,33 @@ func newJobKeyID() (string, error) {
 	return "j-" + strings.TrimPrefix(id, "g-"), nil
 }
 
-// jobAllowReason completes macOS's "jit is trying to ___." It is the line
-// the human decides by, so it names facts the SERVICE resolved, never the
-// caller's words: the folder and script it will run, the vault groups its
-// secrets come from, how many may appear in the output, and whether it will
-// ever ask again. Not the job's name: any process that reaches the socket
-// chooses that, and a familiar name ("notion-guests") on a request that
-// runs something else is the prompt the design must not show. The full
-// command is printed by the CLI, and shown by the app's sheet, before the
-// dialog appears.
-func jobAllowReason(label, groups string, secrets, shown int, ask job.Ask) string {
+// jobAllowReason completes macOS's "JitPass is trying to ___." It is the
+// line the human decides by, so it names facts the SERVICE resolved, never
+// the caller's words: the folder and script it will run, how many secrets it
+// gets and how many may appear in the output, and whether it will ever ask
+// again. Not the job's name: any process that reaches the socket chooses
+// that, and a familiar name on a request that runs something else is the
+// prompt the design must not show. The full command is printed by the CLI
+// before the dialog appears.
+func jobAllowReason(label string, secrets, shown int, ask job.Ask) string {
 	with := "no secrets"
 	if secrets > 0 {
-		with = fmt.Sprintf("%d %s %s", secrets, truncate(groups, 12), pluralNoun(secrets, "secret"))
+		with = countNoun(secrets, "secret")
 	}
 	if shown > 0 {
 		with += fmt.Sprintf(", %d shown", shown)
 	}
 	scope := ""
 	if ask == job.AskNever {
-		scope = ", runs without asking"
+		scope = ", without asking"
 	}
-	// Budgets at the worst case: 11 + 24 + 6 + 27 + 9 + 22 = 99 would pass
-	// 90, so the label gives way first (truncate keeps its start, the folder).
+	// The label gives way first (fitLabel keeps both its ends, the folder
+	// and the program), never the counts or the scope.
 	room := maxReasonLen - len([]rune("let AI run  with "+with+scope))
 	if room < 12 {
 		room = 12
 	}
-	return truncate(fmt.Sprintf("let AI run %s with %s%s", fitLabel(label, room), with, scope), maxReasonLen)
+	return truncate(fmt.Sprintf("let AI run %s with %s%s", fitLabel(dialogName(label), room), with, scope), maxReasonLen)
 }
 
 // jobLabel is "folder/program": the folder's own name and the file the
@@ -504,36 +503,15 @@ func jobLabel(dir string, argv []string) string {
 	return truncate(folder, 14) + "/" + program
 }
 
-// secretGroups names where a job's secrets live, by the first segment of
-// their vault paths ("notion"), agent-resolved and deduplicated.
-func secretGroups(sources []JobSecretSource) string {
-	seen := map[string]bool{}
-	var out []string
-	for _, src := range sources {
-		g, _, _ := strings.Cut(src.Path, "/")
-		if !seen[g] {
-			seen[g] = true
-			out = append(out, g)
-		}
-	}
-	sort.Strings(out)
-	return strings.Join(out, "+")
-}
-
-func pluralNoun(n int, noun string) string {
-	if n == 1 {
-		return noun
-	}
-	return noun + "s"
-}
-
-// jobRunReason is the per-run prompt of an each-time job: who asked, which
-// job, and the promise.
+// jobRunReason is the per-run prompt of an each-time job: which job, who
+// asked, and with how many secrets.
 func jobRunReason(requester, label string, secrets int) string {
-	// 4 + 24 + 5 + 10 + 13 + 34 = 90 at 14 secrets. The label keeps both
-	// ends (folder and program); the requester is a launcher's name.
-	return truncate(fmt.Sprintf("run %s for %s (%s); it sees output, never the values",
-		fitLabel(label, 24), truncate(requester, 10), countNoun(secrets, "secret")), maxReasonLen)
+	with := "no secrets"
+	if secrets > 0 {
+		with = countNoun(secrets, "secret")
+	}
+	return truncate(fmt.Sprintf("run %s for %s with %s",
+		fitLabel(dialogName(label), 24), truncate(dialogName(requester), maxLauncherLen), with), maxReasonLen)
 }
 
 func countNoun(n int, noun string) string {

@@ -22,7 +22,7 @@ still stops for a prompt you can decline.
 
 ```console
 # the first time terraform reaches for your AWS keys this session:
-#   Touch ID prompt: "use your aws credential for terraform, via claude"
+#   Touch ID prompt: "let terraform use your aws credential, via claude"
 # approve once, and terraform (and anything it launched) is not asked again
 # until the vault re-locks.
 #
@@ -84,7 +84,7 @@ what launched it, and that attribution is trustworthy.
 `~/.npmrc`, `~/.netrc`) have no socket peer, so jit identifies the reader with
 an unprivileged process scan. That scan can be spoofed by a process running as
 you, so **treat the name on these prompts as a hint, not proof** - the prompt
-says "(identified by scan)" to mark it. The vault crypto is unaffected
+says "(unverified)" to mark it. The vault crypto is unaffected
 either way, and if the reader cannot be fully identified the mount serves
 decoys rather than guess.
 
@@ -162,8 +162,7 @@ Registering that trust takes one Touch ID of its own, naming the command and
 saying what trusting it means:
 
 ```
-jit is trying to let terraform and everything it launches reach your
-credentials without further prompts.
+jit is trying to trust terraform and what it launches.
 ```
 
 Approve it once, and every process inside that run's tree is then allowed

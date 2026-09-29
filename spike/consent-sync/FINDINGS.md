@@ -70,17 +70,63 @@ the floor, with the panel first.
 - **A stuck or absent app never delays a prompt beyond the cap.** No panel
   gives 14 ms; a silent panel gives 250 ms plus about 14 ms.
 
+## A key from the keychain (added 2026-09-29, after test build 0.0.10)
+
+The first live test of the real service failed check 1: the panel's Deny
+reached the service, the request was refused and recorded as "denied in
+JitPass", and the dialog stayed on screen until it was answered by hand
+(15 s after the Deny in the measured run, lid closed, password dialog).
+
+The runs above never saw this because their enclave key was made in-process
+with the `LAContext` on it. The vault's key comes from the keychain
+(`SecItemCopyMatching` with `kSecUseAuthenticationContext`), and such a key
+carries the context's credential, not the context. When a decrypt needs the
+human, Security prompts on a context of its own made from that credential,
+and invalidating ours does not reach it.
+
+`credref/exp.m` reproduces it with an ephemeral key that is handed only the
+context's credential reference, and measures the fix: evaluate the key's own
+access control on our context first, then decrypt.
+
+| Run | Result |
+| --- | --- |
+| Control: the original spike, lid closed (password dialog), enclave | dialog gone 47 ms after the deny |
+| Control: the same, keychain `evaluatePolicy` | dialog gone 38 ms after the deny |
+| Credential reference only, decrypt directly, invalidate at 1.5 s | dialog stayed 10 s, until Cancel was pressed (`-2`) |
+| Same key, access control evaluated first, invalidate at 1.5 s | evaluation returned `-9` in 3 ms, dialog gone in 55 ms |
+| Same key, access control evaluated first, approved | decrypt returned in 6 ms, no second dialog |
+
+- The password dialog is withdrawn like the Touch ID one. The lid being
+  closed was not the cause.
+- The operation to evaluate is key exchange
+  (`LAAccessControlOperationUseKeyKeyExchange`). `UseKeyDecrypt` answers
+  `-1009` "Operation is not allowed" at once, with no dialog, on this key's
+  access control. An access control made with
+  `SecAccessControlCreateWithFlags` and never given to a key answers `-1009`
+  too: evaluate the key's own, from `SecKeyCopyAttributes`.
+- `secureenclave`'s withdrawable open does this (`seAuthorize`). The plain
+  open is unchanged.
+
+To run it: `clang -fobjc-arc -framework Foundation -framework Security
+-framework LocalAuthentication credref/exp.m -o exp`, then
+`./exp credref direct cancel`, `./exp credref evalfirst cancel` and
+`./exp credref evalfirst approve`. It uses two private names
+(`externalizedContext`, `u_CredRef`) to build the key, which is why it is an
+experiment and not a test.
+
 ## Not covered
 
-- The real JitPass panel (warm) and the real service (the signed helper
-  under launchd). The timings above come from standalone binaries.
+- The real JitPass panel (warm) and the real service's timings (the
+  signed helper under launchd). The timings above come from standalone
+  binaries; the real service was only measured failing, in the section
+  above.
 - A cancel racing an approval in the same instant. `arm` and `cancel_prompt`
   handle a cancel that arrives before the prompt, but the approve-and-deny
   race was not driven.
 - The keychain path's dialog timing was measured once (A2, 121 ms); the
   enclave path's ten times.
-- Password entry in place of Touch ID ("Use Password…"), and a Mac with no
-  Touch ID sensor.
+- A Mac with no Touch ID sensor. (Password entry with the lid closed is
+  covered by the section above.)
 
 ## Notes for building it
 

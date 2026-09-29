@@ -147,11 +147,21 @@ func TestHardwareOpenWithdrawn(t *testing.T) {
 	}
 	w.Close()
 
+	// On a key from the keychain, as the vault's is: the open must ask on
+	// its own context first, or the dialog cannot be taken down at all
+	// (FINDINGS.md, "A key from the keychain").
+	direct := 0
+	OnUnwithdrawable = func() { direct++ }
+	t.Cleanup(func() { OnUnwithdrawable = func() {} })
+
 	withdraw := make(chan struct{})
 	start := time.Now()
 	go func() { time.Sleep(time.Second); close(withdraw) }()
 	_, err := w.FetchMEKCancel("check that jit can take its own prompt down (jit test; don't touch the sensor)", withdraw)
 	elapsed := time.Since(start)
+	if direct != 0 {
+		t.Errorf("the withdrawable open prompted by itself %d time(s): the key's access control was not asked first", direct)
+	}
 	if !errors.Is(err, authprompt.ErrWithdrawn) {
 		t.Fatalf("withdrawn open = %v, want ErrWithdrawn", err)
 	}
@@ -179,5 +189,25 @@ func TestHardwareOpenWithdrawn(t *testing.T) {
 			t.Errorf("an open on an invalidated context took %s, want it to fail at once", d)
 		}
 		t.Logf("dead context: %v", err)
+	}
+}
+
+// A Wrapper holding a key from an earlier fetch still hands nothing over
+// once withdrawn: the Deny wins over the cache as it does over the dialog.
+func TestWithdrawnFetchNeverReturnsACachedKey(t *testing.T) {
+	w, f := cancelFakeWrapper(t, false)
+	if _, err := w.FetchMEK("test"); err != nil {
+		t.Fatalf("setup fetch: %v", err)
+	}
+	opens := len(f.opens)
+	defer func() {
+		if len(f.opens) != opens || f.cancels != 0 {
+			t.Error("the withdrawn fetch opened the sealed key")
+		}
+	}()
+	withdraw := make(chan struct{})
+	close(withdraw)
+	if k, err := w.FetchMEKCancel("test", withdraw); !errors.Is(err, authprompt.ErrWithdrawn) || k != nil {
+		t.Fatalf("withdrawn fetch on a cached key = %v (key returned: %v), want ErrWithdrawn and no key", err, k != nil)
 	}
 }

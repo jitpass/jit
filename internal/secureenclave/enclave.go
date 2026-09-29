@@ -203,9 +203,21 @@ func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 	return h.openOn(nil, sealed, reason)
 }
 
+// OnUnwithdrawable is called when a withdrawable open could not ask for the
+// key's user presence first and prompted by itself: that dialog cannot be
+// taken down. The refusal it was meant to serve is still enforced by
+// whoever asked (the service checks the withdrawal again after the open).
+// The service sets it, once, before it serves, to say so in its log.
+var OnUnwithdrawable = func() {}
+
 // openCancel is open whose dialog is taken down if withdraw closes before it
 // is answered; the failure is then authprompt.ErrWithdrawn. The context is
 // freed only after the watcher has stopped.
+//
+// It asks for the key's user presence on the context first (se_open_ctx,
+// seAuthorize in enclave.m) and only then decrypts: a decrypt's own dialog
+// cannot be withdrawn on a key that came from the keychain, which the vault's
+// key does. An unanswered dialog is taken down after two minutes.
 func (h hardware) openCancel(sealed []byte, reason string, withdraw <-chan struct{}) ([]byte, error) {
 	ctx := C.se_context_new()
 	defer C.se_context_free(ctx)
@@ -242,11 +254,15 @@ func (h hardware) openOn(ctx unsafe.Pointer, sealed []byte, reason string) ([]by
 	cReason := C.CString(reason)
 	defer C.free(unsafe.Pointer(cReason))
 	var out *C.uchar
-	var n, decrypting C.int
+	var n, decrypting, askedFirst C.int
 	n0 := C.int(len(sealed)) // #nosec G115 -- bounded by maxBytes above
 	var r C.SEResult
 	if ctx != nil {
-		r = C.se_open_ctx(ctx, tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
+		r = C.se_open_ctx(ctx, tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting, &askedFirst)
+		// Only when the key was found: a lookup that failed asked nothing.
+		if askedFirst == 0 && (r.success != 0 || decrypting != 0) {
+			OnUnwithdrawable()
+		}
 	} else {
 		r = C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
 	}
