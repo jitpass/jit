@@ -223,7 +223,7 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
   one out and back) and run again; `jit mcp install/status/uninstall` for `claude-desktop` and
   `--client cursor`; drive `jit mcp` over stdio (`initialize`, `tools/list`, `run_job`, `request_job`).
 - **Expect:** the prompt says what the service resolved and never the job's name (a caller chooses
-  that): approving names the folder/program, the vault groups, how many are shown and whether it
+  that): approving names the folder/program, how many secrets, how many are shown and whether it
   will ask again; each run of an asking job names the folder/program, who asked and how many
   secrets; the full command is printed before the prompt; output carries `[hidden: NAME]`
   for every secret not marked shown; any folder change stops the job, sticky, naming the file, until

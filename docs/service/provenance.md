@@ -64,7 +64,8 @@ Among the auth events, eight kinds appear:
   approval, a `jit run --trust` registration, or a
   [process grant](./grants.md)'s creation or extension. These sit on top of
   the session rather than opening one, so they are their own kind rather than
-  an unlock, and `reason` is the exact sentence that was on the dialog. Without
+  an unlock (one exception: a consent approval or `--with` grant on a locked
+  vault also opens it, and the trail shows the grant, then the unlock), and `reason` is the exact sentence that was on the dialog. Without
   this entry the trail could show every prompt you *refused* and none that you
   allowed, which is the wrong half to be able to prove.
 - **grant (status=ended)** - a [process grant](./grants.md) ending, with the

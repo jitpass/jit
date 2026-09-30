@@ -78,9 +78,9 @@ The app's agent then has three tools: `list_jobs`, `run_job` and
 
 ## 3. What happens when it runs
 
-- A job approved to ask **each time** shows a Touch ID naming who asked. With
-  JitPass running you first see the job's own sheet (the command, the folder,
-  who asked), press Allow, and confirm with Touch ID.
+- A job approved to ask **each time** shows a Touch ID naming the job's
+  folder and program, who asked, and how many secrets: "run
+  notion/export_pages.py for claude with 3 secrets".
 - The service checks the job's folder first, and the interpreter the job
   runs (see [What the fingerprint covers](#what-the-fingerprint-covers)). If
   anything changed since you approved it, a script, a library, Python's own
@@ -93,6 +93,11 @@ The app's agent then has three tools: `list_jobs`, `run_job` and
 - The tool gets the exit code and the output. Every secret value, and its
   common encodings, is hidden. With `--output DIR` (terminal only), files the
   job wrote there are listed by path.
+
+- If you moved one of the job's values out of the vault (`jit vault
+  move-out`), the job follows it to the setting once the service has checked
+  that the two copies match. If it cannot check, the job stops until you
+  approve it again.
 
 ## 4. When the tool asks for a job that does not exist
 

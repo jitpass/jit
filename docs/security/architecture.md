@@ -79,7 +79,8 @@ Secrets materialize at the moment of use and nowhere else:
   requesting tool on demand; no intermediate file exists. By default,
   [per-process consent](../service/consent.md) gates each fetch: the first time
   a given tool reaches for one of these credentials in a session, the service
-  prompts a fresh Touch ID naming it and remembers the answer until re-lock, so
+  prompts a fresh Touch ID naming it and remembers the answer while it is used
+  (until re-lock, never more than 8 hours), so
   a migrated credential is never handed out completely silently even while the
   vault is unlocked.
 - An [AI job](../service/ai-jobs.md) delivers a secret to a command the
@@ -219,8 +220,8 @@ the fingerprint and the secrets' rotation before the prompt, after it, and
 after the command exits; any difference stops the job, and the stop is
 sticky until the human reviews and approves it again. The Touch ID prompt
 says what the service resolved, never the job's name, which any caller can
-choose: approving names the folder and the program it runs, the vault groups
-its secrets come from, how many may appear in the output, and whether it
+choose: approving names the folder and the program it runs, how many secrets it
+gets, how many may appear in the output, and whether it
 will ever ask again; each run of a job that asks names the folder and
 program, who asked, and how many secrets. The full command is shown before
 the prompt: printed by `jit job allow`, and on the app's sheet.

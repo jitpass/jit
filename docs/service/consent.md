@@ -14,8 +14,10 @@ ID, names who is asking, and remembers an approval for the rest of the session.
 (A refusal works differently, and deliberately so - see
 [Saying no, repeatedly](#saying-no-repeatedly).)
 
-Consent is **on by default**. A tool you approve once is not asked again until
-the session re-locks. The check is **per tool**: approving `terraform`'s use of
+Consent is **on by default**. A tool you approve once is not asked again while
+it keeps using the credential: the approval ends when the vault re-locks, when
+it goes unused for the session timeout, or 8 hours after you gave it, whichever
+comes first. The check is **per tool**: approving `terraform`'s use of
 your AWS keys does not silently cover a different program that reaches for them,
 so an unexpected first use (a postinstall script, a tool you did not launch)
 still stops for a prompt you can decline.
@@ -24,10 +26,10 @@ still stops for a prompt you can decline.
 # the first time terraform reaches for your AWS keys this session:
 #   Touch ID prompt: "let terraform use your aws credential, via claude"
 # approve once, and terraform (and anything it launched) is not asked again
-# until the vault re-locks.
+# while it keeps using it, until the vault re-locks.
 #
 # asked again after you already said no, the prompt says so:
-#   "use your aws credential (refused 2 times) for terraform, via claude"
+#   "let terraform use your aws credential, via claude (refused 2 times)"
 ```
 
 ## Turning it on and off
@@ -88,8 +90,17 @@ says "(unverified)" to mark it. The vault crypto is unaffected
 either way, and if the reader cannot be fully identified the mount serves
 decoys rather than guess.
 
-An approval is remembered only for the session and is dropped the moment the
-vault re-locks, so consent never outlives the unlock it rode in on.
+An approval is remembered only for the session it was given in. Each use keeps
+it alive for another session timeout; it is dropped the moment the vault
+re-locks, and never lasts more than 8 hours from when you gave it, so consent
+never outlives the unlock it rode in on.
+
+If the vault is locked when a tool first asks, you get one Touch ID, not two:
+the dialog says "let terraform unlock the vault and use aws, via claude", and
+approving it also opens the session. A `jit run --with` grant works the same
+way. Grants, AI job runs and `jit run --trust` never unlock the vault: nothing
+after them needs the session, so unlocking there would give more than you
+were asked for.
 
 ## Saying no, repeatedly
 

@@ -1,6 +1,6 @@
 ---
 title: The background service
-description: Unlock once per session instead of once per command - a launchd-managed session broker that's a solid part of jit.
+description: Unlock once per session instead of once per command - a launchd-managed service that holds your session and is a solid part of jit.
 ---
 
 # The background service
