@@ -27,18 +27,21 @@ import (
 // account (GhAccountVaultPath), and the wrap-gh profile pointing GH_TOKEN
 // at whichever one is in use. See internal/cli/ghauth.go for the flow.
 
-// GhHost is the only host a GH_TOKEN wrap covers: gh reads GH_TOKEN for
-// github.com and GH_ENTERPRISE_TOKEN for everything else, so account
-// commands naming another host are gh's own business and pass through.
+// GhHost is the host a wrap's accounts belong to. gh reads GH_TOKEN for
+// github.com, and also for GHE.com tenancy hosts (*.ghe.com) and
+// github.localhost (go-gh pkg/auth); a GitHub Enterprise Server host reads
+// GH_ENTERPRISE_TOKEN instead, so its account commands are untouched by
+// the wrap and take the normal path.
 const GhHost = "github.com"
 
 // ghAccountPrefix is where per-account tokens live in the vault.
 const ghAccountPrefix = "wrap-gh/accounts/"
 
 // ghLoginPattern is GitHub's username shape: alphanumerics and single
-// hyphens, at most 39 characters. A name outside it never reaches a vault
-// path or an argv.
-var ghLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9]|-[A-Za-z0-9]){0,38}$`)
+// hyphens, plus the underscore Enterprise Managed Users carry before their
+// enterprise shortcode (alice_acme), which also lengthens the name past
+// the usual 39. A name outside it never reaches a vault path or an argv.
+var ghLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_]|-[A-Za-z0-9]){0,99}$`)
 
 // ValidGhLogin reports whether name can be a GitHub username.
 func ValidGhLogin(name string) bool { return ghLoginPattern.MatchString(name) }
@@ -77,8 +80,20 @@ type GhAuthCommand struct {
 	Host string // --hostname / -h, "" when not given
 }
 
-// OtherHost reports whether the command names a host GH_TOKEN doesn't cover.
-func (c GhAuthCommand) OtherHost() bool { return c.Host != "" && c.Host != GhHost }
+// OtherHost reports whether the command names a host GH_TOKEN doesn't
+// cover (an Enterprise Server): the wrap is no obstacle there.
+func (c GhAuthCommand) OtherHost() bool {
+	return c.Host != "" && c.Host != GhHost && !c.TokenHost()
+}
+
+// TokenHost reports whether the command names a host other than github.com
+// that GH_TOKEN still covers: gh refuses the account command while the
+// token is set, but the wrap's accounts are github.com's, so it runs with
+// no token and the wrap stays as it is.
+func (c GhAuthCommand) TokenHost() bool {
+	h := strings.ToLower(c.Host)
+	return h == "github.localhost" || strings.HasSuffix(h, ".ghe.com")
+}
 
 // ParseGhAuth recognizes the gh account commands a wrap has to answer:
 // `gh auth switch|login|logout|refresh`. Anything else, and any of these

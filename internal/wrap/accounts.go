@@ -3,7 +3,12 @@
 
 package wrap
 
-import "strings"
+import (
+	"bufio"
+	"os"
+	"regexp"
+	"strings"
+)
 
 // Account commands under an env-wrap. The shim injects one vaulted token
 // into every call, and nearly every CLI ranks an environment token above
@@ -27,6 +32,13 @@ const (
 	// the token it saved into the vault and scrubs the plaintext — the
 	// same discovery `jit wrap <tool>` runs.
 	AccountLogin AccountAction = "login"
+	// AccountLoginExpiring: the command can store a login that expires —
+	// an OAuth access token the tool refreshes itself (vercel, railway,
+	// wrangler), a leased token (vault), a browser-flow token (hf). It runs
+	// with no token injected, like AccountLogin, but nothing is moved into
+	// the vault, where it would be frozen until it expired. jit says the
+	// wrap keeps its token, and how to store a durable one (Hint).
+	AccountLoginExpiring AccountAction = "login-expiring"
 	// AccountLogout: the command forgets a login. It runs with no token
 	// injected, so it can only ever act on the tool's own stored copy —
 	// never revoke or delete the vaulted token — and jit then says the
@@ -66,15 +78,16 @@ type AccountMatch struct {
 // Order matters and is deliberate: a refused switch first (it must never
 // run); then a profile flag naming a non-default profile (a login or
 // logout for another profile is that profile's business, and the wrap's
-// token must not be re-vaulted from it); then a login or logout. --help
-// anywhere is gh-style help text, never an account change, and matches
-// nothing.
-func (e CatalogEntry) MatchAccount(args []string) (AccountMatch, bool) {
+// token must not be re-vaulted from it); then a login or logout. --help or
+// -h anywhere asks for help text, never an account change, and matches
+// nothing (gh, where -h is --hostname, has its own parser). home locates
+// the tool's config for entries that learn their default profile from it.
+func (e CatalogEntry) MatchAccount(home string, args []string) (AccountMatch, bool) {
 	if e.Kind != KindShim || (len(e.Accounts) == 0 && len(e.ProfileFlags) == 0) {
 		return AccountMatch{}, false
 	}
 	for _, a := range args {
-		if a == "--help" {
+		if a == "--help" || a == "-h" {
 			return AccountMatch{}, false
 		}
 		if a == "--" {
@@ -93,7 +106,7 @@ func (e CatalogEntry) MatchAccount(args []string) (AccountMatch, bool) {
 	if hit != nil && hit.Action == AccountSwitch {
 		return AccountMatch{Rule: *hit}, true
 	}
-	if flag != "" && profile != e.DefaultProfile {
+	if flag != "" && profile != e.defaultProfile(home) {
 		return AccountMatch{Rule: AccountRule{Action: AccountProfile}, Profile: profile, Flag: flag}, true
 	}
 	if hit != nil {
@@ -132,6 +145,41 @@ func (e CatalogEntry) scanArgs(args []string) (words []string, profile, flag str
 		profile, flag = value, name
 	}
 	return words, profile, flag
+}
+
+// defaultProfile is the profile the wrapped token belongs to: fixed for
+// tools with a named default, read from the tool's config for tools whose
+// wrap vaulted the FIRST profile there (hcloud's first context, snow's
+// first connection). "" when it can't be told, which makes every named
+// profile another one — the safe direction, since the wrapped token then
+// never goes to a profile it may not belong to.
+func (e CatalogEntry) defaultProfile(home string) string {
+	if e.DefaultProfileFrom != nil {
+		return firstProfileName(ExpandHome(home, e.DefaultProfileFrom.Path), e.DefaultProfileFrom.pattern)
+	}
+	return e.DefaultProfile
+}
+
+// ProfileNameSource finds a tool's first profile name in its config: the
+// first line of Path matching Pattern, whose first group is the name.
+type ProfileNameSource struct {
+	Path    string // "~"-rooted
+	pattern *regexp.Regexp
+}
+
+func firstProfileName(path string, pattern *regexp.Regexp) string {
+	f, err := os.Open(path) // #nosec G304 -- a fixed catalog path under the user's home dir
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if m := pattern.FindStringSubmatch(sc.Text()); m != nil {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // TokenVars are the environment variables a wrap injects for this tool:

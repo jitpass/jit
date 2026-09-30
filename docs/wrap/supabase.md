@@ -52,5 +52,6 @@ jit wrap undo supabase
   re-run `jit wrap supabase`.
 - Tokens are long-lived with server-managed expiry (no client-side
   refresh), so the vaulted copy keeps working until you revoke it.
-- A re-`supabase login` on a keyring-less machine writes the plaintext
-  file again - re-run `jit wrap supabase` after.
+- `supabase login` runs with no token injected. On a keyring-less
+  machine jit then moves the new token into the vault and removes the
+  plaintext file; no need to re-run `jit wrap supabase`.

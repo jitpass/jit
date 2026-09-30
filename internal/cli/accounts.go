@@ -49,7 +49,8 @@ func AccountShim(tool string, args []string) (handled bool, code int) {
 	if !ok {
 		return false, 0
 	}
-	m, ok := entry.MatchAccount(args)
+	home, _ := os.UserHomeDir()
+	m, ok := entry.MatchAccount(home, args)
 	if !ok {
 		return false, 0
 	}
@@ -125,6 +126,18 @@ func (w *accountWrap) answer(out io.Writer, m wrap.AccountMatch, args []string, 
 		}
 		return code
 
+	case wrap.AccountLoginExpiring:
+		code := w.runUnwrapped(args)
+		if code == 0 {
+			hint := m.Rule.Hint
+			if hint == "" {
+				hint = fmt.Sprintf("`jit vault set %s` stores a durable token instead.", w.vaultPath)
+			}
+			wrapBody(out, 0, "", hlCmds(fmt.Sprintf("jit: %s logins can expire, so this one stays where %s saved it "+
+				"and the wrap keeps the token in the vault. %s", tool, tool, hint)))
+		}
+		return code
+
 	case wrap.AccountLogin:
 		if code := w.runUnwrapped(args); code != 0 {
 			return code
@@ -188,11 +201,20 @@ func (w *accountWrap) vaulted(openRO func() (*vault.Vault, error)) bool {
 // env is this process's environment minus every variable the wrap
 // injects: with one of them set, the tool's account commands act on it
 // (refuse, keep using it, or revoke it) instead of on the tool's own login.
+// The catalog's ShimEnv still applies — it is what keeps a tool from
+// writing a token to disk in plaintext (pulumi's credential store), which
+// matters most on exactly these commands.
 func (w *accountWrap) env() []string {
-	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(w.tokenVars, name)
 	})
+	for name, value := range w.entry.ShimEnv {
+		if _, set := os.LookupEnv(name); !set {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
 }
 
 // runUnwrapped runs the real tool on the user's command line with no token

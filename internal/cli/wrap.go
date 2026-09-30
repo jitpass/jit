@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -365,6 +366,26 @@ func globalMountMigrated(_ string, mount string) bool {
 	return false
 }
 
+// wrapSecretsKept is every vault secret an undo leaves behind for tool: the
+// ones its profile named, plus any other under wrap-<tool>/ — gh keeps one
+// per account there (wrap-gh/accounts/<user>), and only the account in
+// use is in the profile. A bare read-only listing: no prompt, no unlock.
+func wrapSecretsKept(tool string, fromProfile []string) []string {
+	kept := slices.Clone(fromProfile)
+	if root, err := vaultRootDir(); err == nil {
+		if paths, err := (&vault.Vault{Root: root}).List(); err == nil {
+			prefix := wrap.ProfileName(tool) + "/"
+			for _, p := range paths {
+				if strings.HasPrefix(p, prefix) {
+					kept = append(kept, p)
+				}
+			}
+		}
+	}
+	slices.Sort(kept)
+	return slices.Compact(kept)
+}
+
 // wrapSecretAlreadyVaulted reports whether the vault already stores a secret
 // at path — on a bare read-only Vault, deliberately: Exists is one os.Stat,
 // so this check never dials the agent, never prompts, and never writes the
@@ -585,6 +606,7 @@ var wrapUndoCmd = &cobra.Command{
 			if prev.ProfilePath != "" {
 				fmt.Fprintf(out, "  "+glyphBullet+" profile removed: %s\n", displayPath(home, prev.ProfilePath))
 			}
+			prev.VaultPaths = wrapSecretsKept(tool, prev.VaultPaths)
 			if len(prev.VaultPaths) > 0 {
 				fmt.Fprint(out, "  ")
 				wrapBody(out, 2, "    ", hlCmds(glyphBullet+" vault secrets kept: "+strings.Join(prev.VaultPaths, ", ")+" (`jit vault rm <path>` removes one for good)"))
@@ -609,6 +631,7 @@ var wrapUndoCmd = &cobra.Command{
 
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "Unwrapped %s (shim removed: %v, profile removed: %v).\n", tool, res.RemovedShim, res.RemovedProfile)
+		res.VaultPaths = wrapSecretsKept(tool, res.VaultPaths)
 		if len(res.VaultPaths) > 0 {
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("Vault secrets were kept: %s, `jit vault rm <path>` removes one for good.\n", strings.Join(res.VaultPaths, ", "))))
 		}

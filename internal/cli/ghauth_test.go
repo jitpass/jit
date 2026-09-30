@@ -183,3 +183,28 @@ func TestGhSwitchRefusesNonUsername(t *testing.T) {
 		t.Fatalf("profile moved to %q", got)
 	}
 }
+
+func TestGhFollowAfterLogin(t *testing.T) {
+	cases := []struct {
+		name, sub, current string
+		before             []string
+		activeBefore       string
+		after              []string
+		activeAfter, want  string
+	}{
+		{"new account signs in", "login", "zed", []string{"zed"}, "zed", []string{"amy", "zed"}, "amy", "amy"},
+		{"re-login of another keyring account", "login", "zed", []string{"amy", "zed"}, "zed", []string{"amy", "zed"}, "amy", "amy"},
+		{"re-login of the wrap's own account", "login", "zed", []string{"zed"}, "zed", []string{"zed"}, "zed", "zed"},
+		// The reported case: the wrap serves a vault-only account and the
+		// user logs in to an Enterprise host from gh's prompt. github.com
+		// is unchanged; the wrap must not jump to its active account.
+		{"enterprise login leaves github.com alone", "login", "amy", []string{"zed"}, "zed", []string{"zed"}, "zed", ""},
+		{"refresh renews its account", "refresh", "zed", []string{"zed"}, "zed", []string{"zed"}, "zed", "zed"},
+		{"nothing recorded", "login", "zed", nil, "", nil, "", ""},
+	}
+	for _, c := range cases {
+		if got := ghFollowAfterLogin(c.sub, c.current, c.before, c.activeBefore, c.after, c.activeAfter); got != c.want {
+			t.Errorf("%s: = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

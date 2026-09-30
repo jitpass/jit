@@ -57,4 +57,3 @@ jit wrap undo gemini
   shell profile overrides both the vault injection and the `.env` file -
   `jit scan` flags it and `jit migrate ~/.zshrc --only shell` covers that
   case.
-</content>

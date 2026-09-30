@@ -54,15 +54,20 @@ gh now uses octo-work.
 - `gh auth switch` moves the wrap to that account. Each account's token
   is kept at `wrap-gh/accounts/<name>`. An account gh is signed in to
   is copied into the vault the first time you switch to it. Switching
-  between accounts already in the vault needs no Touch ID. With no
-  `--user` and two accounts, it switches to the other one.
+  between accounts already in the vault needs no Touch ID. Once the wrap
+  is on a named account, `gh auth switch` with no `--user` and two
+  accounts switches to the other one. The first switch after
+  `jit wrap gh` needs `--user`.
 - `gh auth login` and `gh auth refresh` run gh with no token
-  injected, then copy the new token into the vault and use it.
+  injected. When the login signed in a github.com account, or the
+  refresh renewed one, jit copies its token into the vault and uses it.
 - `gh auth logout` removes gh's own copy. The vault's copy stays until
   you run `jit vault rm wrap-gh/accounts/<name>`.
 
-These apply to github.com. Commands for another host
-(`--hostname ghe.example.com`) behave as they would unwrapped.
+These apply to github.com. For a GHE.com host (`--hostname
+acme.ghe.com`), which also reads `GH_TOKEN`, they run with no token
+injected and the wrap stays as it is. Commands for a GitHub Enterprise
+Server host are untouched by the wrap.
 
 ## Undo
 

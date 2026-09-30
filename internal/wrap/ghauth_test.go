@@ -45,7 +45,16 @@ func TestParseGhAuth(t *testing.T) {
 		t.Error("github.com, or no host, must not count as another host")
 	}
 	if !(GhAuthCommand{Host: "ghe.example.com"}).OtherHost() {
-		t.Error("an enterprise host is another host")
+		t.Error("an Enterprise Server host is another host")
+	}
+	for _, h := range []string{"acme.ghe.com", "ACME.GHE.COM", "github.localhost"} {
+		c := GhAuthCommand{Host: h}
+		if c.OtherHost() || !c.TokenHost() {
+			t.Errorf("%s: GH_TOKEN covers it, so it's a token host", h)
+		}
+	}
+	if (GhAuthCommand{Host: "ghe.example.com"}).TokenHost() || (GhAuthCommand{}).TokenHost() {
+		t.Error("only *.ghe.com and github.localhost are token hosts")
 	}
 }
 
@@ -65,12 +74,12 @@ func TestGhAccountVaultPath(t *testing.T) {
 }
 
 func TestValidGhLogin(t *testing.T) {
-	for _, ok := range []string{"a", "octo", "octo-cat", "a1-b2", strings.Repeat("a", 39)} {
+	for _, ok := range []string{"a", "octo", "octo-cat", "a1-b2", strings.Repeat("a", 39), "alice_acme", "alice-b_acme"} {
 		if !ValidGhLogin(ok) {
 			t.Errorf("%q should be valid", ok)
 		}
 	}
-	for _, bad := range []string{"", "-octo", "octo-", "oc--to", "oc/to", "../x", "oc to", strings.Repeat("a", 40)} {
+	for _, bad := range []string{"", "-octo", "octo-", "oc--to", "oc/to", "../x", "oc to", "_octo", "oc.to", strings.Repeat("a", 101)} {
 		if ValidGhLogin(bad) {
 			t.Errorf("%q should be refused", bad)
 		}

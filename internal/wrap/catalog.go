@@ -98,6 +98,9 @@ type CatalogEntry struct {
 	Accounts       []AccountRule
 	ProfileFlags   []string
 	DefaultProfile string
+	// DefaultProfileFrom, when set, reads DefaultProfile from the tool's
+	// config instead: for tools whose wrap vaulted the first profile there.
+	DefaultProfileFrom *ProfileNameSource
 
 	// KindNative fields.
 	NativeCategory string // the `jit migrate <path> --only <category>` token

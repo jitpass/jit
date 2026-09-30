@@ -41,5 +41,11 @@ jit wrap undo vercel
 
 ## Notes
 
-- A re-`vercel login` writes plaintext again - re-run `jit wrap vercel`
-  after.
+- `vercel login` is a browser (OAuth) login with a short-lived token
+  the CLI refreshes itself. jit runs it with no token injected and
+  leaves its result alone, so the wrap keeps the durable token you
+  vaulted. Create one at vercel.com/account/tokens and
+  `jit vault set wrap-vercel/VERCEL_TOKEN`.
+- `vercel logout` runs with no token injected, so it can't revoke the
+  wrapped token. `vercel switch` is refused: pass `--scope <team>` on
+  each command instead.

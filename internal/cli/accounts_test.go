@@ -67,7 +67,7 @@ func newAccountFixture(t *testing.T, tool, loginWrites string) *accountFixture {
 
 func (f *accountFixture) run(t *testing.T, args string) (string, int) {
 	t.Helper()
-	m, ok := f.w.entry.MatchAccount(strings.Fields(args))
+	m, ok := f.w.entry.MatchAccount(f.w.home, strings.Fields(args))
 	if !ok {
 		t.Fatalf("%s %s matched no account rule", f.w.entry.Tool, args)
 	}
@@ -154,7 +154,7 @@ func TestAccountLoginRevaults(t *testing.T) {
 // A login that leaves nothing jit can find keeps the vault's token, and
 // says so rather than claiming a move.
 func TestAccountLoginWithNothingToMove(t *testing.T) {
-	f := newAccountFixture(t, "wrangler", "")
+	f := newAccountFixture(t, "cursor-agent", "")
 	out, code := f.run(t, "login")
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -198,6 +198,77 @@ func TestAccountProfileRunsUnwrapped(t *testing.T) {
 		}
 	}
 	if !strings.Contains(out, "`-p other`") && !strings.Contains(out, "-p other") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+// `pulumi login` run without the token must still ask pulumi to encrypt
+// the credentials file it writes.
+func TestAccountUnwrappedRunKeepsShimEnv(t *testing.T) {
+	f := newAccountFixture(t, "pulumi", "")
+	t.Setenv("PULUMI_CREDENTIAL_STORE", "")
+	if err := os.Unsetenv("PULUMI_CREDENTIAL_STORE"); err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Join(f.w.env(), "\n")
+	if !strings.Contains(env, "PULUMI_CREDENTIAL_STORE=auto") {
+		t.Fatal("PULUMI_CREDENTIAL_STORE not set for the unwrapped run")
+	}
+	if strings.Contains(env, "PULUMI_ACCESS_TOKEN=") {
+		t.Fatal("the token went along")
+	}
+}
+
+// gh keeps a secret per account and the profile names only the one in
+// use; undo must name them all, not strand the rest unmentioned.
+func TestWrapSecretsKeptListsEveryAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"wrap-gh/GH_TOKEN", "wrap-gh/accounts/amy", "wrap-gh/accounts/zed", "wrap-ghx/OTHER", "aws/key"} {
+		file := filepath.Join(root, "vault", p+".enc")
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := wrapSecretsKept("gh", []string{"wrap-gh/accounts/zed"})
+	want := "wrap-gh/GH_TOKEN,wrap-gh/accounts/amy,wrap-gh/accounts/zed"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("kept = %v, want %s", got, want)
+	}
+}
+
+// vercel's login is OAuth with a token it refreshes itself: it runs with
+// no token, and nothing short-lived is frozen into the vault.
+func TestAccountOAuthLoginKeepsTheVault(t *testing.T) {
+	f := newAccountFixture(t, "vercel", "")
+	src := wrap.ExpandHome(f.w.home, f.w.entry.Sources[0].Path)
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte(`{"token":"short-lived"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.run(t, "login")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if calls := f.calls(t); !strings.Contains(calls, "login VERCEL_TOKEN=[]") {
+		t.Fatalf("login ran with a token:\n%s", calls)
+	}
+	if f.opened != 0 {
+		t.Fatal("vault opened for an OAuth login")
+	}
+	if got, _ := f.v.Get("wrap-vercel/VERCEL_TOKEN"); string(got) != "vaulted-token" {
+		t.Fatalf("vault token = %q, want the durable one kept", got)
+	}
+	if !strings.Contains(out, "logins can expire") && strings.Contains(out, "jit vault set wrap-vercel/VERCEL_TOKEN") {
 		t.Fatalf("output = %q", out)
 	}
 }

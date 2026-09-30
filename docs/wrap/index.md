@@ -83,10 +83,11 @@ ignored. jit answers these commands itself:
 
 | You run | jit does |
 |---|---|
-| A login (`flyctl auth login`, `vercel login`, `hf auth login`, …) | Runs it with no token injected, then moves the new token into the vault and deletes the plaintext copy. |
+| A login (`flyctl auth login`, `glab auth login`, `supabase login`, …) | Runs it with no token injected, then moves the new token into the vault and deletes the plaintext copy. |
+| A login whose token can expire (`vercel login`, `railway login`, `wrangler login`, `vault login`, `hf auth login`) | Runs it with no token injected and leaves the result where the tool saved it, so the wrap keeps its durable token. It says how to store a durable one. |
 | A logout (`vercel logout`, `glab auth logout`, …) | Runs it with no token injected, so the wrapped token is never revoked. Then says the vault copy is still in use: `jit vault rm` deletes it. |
-| An account switch (`vercel switch`, `hcloud context use`, `wrangler auth activate`, …) | Doesn't run it. One token is wrapped, so there is nothing to switch to. It tells you how to swap the token. |
-| A flag naming another profile (`stripe -p other`, `databricks -p prod`, `snow -c prod`, `hcloud --context work`) | Runs with that profile's own saved login, and says so, rather than sending the wrapped token to another account. |
+| An account switch (`vercel switch`, `hcloud context use`, `databricks auth switch`, `wrangler auth activate`, …) | Doesn't run it. One token is wrapped, so there is nothing to switch to. It tells you how to swap the token. |
+| A flag naming another profile (`stripe -p other`, `databricks -p prod`, `snow -c prod`, `hcloud --context work`, `wrangler --profile work`) | Runs with that profile's own saved login, and says so, rather than sending the wrapped token to another account. Naming the wrapped profile itself keeps the wrap. |
 
 `gh` keeps one vault secret per account, so `gh auth switch` works:
 see [gh](./gh.md#more-than-one-account).

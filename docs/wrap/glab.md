@@ -43,5 +43,6 @@ jit wrap undo glab
 - Self-hosted GitLab: the catalog extracts the `gitlab.com` token. For a
   self-hosted host's token, wrap by hand with
   [`jit wrap add`](./custom-tools.md) using the env var your setup reads.
-- A re-`glab auth login` writes plaintext again - re-run `jit wrap glab`
-  after.
+- `glab auth login` runs with no token injected, then jit moves the new token
+  into the vault and removes the plaintext copy. No need to re-run
+  `jit wrap glab`.

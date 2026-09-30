@@ -42,9 +42,9 @@ jit wrap undo railway
 
 ## Notes
 
-- `railway login` runs with no token injected, and jit then moves the
-  token it saved into the vault. Current railway logins are browser
-  OAuth with a short-lived token jit leaves alone. For those, create an
-  account token in Railway and `jit vault set wrap-railway/RAILWAY_TOKEN`.
+- `railway login` runs with no token injected. It's a browser (OAuth)
+  login with a short-lived token railway refreshes itself, so jit leaves
+  it alone and the wrap keeps its token. Create an account token in
+  Railway and `jit vault set wrap-railway/RAILWAY_TOKEN`.
 - Wrapped with an older jit? That wrap injected `RAILWAY_TOKEN`.
   Re-run `jit wrap railway` to switch it; the vaulted token is reused.

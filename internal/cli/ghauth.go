@@ -70,6 +70,9 @@ func GhAuthShim(args []string) (handled bool, code int) {
 	if !ok {
 		return false, 0
 	}
+	if cmd.TokenHost() {
+		return true, w.passthrough(args)
+	}
 	var err error
 	switch cmd.Sub {
 	case "switch":
@@ -186,42 +189,65 @@ func ghSwitch(out io.Writer, w *ghWrap, login string, openRO, open func() (*vaul
 // ghLoginOrRefresh runs the real `gh auth login|refresh`, then vaults the
 // token it produced and points the wrap at it.
 func ghLoginOrRefresh(out io.Writer, w *ghWrap, sub string, args []string) (int, error) {
+	current := w.current()
+	before, activeBefore, err := wrap.GhKeyringAccounts(w.home)
+	if err != nil {
+		return 1, err
+	}
 	// refresh works on gh's active keyring account; make that the account
 	// the wrap uses, so the scopes land where the user's gh calls go.
-	if sub == "refresh" {
-		if current := w.current(); current != "" {
-			keyring, active, err := wrap.GhKeyringAccounts(w.home)
-			if err != nil {
+	if sub == "refresh" && current != "" {
+		if !slices.Contains(before, current) {
+			return 1, fmt.Errorf("%s isn't signed in to gh on this machine, `gh auth login` signs it in again", current)
+		}
+		if current != activeBefore {
+			if err := w.runGh(io.Discard, "auth", "switch", "--hostname", wrap.GhHost, "--user", current); err != nil {
 				return 1, err
 			}
-			if !slices.Contains(keyring, current) {
-				return 1, fmt.Errorf("%s isn't signed in to gh on this machine, `gh auth login` signs it in again", current)
-			}
-			if current != active {
-				if err := w.runGh(io.Discard, "auth", "switch", "--hostname", wrap.GhHost, "--user", current); err != nil {
-					return 1, err
-				}
-			}
+			activeBefore = current
 		}
 	}
 	if code := w.passthrough(args); code != 0 {
 		return code, nil
 	}
-	_, active, err := wrap.GhKeyringAccounts(w.home)
+	after, activeAfter, err := wrap.GhKeyringAccounts(w.home)
 	if err != nil {
 		return 1, err
 	}
-	if active == "" {
-		return 0, nil // signed in somewhere gh doesn't record per account; nothing to follow
+	target := ghFollowAfterLogin(sub, current, before, activeBefore, after, activeAfter)
+	if target == "" {
+		return 0, nil
 	}
-	if err := ghCopyToVault(w, active, openVault); err != nil {
+	if err := ghCopyToVault(w, target, openVault); err != nil {
 		return 1, err
 	}
-	if err := w.pointAt(wrap.GhAccountVaultPath(active)); err != nil {
+	if err := w.pointAt(wrap.GhAccountVaultPath(target)); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(out, "Copied %s's token into the vault. gh now uses %s.\n", active, active)
+	fmt.Fprintf(out, "Copied %s's token into the vault. gh now uses %s.\n", target, target)
 	return 0, nil
+}
+
+// ghFollowAfterLogin decides which github.com account a finished `gh auth
+// login|refresh` hands the wrap, "" for none. A refresh renews the
+// account it ran on. A login that changed github.com's accounts — a new
+// one, or a different one active — is gh making that login active, and
+// the wrap follows. A login that changed nothing there signed in to
+// another host (gh's interactive prompt can pick an Enterprise server
+// without --hostname on the command line), so the wrap stays put — unless
+// it re-signed-in the very account the wrap uses, whose fresh token is
+// worth vaulting.
+func ghFollowAfterLogin(sub, current string, before []string, activeBefore string, after []string, activeAfter string) string {
+	if activeAfter == "" {
+		return "" // gh records no per-account login for github.com
+	}
+	if sub == "refresh" {
+		return activeAfter
+	}
+	if activeAfter != activeBefore || !slices.Equal(before, after) || activeAfter == current {
+		return activeAfter
+	}
+	return ""
 }
 
 // ghLogout runs the real `gh auth logout`. gh forgets its keyring copy;

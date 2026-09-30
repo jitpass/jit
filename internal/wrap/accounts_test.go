@@ -4,6 +4,8 @@
 package wrap
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,7 +18,15 @@ func TestMatchAccount(t *testing.T) {
 		profile string
 	}{
 		{"vercel", "logout", AccountLogout, ""},
-		{"vercel", "login", AccountLogin, ""},
+		{"vercel", "login", AccountLoginExpiring, ""},
+		{"railway", "login", AccountLoginExpiring, ""},
+		{"opencode", "providers login", AccountLogin, ""},
+		{"databricks", "auth switch", AccountSwitch, ""},
+		{"circleci", "auth logout", AccountLogout, ""},
+		{"snow", "--environment prod sql", AccountProfile, "prod"},
+		{"wrangler", "--profile work deploy", AccountProfile, "work"},
+		{"hf", "login", "", ""}, // hf never had top-level login
+		{"snyk", "logout", "", ""},
 		{"vercel", "switch", AccountSwitch, ""},
 		{"vercel", "switch my-team", AccountSwitch, ""},
 		{"vercel", "deploy --prod", "", ""},
@@ -24,12 +34,12 @@ func TestMatchAccount(t *testing.T) {
 		{"vercel", "__complete logout", "", ""}, // a TAB press, handled before the rules
 		{"wrangler", "auth activate work", AccountSwitch, ""},
 		{"wrangler", "deploy", "", ""},
-		{"hf", "auth login", AccountLogin, ""},
-		{"hf", "login", AccountLogin, ""},
+		{"hf", "auth login", AccountLoginExpiring, ""},
+		{"vault", "login -method=oidc", AccountLoginExpiring, ""},
 		{"hf", "auth switch", AccountSwitch, ""},
 		{"hf", "auth whoami", "", ""},
 		{"hcloud", "context use work", AccountSwitch, ""},
-		{"hcloud", "--context work server list", AccountProfile, "work"},
+		{"hcloud", "--context work server list", AccountProfile, "work"}, // no cli.toml: every context is another
 		{"hcloud", "server list", "", ""},
 		// A switch never runs, profile flag or not.
 		{"doctl", "--context work auth switch", AccountSwitch, ""},
@@ -45,8 +55,14 @@ func TestMatchAccount(t *testing.T) {
 		{"databricks", "--profile prod clusters list", AccountProfile, "prod"},
 		{"snow", "-c prod sql -q x", AccountProfile, "prod"},
 		{"snow", "connection set-default prod", AccountSwitch, ""},
-		{"jira", "issue list", "", ""},
-		{"jira", "-c ~/other.yml issue list", AccountProfile, "~/other.yml"},
+		// Flags that name files or servers, not accounts, are no rule.
+		{"jira", "-c ~/other.yml issue list", "", ""},
+		{"ngrok", "http 80 --config a.yml,b.yml", "", ""},
+		{"vault", "-address=https://other:8200 kv get x", "", ""},
+		{"codex", "login --with-api-key", "", ""},
+		// -h is help for these tools, never an account change.
+		{"vercel", "login -h", "", ""},
+		{"doctl", "auth switch -h", "", ""},
 		// Words after "--" are the tool's arguments to something else.
 		{"vercel", "env run -- logout", "", ""},
 		// Tools with no rules, and non-shim kinds, never match.
@@ -59,7 +75,7 @@ func TestMatchAccount(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s isn't cataloged", c.tool)
 		}
-		m, ok := e.MatchAccount(strings.Fields(c.args))
+		m, ok := e.MatchAccount(t.TempDir(), strings.Fields(c.args))
 		if c.action == "" {
 			if ok {
 				t.Errorf("%s %s matched %+v, want the normal wrapped path", c.tool, c.args, m)
@@ -91,7 +107,7 @@ func TestCatalogAccountsWellFormed(t *testing.T) {
 			}
 			seen[key] = true
 			switch r.Action {
-			case AccountLogin, AccountLogout, AccountSwitch:
+			case AccountLogin, AccountLoginExpiring, AccountLogout, AccountSwitch:
 			default:
 				t.Errorf("%s %s: action %q isn't a rule action", tool, key, r.Action)
 			}
@@ -100,6 +116,42 @@ func TestCatalogAccountsWellFormed(t *testing.T) {
 			if !strings.HasPrefix(f, "-") {
 				t.Errorf("%s: profile flag %q isn't a flag", tool, f)
 			}
+		}
+	}
+}
+
+// hcloud and snow vaulted the FIRST profile in their config; naming that
+// one is the wrap's own call, naming another runs on its own login.
+func TestMatchAccountDefaultFromConfig(t *testing.T) {
+	home := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := ExpandHome(home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("~/.config/hcloud/cli.toml", "active_context = \"personal\"\n\n[preferences]\n  debug = false\n\n"+
+		"[[contexts]]\n  name = \"work\"\n  token = \"\"\n\n[[contexts]]\n  name = \"personal\"\n  token = \"t2\"\n")
+	write("~/.snowflake/config.toml", "default_connection_name = \"b\"\n\n[connections.\"prod\"]\npassword = \"\"\n\n[connections.dev]\npassword = \"p\"\n")
+
+	cases := []struct {
+		tool, args string
+		other      bool
+	}{
+		{"hcloud", "--context work server list", false},
+		{"hcloud", "--context personal server list", true},
+		{"snow", "-c prod sql -q x", false},
+		{"snow", "--connection=dev sql -q x", true},
+	}
+	for _, c := range cases {
+		e, _ := Lookup(c.tool)
+		m, ok := e.MatchAccount(home, strings.Fields(c.args))
+		if c.other != (ok && m.Rule.Action == AccountProfile) {
+			t.Errorf("%s %s = %+v, %v; want other=%v", c.tool, c.args, m, ok, c.other)
 		}
 	}
 }

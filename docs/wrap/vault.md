@@ -41,7 +41,9 @@ jit wrap undo vault
 
 - **Token TTL.** Vault tokens carry a lease and expire. Wrap a **long-lived**
   token (a periodic or renewable service token, or a dev root token); a
-  short-lived one will break when it expires, and you'd re-wrap after the next
-  `vault login`. This is the same caveat wrangler's OAuth token has.
+  short-lived one will break when it expires. `vault login` runs with no
+  token injected, and jit leaves the token it saves in `~/.vault-token`:
+  after logging in with a long-lived token, `jit wrap vault` moves it.
+  This is the same caveat wrangler's OAuth token has.
 - `VAULT_ADDR` and `VAULT_NAMESPACE` are not secrets and are not wrapped - set
   them as normal (usually in your shell profile).

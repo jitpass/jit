@@ -52,8 +52,8 @@ jit wrap undo codex
   anyway, ready for `jit vault set wrap-codex/CODEX_API_KEY` if you add
   an API key later. Your OAuth session in the same file is never touched.
 - **The wrapped key reaches `codex exec` only.** Interactive `codex`
-  ignores `CODEX_API_KEY` and keeps using its own login in `auth.json`
-  (a ChatGPT login, or an API key you enter there).
-- `codex login` runs with no key injected, and jit then moves an API key
-  it saved into the vault.
-</content>
+  ignores `CODEX_API_KEY`. Wrapping moves the API key out of
+  `auth.json`, so after that only a ChatGPT login works interactively.
+  If you use interactive `codex` with an API key, don't wrap it.
+- `codex login --with-api-key` puts the key back in `auth.json`.
+  Re-run `jit wrap codex` only if you use `codex exec` alone.
