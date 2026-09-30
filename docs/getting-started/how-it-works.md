@@ -30,7 +30,8 @@ It's also the process that serves live-mounted files.
 On top of that session, [per-process consent](../service/consent.md) (on by
 default) prompts a Touch ID the first time each tool reaches for a real
 credential, naming what's asking, so an unlocked session still isn't a blank
-cheque. You approve a tool once and it's remembered until the vault re-locks.
+cheque. You approve a tool once and it's remembered while it keeps using it, until the
+vault re-locks, and never more than 8 hours.
 
 ## Profiles
 

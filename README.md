@@ -29,7 +29,7 @@
 <p align="center"><sub>Free for personal and internal company use · Source-available · No account · No telemetry · Nothing leaves your Mac · Secure Enclave ready · Every change can be undone</sub></p>
 
 <p align="center">
-  <a href="docs/assets/readme/hero.png"><img src="docs/assets/readme/hero.png" width="880" alt="The JitPass Setup scan: 23 secrets in plain text, found in ~/.aws/credentials, a project .env, ~/.npmrc and ~/.zshrc, with masked values and a Protect 18 Secrets button. Beside it, JitPass asks: aws wants to use a credential, via claude. Deny, or Allow with Touch ID."></a>
+  <a href="docs/assets/readme/hero.png"><img src="docs/assets/readme/hero.png" width="880" alt="The JitPass Setup scan: 23 secrets in plain text, found in ~/.aws/credentials, a project .env, ~/.npmrc and ~/.zshrc, with masked values and a Protect 18 Secrets button. Beside it, the Touch ID dialog: JitPass is trying to let aws use your aws credential, via claude."></a>
   <br>
   <sub><b>What's the number on your Mac?</b> The scan only reads, and changes nothing until you say so.</sub>
 </p>
@@ -93,9 +93,9 @@ leaves a decoy where the plaintext was.**
       <b>One click</b> moves each secret into the vault and leaves a decoy in its place. Every file is backed up first, and your tools keep working.
     </td>
     <td width="33%" valign="top">
-      <a href="docs/assets/readme/step-approve.png"><img src="docs/assets/readme/step-approve.png" alt="The JitPass approval window: aws asks to use a credential, via claude. Command, launched by, identified by the kernel. Deny, or Allow with Touch ID."></a>
+      <a href="docs/assets/readme/step-approve.png"><img src="docs/assets/readme/step-approve.png" alt="The macOS Touch ID dialog: JitPass is trying to let aws use your aws credential, via claude. Use Password or Cancel."></a>
       <h3>3. Approve</h3>
-      When a program reaches for a real key, JitPass names it and what launched it. <b>Allow with Touch ID</b>, or deny.
+      When a program reaches for a real key, JitPass names it and what launched it in the Touch ID dialog. <b>Touch to allow</b>, or cancel.
     </td>
   </tr>
 </table>
@@ -227,7 +227,7 @@ Codex need nothing.
 
 ```console
 $ jit job allow notion-export -- .venv/bin/python export_pages.py
-  Touch ID  ->  let AI run notion/export_pages.py with 3 notion secrets
+  Touch ID  ->  let AI run notion/export_pages.py with 3 secrets, 1 shown
 ✓ Approved notion-export · 41 files fingerprinted
 ```
 
@@ -498,7 +498,7 @@ and `jit doctor` flags two jits on PATH if you forget.
 <a href="docs/assets/readme/panel.png"><img align="right" src="docs/assets/readme/panel.png" width="300" alt="The JitPass menu bar panel, unlocked: Vault 18 secrets, AI Agents all set, Tools 4 wrapped, Service running, Grants 1 active, AI Jobs 3 ready, Decoys 2 reads today, Doctor healthy, Findings 3 to do. Then Lock Now, New Grant, New Scan and Open Audit."></a>
 
 After setup, JitPass is a ring in your menu bar: **green** unlocked, **red**
-locked, **amber** a program is asking.
+locked, **amber** not set up yet.
 
 Click it to see your vault, your agents and tools, active grants, AI jobs,
 today's decoy reads, and what is left to do. **Lock Now**, **New Grant…**,
@@ -564,8 +564,9 @@ keys still has to ask.
 <summary><b>Details:</b> how long a session lasts, and turning the second question off</summary>
 
 A session ends after 5 minutes without use, and never lasts longer than
-8 hours. When the app is not running, the second question is a Touch ID
-prompt that names the program.
+8 hours. The second question is a Touch ID prompt that names the program
+and what launched it. If the vault is locked when a program first asks, the
+two are one Touch ID: the dialog says it will also unlock the vault.
 
 Only want the vault lock? Turn off **Ask before a tool's first use** in
 Settings › Protection, or run `jit service consent off`. Starting something that needs several secrets at

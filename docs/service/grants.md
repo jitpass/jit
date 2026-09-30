@@ -82,7 +82,7 @@ anchor to "the terminal you type it in", so it may name one explicitly:
 "any `claude` under iTerm2". The service accepts only a genuine session
 root there (an app the system launched directly, never a process inside
 someone's tree and never launchd), and the Touch ID prompt then opens with
-who is asking - "JitPass asks: let claude under iTerm2 use 2 secrets …" -
+who is asking - "JitPass asks: let claude use "deploy" for 8 hours" -
 so the tree no longer implies the requester and the prompt says it instead.
 Everything else is the same grant: the name only narrows, membership is
 decided per read against the live tree, and the human on the prompt is the
