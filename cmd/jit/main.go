@@ -47,6 +47,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "jit shim %s: %v\n", tool, err)
 			os.Exit(127)
 		}
+		// A tool's own account commands (login, logout, switching
+		// accounts, a --profile naming another account) can't mean what
+		// they say with a token injected: jit answers them against the
+		// wrap instead (internal/cli/accounts.go, ghauth.go).
+		if handled, code := cli.AccountShim(tool, args); handled {
+			os.Exit(code)
+		}
 		err := wrap.ShimExec(tool, args)
 		fmt.Fprintf(os.Stderr, "jit shim %s: %v\n", tool, err)
 		os.Exit(127)

@@ -44,5 +44,6 @@ jit wrap undo flyctl
   covers invocations of `flyctl`; wrap `fly` too via
   [`jit wrap add fly --env FLY_API_TOKEN=wrap-flyctl/FLY_API_TOKEN`](./custom-tools.md)
   so both names inject the same vaulted token.
-- A re-`flyctl auth login` writes plaintext again - re-run
-  `jit wrap flyctl` after.
+- `flyctl auth login` runs with no token injected, then jit moves the new token
+  into the vault and removes the plaintext copy. No need to re-run
+  `jit wrap flyctl`.

@@ -49,7 +49,7 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`hcloud`](./hcloud.md) | `HCLOUD_TOKEN` | `~/.config/hcloud/cli.toml` |
 | [`flyctl`](./flyctl.md) | `FLY_API_TOKEN` | `~/.fly/config.yml` |
 | [`vercel`](./vercel.md) | `VERCEL_TOKEN` | `~/Library/Application Support/com.vercel.cli/auth.json` |
-| [`railway`](./railway.md) | `RAILWAY_TOKEN` | `~/.railway/config.json` |
+| [`railway`](./railway.md) | `RAILWAY_API_TOKEN` | `~/.railway/config.json` (older logins; OAuth logins: `jit vault set` an account token first) |
 | [`databricks`](./databricks.md) | `DATABRICKS_TOKEN` | `~/.databrickscfg` |
 | [`hf`](./hf.md) | `HF_TOKEN` | `~/.cache/huggingface/token` (the whole file is the token) |
 | [`supabase`](./supabase.md) | `SUPABASE_ACCESS_TOKEN` | `~/.supabase/access-token` when the OS keyring isn't available |
@@ -65,13 +65,32 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`kiro-cli`](./kiro-cli.md) | `KIRO_API_KEY` | nowhere standard (login is subscription OAuth) - `jit vault set wrap-kiro-cli/KIRO_API_KEY` first |
 | [`sentry-cli`](./sentry-cli.md) | `SENTRY_AUTH_TOKEN` | `~/.sentryclirc` (the `[auth] token`) |
 | [`snyk`](./snyk.md) | `SNYK_TOKEN` | `~/.config/configstore/snyk.json` (the `api` field) |
-| [`circleci`](./circleci.md) | `CIRCLECI_CLI_TOKEN` | `~/.circleci/cli.yml` |
+| [`circleci`](./circleci.md) | `CIRCLE_TOKEN` + `CIRCLECI_CLI_TOKEN` | `~/.config/circleci/config.yml` or `~/.circleci/cli.yml` (keyring: `jit vault set` first) |
 | [`vault`](./vault.md) | `VAULT_TOKEN` | `~/.vault-token` (the whole file is the token; wrap a long-lived one) |
 | [`pulumi`](./pulumi.md) | `PULUMI_ACCESS_TOKEN` | no auto-migrate (URL-keyed file); `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first |
 | [`descope`](./descope.md) | `DESCOPE_MANAGEMENT_KEY` | env-only (docs export it in `~/.zshrc`); `jit vault set wrap-descope/DESCOPE_MANAGEMENT_KEY` first |
 | [`okta-cli-client`](./okta-cli-client.md) | `OKTA_CLIENT_TOKEN` | `~/.okta/okta.yaml` (`okta.client.token`) when present, else `jit vault set` first |
 | [`snow`](./snow.md) | `SNOWFLAKE_PASSWORD` | `~/.snowflake/config.toml` (first `[connections.<name>]` block's `password`) |
 | [`jira`](./jira.md) | `JIRA_API_TOKEN` | env-only (docs export it in `~/.zshrc`); `jit vault set wrap-jira/JIRA_API_TOKEN` first |
+
+### Logging in, out, and switching accounts
+
+Most tools give a token in the environment priority over their own saved
+login. So once a tool is wrapped, its account commands stop doing what
+they say. A login refuses or changes nothing. A logout can revoke the
+wrapped token (`vercel logout` does). A context or profile switch is
+ignored. jit answers these commands itself:
+
+| You run | jit does |
+|---|---|
+| A login (`flyctl auth login`, `glab auth login`, `supabase login`, …) | Runs it with no token injected, then moves the new token into the vault and deletes the plaintext copy. |
+| A login whose token can expire (`vercel login`, `railway login`, `wrangler login`, `vault login`, `hf auth login`) | Runs it with no token injected and leaves the result where the tool saved it, so the wrap keeps its durable token. It says how to store a durable one. |
+| A logout (`vercel logout`, `glab auth logout`, …) | Runs it with no token injected, so the wrapped token is never revoked. Then says the vault copy is still in use: `jit vault rm` deletes it. |
+| An account switch (`vercel switch`, `hcloud context use`, `databricks auth switch`, `wrangler auth activate`, …) | Doesn't run it. One token is wrapped, so there is nothing to switch to. It tells you how to swap the token. |
+| A flag naming another profile (`stripe -p other`, `databricks -p prod`, `snow -c prod`, `hcloud --context work`, `wrangler --profile work`) | Runs with that profile's own saved login, and says so, rather than sending the wrapped token to another account. Naming the wrapped profile itself keeps the wrap. |
+
+`gh` keeps one vault secret per account, so `gh auth switch` works:
+see [gh](./gh.md#more-than-one-account).
 
 ## Native-hook plugins (no shim - stronger)
 

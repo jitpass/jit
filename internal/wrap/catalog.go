@@ -84,6 +84,23 @@ type CatalogEntry struct {
 	// keyring copy is already encrypted at rest.
 	TokenCommand []string
 	VerifyHint   string // suggested check after wrapping, e.g. "gh auth status"
+	// ShimEnv is plain, non-secret settings the shim sets for every call
+	// (unless the user already set them): switches that stop a tool
+	// writing the injected token back to disk, e.g. pulumi's
+	// PULUMI_CREDENTIAL_STORE.
+	ShimEnv map[string]string
+
+	// Account commands (KindShim only; see accounts.go). Accounts lists
+	// the tool's login/logout/switch commands; ProfileFlags the flags that
+	// name one of its saved profiles, and DefaultProfile the profile the
+	// wrapped token belongs to (a flag naming it is the wrap's own call).
+	// Filled from catalog_accounts.go.
+	Accounts       []AccountRule
+	ProfileFlags   []string
+	DefaultProfile string
+	// DefaultProfileFrom, when set, reads DefaultProfile from the tool's
+	// config instead: for tools whose wrap vaulted the first profile there.
+	DefaultProfileFrom *ProfileNameSource
 
 	// KindNative fields.
 	NativeCategory string // the `jit migrate <path> --only <category>` token

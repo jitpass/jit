@@ -48,5 +48,9 @@ jit wrap undo pulumi
   [app.pulumi.com/account/tokens](https://app.pulumi.com/account/tokens). A
   durable access token is what `PULUMI_ACCESS_TOKEN` expects; don't paste the
   short-lived value `pulumi login` may have cached.
-- Once `PULUMI_ACCESS_TOKEN` is set, `pulumi` skips the credentials file
-  entirely, so there's nothing left on disk to scrub.
+- Pulumi writes the token it was given into `~/.pulumi/credentials.json`
+  on every command that talks to Pulumi Cloud, not only on `pulumi login`. So the wrap sets
+  `PULUMI_CREDENTIAL_STORE=auto`, which tells Pulumi 3.258.0 and later to
+  encrypt that file with a key the OS keeps. Older Pulumi ignores it:
+  upgrade, or the wrapped token lands in that file in plaintext. A value
+  you set yourself is left alone.

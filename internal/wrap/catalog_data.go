@@ -124,12 +124,24 @@ var catalog = map[string]CatalogEntry{
 		VerifyHint: "vercel whoami",
 	},
 	"railway": {
-		Tool:    "railway",
-		Kind:    KindShim,
-		Doc:     "Railway CLI token",
-		EnvVars: map[string]string{"RAILWAY_TOKEN": "RAILWAY_TOKEN"},
-		Order:   []string{"RAILWAY_TOKEN"},
+		Tool: "railway",
+		Kind: KindShim,
+		Doc:  "Railway CLI token",
+		// RAILWAY_API_TOKEN, not RAILWAY_TOKEN: railway sends RAILWAY_TOKEN
+		// as a project token (the project-access-token header), and the
+		// token this wrap vaults is the user's account token, which it
+		// sends as a bearer token only when read from RAILWAY_API_TOKEN
+		// (railwayapp/cli v5.63.1, src/client.rs and src/config.rs). The
+		// vault subpath keeps its old name so a wrap made before the fix
+		// is repaired by re-running `jit wrap railway`: the secret is found
+		// already vaulted and the profile is rewritten.
+		EnvVars: map[string]string{"RAILWAY_API_TOKEN": "RAILWAY_TOKEN"},
+		Order:   []string{"RAILWAY_API_TOKEN"},
 		Sources: []TokenSource{
+			// Older logins only. Current `railway login` is OAuth and
+			// writes a short-lived user.accessToken it refreshes, which a
+			// wrap would freeze; those setups vault an account token by
+			// hand, like wrangler's.
 			{Path: "~/.railway/config.json", Format: "json", Selector: "user/token"},
 		},
 		VerifyHint: "railway whoami",
@@ -255,6 +267,12 @@ var catalog = map[string]CatalogEntry{
 			// deliberately NOT OPENAI_API_KEY: codex spawns the user's
 			// commands as children, and OPENAI_API_KEY in that inherited
 			// environment would hand the key to every one of them.
+			//
+			// CODEX_API_KEY reaches `codex exec` only: the interactive TUI
+			// builds its auth with the env key switched off (codex-rs
+			// tui/src/lib.rs, rust-v0.159.2), and OPENAI_API_KEY there only
+			// pre-fills the login screen, which then writes auth.json. So
+			// the wrap covers exec; interactive codex keeps its own login.
 			{Path: "~/.codex/auth.json", Format: "json", Selector: "OPENAI_API_KEY"},
 		},
 		VerifyHint: `codex exec "say hi"`,
@@ -387,13 +405,22 @@ var catalog = map[string]CatalogEntry{
 		VerifyHint: "snyk config get api",
 	},
 	"circleci": {
-		Tool:    "circleci",
-		Kind:    KindShim,
-		Doc:     "CircleCI CLI personal API token",
-		EnvVars: map[string]string{"CIRCLECI_CLI_TOKEN": "CIRCLECI_CLI_TOKEN"}, // #nosec G101 -- env var name, not a credential
-		Order:   []string{"CIRCLECI_CLI_TOKEN"},
+		Tool: "circleci",
+		Kind: KindShim,
+		Doc:  "CircleCI CLI personal API token",
+		// Both names, one secret: circleci-cli v1 (v1.0.51648) reads
+		// CIRCLE_TOKEN and never CIRCLECI_CLI_TOKEN; the v0 line reads only
+		// CIRCLECI_CLI_TOKEN. Whichever is installed finds its own.
+		EnvVars: map[string]string{
+			"CIRCLE_TOKEN":       "CIRCLECI_CLI_TOKEN", // #nosec G101 -- env var name, not a credential
+			"CIRCLECI_CLI_TOKEN": "CIRCLECI_CLI_TOKEN", // #nosec G101 -- env var name, not a credential
+		},
+		Order: []string{"CIRCLE_TOKEN", "CIRCLECI_CLI_TOKEN"},
 		Sources: []TokenSource{
-			// `circleci setup` writes the token top-level in cli.yml.
+			// v1 keeps the token in the keyring by default, else top-level
+			// in ~/.config/circleci/config.yml; v0's `circleci setup` wrote
+			// it top-level in ~/.circleci/cli.yml.
+			{Path: "~/.config/circleci/config.yml", Format: "yaml", Selector: "token"},
 			{Path: "~/.circleci/cli.yml", Format: "yaml", Selector: "token"},
 		},
 		VerifyHint: "circleci diagnostic",
@@ -422,12 +449,20 @@ var catalog = map[string]CatalogEntry{
 		EnvVars: map[string]string{"PULUMI_ACCESS_TOKEN": "PULUMI_ACCESS_TOKEN"}, // #nosec G101 -- env var name, not a credential
 		Order:   []string{"PULUMI_ACCESS_TOKEN"},
 		// No Sources. `pulumi login` writes the token into
-		// ~/.pulumi/credentials.json under an `accessTokens` map keyed by the
-		// backend URL (https://api.pulumi.com), which the catalog's flat
-		// selector can't address. PULUMI_ACCESS_TOKEN, which the shim injects and
+		// ~/.pulumi/credentials.json under `accessTokens` and `accounts`
+		// maps keyed by the backend URL (https://api.pulumi.com), which the
+		// catalog's flat selector can't address. PULUMI_ACCESS_TOKEN, which the shim injects and
 		// which pulumi treats as its highest-priority credential, expects a
 		// durable token from app.pulumi.com/account/tokens. Wrap is for those:
 		// `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first.
+		// Every backend command, not only `pulumi login`, stores the token
+		// it was given in that file (httpstate's Login -> storeUserAccount,
+		// pulumi v3.265.0) — which would put the wrapped token back on disk
+		// in plaintext on first use. Since v3.258.0 pulumi encrypts the file
+		// with a key held by the OS when PULUMI_CREDENTIAL_STORE asks it to;
+		// "auto" falls back to plaintext where no OS store is usable, so it
+		// never breaks a run. Older pulumi ignores the variable.
+		ShimEnv:    map[string]string{"PULUMI_CREDENTIAL_STORE": "auto"},
 		VerifyHint: "pulumi whoami",
 	},
 	"descope": {

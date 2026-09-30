@@ -105,3 +105,30 @@ func TestUndoToleratesHalfInstalledWrap(t *testing.T) {
 		t.Error("manifest entry survived undo")
 	}
 }
+
+// circleci injects one secret under two names (v1 and v0 read different
+// variables); undo names the secret once.
+func TestUndoListsASharedSecretOnce(t *testing.T) {
+	home := t.TempDir()
+	if _, err := Add(home, AddRequest{
+		Tool:      "circleci",
+		Env:       map[string]string{"CIRCLE_TOKEN": "wrap-circleci/CIRCLECI_CLI_TOKEN", "CIRCLECI_CLI_TOKEN": "wrap-circleci/CIRCLECI_CLI_TOKEN"},
+		Order:     []string{"CIRCLE_TOKEN", "CIRCLECI_CLI_TOKEN"},
+		JitBinary: "/usr/bin/true",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	prev, err := PreviewUndo(home, "circleci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	undo, err := Undo(home, "circleci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range [][]string{prev.VaultPaths, undo.VaultPaths} {
+		if strings.Join(got, ",") != "wrap-circleci/CIRCLECI_CLI_TOKEN" {
+			t.Errorf("VaultPaths = %v, want the one secret once", got)
+		}
+	}
+}

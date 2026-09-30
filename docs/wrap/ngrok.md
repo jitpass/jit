@@ -44,5 +44,6 @@ jit wrap undo ngrok
 
 - Long-running tunnels hold the token for the tunnel's lifetime, like any
   process you inject into - the token still never returns to disk.
-- Re-running `ngrok config add-authtoken` writes plaintext again - re-run
-  `jit wrap ngrok` after rotating.
+- `ngrok config add-authtoken` runs with no token injected, then jit moves the new token
+  into the vault and removes the plaintext copy. No need to re-run
+  `jit wrap ngrok`.

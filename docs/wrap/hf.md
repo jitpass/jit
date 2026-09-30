@@ -64,5 +64,7 @@ jit wrap undo hf
   `$HF_HOME/token` instead and discovery won't find it - store the token
   with `jit vault set wrap-hf/HF_TOKEN`, re-run `jit wrap hf`, and delete
   the old file yourself.
-- A re-`hf auth login` writes plaintext again - re-run `jit wrap hf`
-  after.
+- `hf auth login` runs with no token injected, and jit leaves the token
+  it saves where it is, since a browser login's token expires. After
+  logging in with a pasted access token, `jit wrap hf` moves it into
+  the vault. `hf auth switch` is refused while hf is wrapped.
