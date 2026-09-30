@@ -134,6 +134,10 @@ func ShimExec(tool string, args []string) error {
 		return err
 	}
 
+	if err := applyShimEnv(tool, manifest.Tools[tool]); err != nil {
+		return err
+	}
+
 	// syscall.Exec never returns on success — same contract as jit run's
 	// own exec, which this process is about to become.
 	return syscall.Exec(jitBinary, shimArgv(tool, realTool, manifest.Tools[tool], args), os.Environ()) // #nosec G204 -- tool comes from the shim symlink's own name, installed by `jit wrap add`; args are the user's own command line
@@ -160,6 +164,24 @@ func shimArgv(tool, realTool string, entry Entry, args []string) []string {
 		return append([]string{"jit", "run", "--grant-only", "--", realTool}, args...)
 	}
 	return append([]string{"jit", "run", "--profile", ProfileName(tool), "--", realTool}, args...)
+}
+
+// applyShimEnv sets a catalog tool's ShimEnv for an env-wrap's run. A
+// variable the user already set is theirs and is left alone.
+func applyShimEnv(tool string, e Entry) error {
+	entry, ok := Lookup(tool)
+	if !ok || e.Profile == "" {
+		return nil
+	}
+	for name, value := range entry.ShimEnv {
+		if _, set := os.LookupEnv(name); set {
+			continue
+		}
+		if err := os.Setenv(name, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // guardVar maps a tool name onto its recursion-guard environment variable:

@@ -1,14 +1,14 @@
 ---
 title: Wrap the CircleCI CLI with jit
-description: Keep your CircleCI personal API token out of ~/.circleci/cli.yml - injected as CIRCLECI_CLI_TOKEN just-in-time.
+description: Keep your CircleCI personal API token out of the CLI's config file - injected as CIRCLE_TOKEN just-in-time.
 ---
 
 # circleci - CircleCI CLI
 
-`circleci setup` stores your personal API token in plaintext in
-`~/.circleci/cli.yml`, as the top-level `token` field. Wrapping moves it into
-the vault and injects it as `CIRCLECI_CLI_TOKEN` into each `circleci`
-invocation only.
+The CircleCI CLI keeps your personal API token in the keyring, or in
+plaintext as the top-level `token` field of `~/.config/circleci/config.yml`.
+Releases before v1 used `~/.circleci/cli.yml`. Wrapping moves it into the
+vault and injects it into each `circleci` invocation only.
 
 ## Wrap it
 
@@ -16,7 +16,7 @@ invocation only.
 jit wrap circleci
 ```
 
-jit reads `token` from `~/.circleci/cli.yml`, stores it at
+jit reads `token` from whichever of those files has it, stores it at
 `wrap-circleci/CIRCLECI_CLI_TOKEN`, scrubs the plaintext (original backed up
 encrypted), and installs the `~/.jit/shims/circleci` shim plus the
 `wrap-circleci` profile.
@@ -29,8 +29,9 @@ circleci diagnostic
 
 ## How it works
 
-The shim injects `CIRCLECI_CLI_TOKEN` from the vault into each `circleci`
-process - the CLI's documented env credential. Details:
+The shim injects the token from the vault into each `circleci` process
+twice: as `CIRCLE_TOKEN`, which v1 reads, and as `CIRCLECI_CLI_TOKEN`,
+which older releases read. Details:
 [how wrapping works](./index.md).
 
 ## Undo
@@ -41,7 +42,9 @@ jit wrap undo circleci
 
 ## Notes
 
-- The non-secret `host` line in `cli.yml` passes through untouched; only
-  `token` is scrubbed.
+- The non-secret `host` line passes through untouched; only `token` is
+  scrubbed.
+- A token in the keyring can't be moved automatically. Set it with
+  `jit vault set wrap-circleci/CIRCLECI_CLI_TOKEN`, then wrap.
 - No token stored yet? Set one first with
   `jit vault set wrap-circleci/CIRCLECI_CLI_TOKEN`, then wrap.

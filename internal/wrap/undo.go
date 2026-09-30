@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/jitpass/jit/internal/profile"
@@ -77,6 +78,8 @@ func PreviewUndo(home, tool string) (UndoPreview, error) {
 				prev.VaultPaths = append(prev.VaultPaths, vaultPath)
 			}
 			sort.Strings(prev.VaultPaths)
+			// Two variables can read one secret (circleci's pair).
+			prev.VaultPaths = slices.Compact(prev.VaultPaths)
 		}
 	}
 	return prev, nil
@@ -123,6 +126,8 @@ func Undo(home, tool string) (UndoResult, error) {
 				res.VaultPaths = append(res.VaultPaths, vaultPath)
 			}
 			sort.Strings(res.VaultPaths)
+			// Two variables can read one secret (circleci's pair).
+			res.VaultPaths = slices.Compact(res.VaultPaths)
 		}
 		switch err := os.Remove(res.ProfilePath); {
 		case err == nil:

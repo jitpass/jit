@@ -184,3 +184,39 @@ func TestShimExecRealFailsLoudlyWhenOnlyTheShimExists(t *testing.T) {
 		t.Errorf("error %q does not name the way out", err)
 	}
 }
+
+// pulumi stores whatever token it was given in ~/.pulumi/credentials.json
+// on every backend command; the wrap asks it to encrypt that file.
+func TestApplyShimEnv(t *testing.T) {
+	const name = "PULUMI_CREDENTIAL_STORE"
+	t.Setenv(name, "")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyShimEnv("pulumi", Entry{Profile: "wrap-pulumi"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(name); got != "auto" {
+		t.Fatalf("%s = %q, want auto", name, got)
+	}
+
+	// The user's own setting wins, even "plaintext".
+	t.Setenv(name, "plaintext")
+	if err := applyShimEnv("pulumi", Entry{Profile: "wrap-pulumi"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(name); got != "plaintext" {
+		t.Fatalf("%s = %q, the user's value was overridden", name, got)
+	}
+
+	// Not an env-wrap: nothing is injected, so nothing is set.
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyShimEnv("pulumi", Entry{With: "something"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, set := os.LookupEnv(name); set {
+		t.Fatal("set for a wrap that injects no token")
+	}
+}
