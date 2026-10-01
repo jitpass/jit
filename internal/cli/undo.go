@@ -6,6 +6,8 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,7 +61,15 @@ var migrateUndoCmd = &cobra.Command{
 		"  jit migrate undo ~/proj --dry-run",
 	Args:              requirePaths("jit migrate undo"),
 	ValidArgsFunction: completeMigrateUndoPaths,
-	RunE:              runMigrateUndo,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(migrateFormat); err != nil {
+			return fmt.Errorf("jit migrate undo: %w", err)
+		}
+		if migrateFormat == "json" {
+			return runMigrateUndoJSON(cmd, args)
+		}
+		return runMigrateUndo(cmd, args)
+	},
 }
 
 // completeMigrateUndoPaths makes the `[path...]` argument discoverable at
@@ -104,6 +114,12 @@ func completeMigrateUndoPaths(cmd *cobra.Command, args []string, toComplete stri
 }
 
 func runMigrateUndo(cmd *cobra.Command, args []string) error {
+	return migrateUndoRun(cmd, args, nil)
+}
+
+// migrateUndoRun is the undo; report, when non-nil, is filled for
+// --format json with the plan (a dry run) or what each file's restore did.
+func migrateUndoRun(cmd *cobra.Command, args []string, report *undoReport) error {
 	// --only filters by CATEGORY; undo operates on recorded files. Refuse
 	// rather than silently ignore — the exact silently-accepted-and-ignored
 	// trap GAPS.md #21/#25 fixed elsewhere in this command tree.
@@ -148,6 +164,10 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 
 	registryPath := mount.RegistryPath(root)
 	mounted := map[string]mount.Entry{}
+	if report != nil {
+		report.DryRun = migrateDryRun
+		report.fillPlan(root, home, latest, registryPath)
+	}
 	fmt.Fprintf(out, "Restoring %s from encrypted backups:\n", countWord(len(latest), "file", "files"))
 	for _, rec := range latest {
 		entry, found, err := mount.FindMount(registryPath, rec.OriginalPath)
@@ -250,6 +270,14 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if report != nil {
+		inner := restoreOne
+		restoreOne = func(rec migrate.BackupRecord) error {
+			err := inner(rec)
+			report.done(rec.OriginalPath, err)
+			return err
+		}
+	}
 	restoreErr := runRestores(out, home, latest, restoreOne)
 	// A restored loose secret file's dedicated vault secret is still there —
 	// undo reverses files, never the vault. Unlike a project secret it is
@@ -435,4 +463,115 @@ func expandRestoreWith(latest, selected []migrate.BackupRecord, seen map[string]
 
 func init() {
 	migrateCmd.AddCommand(migrateUndoCmd)
+	migrateUndoCmd.Flags().StringVar(&migrateFormat, "format", "text",
+		`output format: "text" (default), or "json": each file, what happens to it, and the vault secrets whose values return to it; a real run needs --yes`)
+	_ = migrateUndoCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+}
+
+// undoReport is `jit migrate undo --format json`: with --dry-run the plan
+// JitPass's Doctor confirms (Undo Migration), else what the run did — the
+// rows of the app's Restored sheet. Paths and vault paths only, never a
+// value.
+type undoReport struct {
+	DryRun bool             `json:"dry_run"`
+	Files  []undoFileReport `json:"files"`
+	Errors []string         `json:"errors"`
+	// Report is the text the run would have printed.
+	Report string `json:"report"`
+}
+
+// undoFileReport is one file. Action is "restore" (its backed-up bytes go
+// back), "recreate" (jit migrate --clean deleted it) or "remove" (the
+// migration created it, so undo deletes it). Mount says a live mount stops
+// being served. Secrets are the vault paths recorded as coming from this
+// file: their values are on disk in plain text again, and they stay in the
+// vault. Restored is false in a dry run and when the restore failed, with
+// Error saying why.
+type undoFileReport struct {
+	Path         string   `json:"path"`
+	Action       string   `json:"action"`
+	BackedUpUnix int64    `json:"backed_up_unix"`
+	Mount        bool     `json:"mount"`
+	Secrets      []string `json:"secrets"`
+	Restored     bool     `json:"restored"`
+	Error        string   `json:"error,omitempty"`
+}
+
+// fillPlan lists the selected files. Secrets come from each vault entry's
+// recorded origin, read from envelope metadata alone: no unlock, no prompt,
+// so a dry run stays free.
+func (r *undoReport) fillPlan(root, home string, recs []migrate.BackupRecord, registryPath string) {
+	byOrigin := map[string][]string{}
+	bare := &vault.Vault{Root: root}
+	if paths, err := bare.List(); err == nil {
+		for _, p := range paths {
+			if vault.IsBackupPath(p) || vault.IsReservedPath(p) {
+				continue
+			}
+			if info, err := bare.Info(p); err == nil && info.Origin != "" {
+				o := expandTilde(info.Origin, home)
+				byOrigin[o] = append(byOrigin[o], p)
+			}
+		}
+	}
+	for _, rec := range recs {
+		f := undoFileReport{Path: rec.OriginalPath, Action: "restore", BackedUpUnix: rec.UnixTS, Secrets: []string{}}
+		switch {
+		case rec.RemoveOnRestore:
+			f.Action = "remove"
+		case rec.Cleaned:
+			f.Action = "recreate"
+		}
+		if _, found, err := mount.FindMount(registryPath, rec.OriginalPath); err == nil && found {
+			f.Mount = true
+		}
+		if s := byOrigin[rec.OriginalPath]; len(s) > 0 {
+			sort.Strings(s)
+			f.Secrets = s
+		}
+		r.Files = append(r.Files, f)
+	}
+}
+
+// done records one file's restore outcome.
+func (r *undoReport) done(path string, err error) {
+	for i := range r.Files {
+		if r.Files[i].Path != path {
+			continue
+		}
+		r.Files[i].Restored = err == nil
+		if err != nil {
+			r.Files[i].Error = err.Error()
+		}
+		return
+	}
+}
+
+// runMigrateUndoJSON runs the undo with its text captured and writes one
+// undoReport to stdout, after a failure too: the files already restored
+// are real. A real run needs --yes, since a plan can't be confirmed on a
+// JSON stream; a dry run doesn't.
+func runMigrateUndoJSON(cmd *cobra.Command, args []string) error {
+	if !migrateYes && !migrateDryRun {
+		return errors.New("jit migrate undo: --format json needs --yes, or --dry-run for the plan; a plan cannot be confirmed on a JSON stream")
+	}
+	stdout := cmd.OutOrStdout()
+	var text bytes.Buffer
+	cmd.SetOut(&text)
+	defer cmd.SetOut(nil)
+
+	report := &undoReport{Files: []undoFileReport{}, Errors: []string{}}
+	runErr := migrateUndoRun(cmd, args, report)
+	if runErr != nil {
+		report.Errors = append(report.Errors, runErr.Error())
+	}
+	report.Report = text.String()
+	if err := writeJSON(stdout, report); err != nil {
+		return fmt.Errorf("jit migrate undo: writing report: %w", err)
+	}
+	if runErr != nil {
+		cmd.SilenceErrors = true
+		defer func() { cmd.SilenceErrors = false }()
+	}
+	return runErr
 }

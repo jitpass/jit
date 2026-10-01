@@ -24,7 +24,7 @@ length-changing edit would corrupt it. Every file jit does rewrite is
 backed up encrypted first — `jit migrate undo <path>` restores it.
 
 ```
-jit migrate caches
+jit migrate caches [flags]
 ```
 
 ### Examples
@@ -32,6 +32,12 @@ jit migrate caches
 ```
   jit migrate caches            # clean copies of every vaulted secret
   jit migrate caches --dry-run  # show what would be cleaned, change nothing
+```
+
+### Options
+
+```
+      --format string   output format: "text" (default), or "json": the migrate report's document, with what the sweep removed and left under caches; needs --yes (default "text")
 ```
 
 ### Options inherited from parent commands

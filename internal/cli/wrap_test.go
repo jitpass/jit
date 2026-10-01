@@ -25,6 +25,8 @@ func execWrap(t *testing.T, args ...string) (stdout string, err error) {
 	wrapListFormat = "text"
 	wrapListAll = false
 	wrapListDiscover = false
+	wrapFormat = "text"
+	wrapYes = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)

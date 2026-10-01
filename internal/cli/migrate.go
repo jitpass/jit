@@ -1829,7 +1829,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 			break // disclosed above the plan, inside the frame
 		}
 		fmt.Fprintln(out)
-		if wrapErr := runCatalogWrap(cmd, tool); wrapErr != nil {
+		if wrapErr := runCatalogWrap(cmd, tool, nil); wrapErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "wrapping %s failed: %v\n", tool, wrapErr)
 			continue
 		}

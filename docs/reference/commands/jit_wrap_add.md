@@ -26,6 +26,7 @@ jit wrap add <tool> --env VAR=<vault-path> [--env ...] | --grant <name> [flags]
 
 ```
       --env stringArray   environment variable to inject, as VAR=<vault-path> (repeatable)
+      --format string     output format: "text" (default), or "json": what the wrap did, as one document (default "text")
       --grant string      grant a global file-delivered mount by name (gcp, sops, npm, netrc, pypi) instead of injecting an env var - for tools that read a credential file
 ```
 

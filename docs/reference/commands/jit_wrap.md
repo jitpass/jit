@@ -21,7 +21,9 @@ jit wrap [flags]
 ### Options
 
 ```
-      --dry-run   preview what wrapping would do without changing anything
+      --dry-run         preview what wrapping would do without changing anything
+      --format string   output format: "text" (default), or "json": what the wrap did, as one document; a native tool needs --yes (default "text")
+  -y, --yes             for a native tool (aws, docker, git, terraform): skip the migration's confirmation prompt
 ```
 
 ### Options inherited from parent commands

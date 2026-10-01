@@ -419,6 +419,8 @@ func init() {
 	registerPagerFlag(agentLogCmd)
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
 	agentLogCmd.Flags().BoolVar(&agentLogRaw, "raw", false, "print the log file's bytes exactly as written, without the formatted view")
+	agentLogCmd.Flags().StringVar(&agentLogFormat, "format", "text", `output format: "text" (default), or "json": the parsed rows, oldest first, with each one's level`)
+	_ = agentLogCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
 
 	// Fixed value sets: --format, a count, a duration and an on/off word all
 	// answered TAB with the user's filenames. The TTL ceiling comes from the
