@@ -55,7 +55,13 @@ var wrapCmd = &cobra.Command{
 		if args[0] == "doctor" {
 			return errors.New("jit wrap doctor has moved: run `jit doctor --wrap` for the shim checks, or `jit doctor` for the full health report")
 		}
-		return runCatalogWrap(cmd, args[0])
+		if err := validateOutputFormat(wrapFormat); err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		if wrapFormat == "json" {
+			return runCatalogWrapJSON(cmd, args[0])
+		}
+		return runCatalogWrap(cmd, args[0], nil)
 	},
 }
 
@@ -63,7 +69,7 @@ var wrapCmd = &cobra.Command{
 // tool up in the catalog, discover its live token, vault it, install
 // profile + shim, scrub the plaintext source (backed up encrypted first),
 // and say how to verify.
-func runCatalogWrap(cmd *cobra.Command, tool string) error {
+func runCatalogWrap(cmd *cobra.Command, tool string, rep *wrapReport) error {
 	entry, ok := wrap.Lookup(tool)
 	if !ok {
 		return fmt.Errorf("jit wrap: %q isn't in the catalog (%s), `jit wrap add %s --env VAR=<vault-path>` wraps any tool by hand",
@@ -120,7 +126,14 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		sub := exec.Command(self, d.Command...) // #nosec G204 -- self + compiled-in catalog args
+		if rep != nil {
+			return runNativeWrapJSON(cmd, self, d, rep)
+		}
+		args := d.Command
+		if wrapYes {
+			args = append(append([]string{}, args...), "--yes")
+		}
+		sub := exec.Command(self, args...) // #nosec G204 -- self + compiled-in catalog args
 		sub.Stdin, sub.Stdout, sub.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
 		return sub.Run()
 	}
@@ -150,10 +163,11 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
+		rep.shim(home, res.ShimPath)
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("From now on `%s` runs inside a jit run grant: a Secret manifest migrated with "+
 			"`jit migrate <secret.yaml>` serves %s the real manifest, while anything not "+
 			"launched through jit reads decoys kubectl rejects.", tool, tool)))
-		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+		if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
@@ -182,11 +196,17 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		}
 		fmt.Fprintf(out, "Wrapped %s (%s):\n  grants   the %q global mount (jit run --with %s)\n  shim     %s\n",
 			tool, entry.Doc, entry.Grant, entry.Grant, res.ShimPath)
-		if !globalMountMigrated(home, entry.Grant) {
+		migrated := globalMountMigrated(home, entry.Grant)
+		if rep != nil {
+			rep.shim(home, res.ShimPath)
+			rep.Grant = entry.Grant
+			rep.GrantMigrated = &migrated
+		}
+		if !migrated {
 			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: the %s credential file is not migrated yet, so there is no mount to grant: "+
 				"`jit migrate <its file>` first (see `jit scan`); the shim then serves it per run.\n", entry.Grant)))
 		}
-		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+		if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
@@ -212,6 +232,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
+		rep.shim(home, res.ShimPath)
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("From now on `%s get <app>` stores the minted credentials in the vault "+
 			"(profile aws-<app>, served via credential_process) instead of writing ~/.aws/credentials; "+
 			"your MFA prompts appear exactly as before.", tool)))
@@ -235,6 +256,9 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 				return fmt.Errorf("jit wrap: %w", err)
 			}
 			for _, p := range mig.Providers {
+				if rep != nil {
+					rep.Vaulted = append(rep.Vaulted, migrate.ClissoVaultPath(p))
+				}
 				wrapBody(out, 0, "", hlCmds(fmt.Sprintf("Moved provider %q's client-secret into the vault (%s); %s now holds a pointer "+
 					"(original backed up encrypted, `jit migrate undo` restores it).",
 					p, migrate.ClissoVaultPath(p), mig.ConfigPath)))
@@ -243,7 +267,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 				fmt.Fprintf(out, "Provider %q has a name that can't map to a vault path; its client-secret\nwas left in place.\n", p)
 			}
 		}
-		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+		if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
@@ -286,8 +310,10 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		}
 		if discovery.Source != nil {
 			fmt.Fprintf(out, "Found the %s in %s, moved into the vault at %s.\n", entry.Doc, discovery.Source.Path, vaultPath)
+			rep.key(primary, vaultPath, "file", discovery.Source.Path)
 		} else {
 			fmt.Fprintf(out, "Exported the %s from the tool's own keyring, copied into the vault at %s.\n", entry.Doc, vaultPath)
+			rep.key(primary, vaultPath, "keyring", strings.Join(entry.TokenCommand, " "))
 		}
 	} else if wrapSecretAlreadyVaulted(vaultPath) {
 		// Nothing on disk to discover, but the vault already holds the
@@ -297,7 +323,9 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		// that they hadn't (a real run surfaced it: set, wrap, and the wrap
 		// answered as if the set never happened).
 		fmt.Fprintf(out, "Using the %s already in the vault at %s.\n", entry.Doc, vaultPath)
+		rep.key(primary, vaultPath, "vault", "")
 	} else {
+		rep.key(primary, vaultPath, "none", "")
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("No %s found on this machine, store it first: `jit vault set %s`, "+
 			"then re-run `jit wrap %s`. Installing the shim and profile now anyway.",
 			entry.Doc, vaultPath, tool)))
@@ -320,6 +348,10 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
 	fmt.Fprintf(out, "Wrapped %s:\n  profile  %s (%s)\n  shim     %s\n", tool, res.ProfileName, res.ProfilePath, res.ShimPath)
+	rep.shim(home, res.ShimPath)
+	if rep != nil {
+		rep.Profile = res.ProfileName
+	}
 
 	// Scrub only after the vault holds the value and the profile+shim are
 	// in place, and only after an encrypted byte-for-byte backup — the
@@ -336,12 +368,15 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err := wrap.ScrubToken(home, *discovery.Source, discovery.Value); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
+		if rep != nil && rep.Key != nil {
+			rep.Key.Scrubbed = true
+		}
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("Scrubbed the plaintext from %s (original backed up encrypted, "+
 			"`jit migrate undo %s` restores it byte-for-byte).",
 			discovery.Source.Path, srcPath)))
 	}
 
-	if err := ensureShimOnPath(cmd, home, tool); err != nil {
+	if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
 	if entry.VerifyHint != "" {
@@ -420,6 +455,12 @@ var wrapListDiscover bool
 // migrate group shares migrateDryRun across its subcommands.
 var wrapDryRun bool
 
+// wrapFormat and wrapYes drive `jit wrap <tool> --format json`, what the
+// JitPass app reads after a Wrap or a Protect (wrapreport.go). wrapYes
+// skips a native tool's migration prompt, which a JSON stream can't answer.
+var wrapFormat string
+var wrapYes bool
+
 // wrapAddUsage is the one-line shape of a wrap, quoted wherever a user lands
 // without it: `jit wrap list` with nothing wrapped, an empty `wrap undo`
 // completion, the tool-name position that has no flag yet. Same role
@@ -441,72 +482,106 @@ var wrapAddCmd = &cobra.Command{
 	Args:              requireArgs(1, 1, "a tool to wrap, e.g. `jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN`"),
 	ValidArgsFunction: completeWrapCatalog,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		tool := args[0]
-		if wrapAddEnv != nil && wrapAddGrant != "" {
-			return fmt.Errorf("jit wrap add: use either --env (inject a token) or --grant (grant a global mount), not both")
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
+		if err := validateOutputFormat(wrapFormat); err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
-		exe, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("jit wrap add: %w", err)
+		if wrapFormat == "json" {
+			return runWrapAddJSON(cmd, args[0])
 		}
-		jitBinary, err := selfpath.Stable(exe)
-		if err != nil {
-			return fmt.Errorf("jit wrap add: %w", err)
-		}
-		out := cmd.OutOrStdout()
-
-		if wrapAddGrant != "" {
-			res, err := wrap.AddGrant(home, tool, wrapAddGrant, jitBinary)
-			if err != nil {
-				return fmt.Errorf("jit wrap add: %w", err)
-			}
-			fmt.Fprintf(out, "Grant-wrapped %s:\n", tool)
-			fmt.Fprintf(out, "  grants   the %q global mount (jit run --with %s)\n", wrapAddGrant, wrapAddGrant)
-			fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
-			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: %s must be migrated first (name its file: `jit migrate <path-to-%s-file>`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)))
-			return ensureShimOnPath(cmd, home, tool)
-		}
-
-		env, order, err := parseWrapEnv(wrapAddEnv)
-		if err != nil {
-			return fmt.Errorf("jit wrap add: %w", err)
-		}
-		// A missing secret is a warning, not an error: wrapping before
-		// storing is a legal order of operations, and jit doctor verifies
-		// profile references anyway.
-		if v, vErr := openVaultReadOnly(); vErr == nil {
-			for _, name := range order {
-				if exists, exErr := v.Exists(env[name]); exErr == nil && !exists {
-					fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("warning: nothing stored at %s yet, `jit vault set %s` before running %s\n", env[name], env[name], tool)))
-				}
-			}
-		}
-
-		res, err := wrap.Add(home, wrap.AddRequest{Tool: tool, Env: env, Order: order, JitBinary: jitBinary})
-		if err != nil {
-			return fmt.Errorf("jit wrap add: %w", err)
-		}
-		fmt.Fprintf(out, "Wrapped %s:\n", tool)
-		fmt.Fprintf(out, "  profile  %s (%s)\n", res.ProfileName, res.ProfilePath)
-		fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
-
-		return ensureShimOnPath(cmd, home, tool)
+		return runWrapAdd(cmd, args[0], nil)
 	},
+}
+
+// runWrapAdd is `jit wrap add`; rep, when non-nil, is filled for
+// --format json.
+func runWrapAdd(cmd *cobra.Command, tool string, rep *wrapReport) error {
+	if wrapAddEnv != nil && wrapAddGrant != "" {
+		return fmt.Errorf("jit wrap add: use either --env (inject a token) or --grant (grant a global mount), not both")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("jit wrap add: %w", err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("jit wrap add: %w", err)
+	}
+	jitBinary, err := selfpath.Stable(exe)
+	if err != nil {
+		return fmt.Errorf("jit wrap add: %w", err)
+	}
+	out := cmd.OutOrStdout()
+
+	if wrapAddGrant != "" {
+		res, err := wrap.AddGrant(home, tool, wrapAddGrant, jitBinary)
+		if err != nil {
+			return fmt.Errorf("jit wrap add: %w", err)
+		}
+		fmt.Fprintf(out, "Grant-wrapped %s:\n", tool)
+		fmt.Fprintf(out, "  grants   the %q global mount (jit run --with %s)\n", wrapAddGrant, wrapAddGrant)
+		fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
+		if rep != nil {
+			rep.shim(home, res.ShimPath)
+			rep.Kind, rep.Grant = string(wrap.KindGrant), wrapAddGrant
+			migrated := globalMountMigrated(home, wrapAddGrant)
+			rep.GrantMigrated = &migrated
+		}
+		fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: %s must be migrated first (name its file: `jit migrate <path-to-%s-file>`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)))
+		return ensureShimOnPathTo(cmd, home, tool, rep)
+	}
+
+	env, order, err := parseWrapEnv(wrapAddEnv)
+	if err != nil {
+		return fmt.Errorf("jit wrap add: %w", err)
+	}
+	// A missing secret is a warning, not an error: wrapping before
+	// storing is a legal order of operations, and jit doctor verifies
+	// profile references anyway.
+	if v, vErr := openVaultReadOnly(); vErr == nil {
+		for _, name := range order {
+			exists, exErr := v.Exists(env[name])
+			if rep != nil {
+				rep.Injects = append(rep.Injects, wrapInjectJSON{Var: name, VaultPath: env[name], Stored: exErr == nil && exists})
+			}
+			if exErr == nil && !exists {
+				fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("warning: nothing stored at %s yet, `jit vault set %s` before running %s\n", env[name], env[name], tool)))
+			}
+		}
+	}
+
+	res, err := wrap.Add(home, wrap.AddRequest{Tool: tool, Env: env, Order: order, JitBinary: jitBinary})
+	if err != nil {
+		return fmt.Errorf("jit wrap add: %w", err)
+	}
+	fmt.Fprintf(out, "Wrapped %s:\n", tool)
+	fmt.Fprintf(out, "  profile  %s (%s)\n", res.ProfileName, res.ProfilePath)
+	fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
+	if rep != nil {
+		rep.shim(home, res.ShimPath)
+		rep.Kind, rep.Profile = string(wrap.KindShim), res.ProfileName
+	}
+
+	return ensureShimOnPathTo(cmd, home, tool, rep)
 }
 
 // ensureShimOnPath puts the one shim PATH line in the user's rc file (once)
 // and tells them how to apply it to the current shell — shared by the
 // catalog flow and `wrap add`.
 func ensureShimOnPath(cmd *cobra.Command, home, tool string) error {
+	return ensureShimOnPathTo(cmd, home, tool, nil)
+}
+
+// ensureShimOnPathTo is ensureShimOnPath recording, for --format json,
+// the rc file it added the PATH line to.
+func ensureShimOnPathTo(cmd *cobra.Command, home, tool string, rep *wrapReport) error {
 	out := cmd.OutOrStdout()
 	rc := wrap.RcFile(home, os.Getenv("SHELL"))
 	changed, err := wrap.EnsurePathLine(rc)
 	if err != nil {
 		return err
+	}
+	if changed && rep != nil {
+		rep.PathAddedTo = displayPath(home, rc)
 	}
 	if changed {
 		fmt.Fprintf(out, "Added to %s: %s\n", rc, wrap.PathLine())
@@ -811,6 +886,11 @@ func init() {
 	wrapListCmd.Flags().BoolVar(&wrapListAll, "all", false, "with --format json: include every catalog tool, wrapped or not, with where it is installed")
 	wrapListCmd.Flags().BoolVar(&wrapListDiscover, "discover", false, "with --all: for each installed, unwrapped tool, look for its key where `jit wrap <tool>` would (config files, then the tool's own export command) and report only whether one exists and where")
 	wrapCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what wrapping would do without changing anything")
+	wrapCmd.Flags().StringVar(&wrapFormat, "format", "text", `output format: "text" (default), or "json": what the wrap did, as one document; a native tool needs --yes`)
+	_ = wrapCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	wrapAddCmd.Flags().StringVar(&wrapFormat, "format", "text", `output format: "text" (default), or "json": what the wrap did, as one document`)
+	_ = wrapAddCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	wrapCmd.Flags().BoolVarP(&wrapYes, "yes", "y", false, "for a native tool (aws, docker, git, terraform): skip the migration's confirmation prompt")
 	wrapUndoCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what unwrapping would do without changing anything")
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
 	rootCmd.AddCommand(wrapCmd)

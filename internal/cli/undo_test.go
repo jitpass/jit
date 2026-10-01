@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -63,6 +65,7 @@ func execMigrateUndo(t *testing.T, args ...string) (stdout string, err error) {
 	migrateDryRun = false
 	migrateYes = false
 	migrateOnly = nil
+	migrateFormat = "text"
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
@@ -403,5 +406,89 @@ func TestCompleteMigrateUndoPathsSurfacesRestorablePaths(t *testing.T) {
 	}
 	if !strings.Contains(names(scoped), pathA) {
 		t.Errorf("prefix proj-a should still offer proj-a's file, got:\n%s", names(scoped))
+	}
+}
+
+// `jit migrate undo --format json`: with --dry-run, the plan Doctor's Undo
+// Migration confirms; with --yes, what each restore did. The secrets each
+// file gets back come from the vault's recorded origins, never a value.
+func TestMigrateUndoFormatJSONPlan(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	env := filepath.Join(home, "proj", ".env")
+	plantBackupRecord(t, env)
+	plantOriginSecret(t, home, "proj/STRIPE_KEY", "~/proj/.env")
+	plantOriginSecret(t, home, "proj/DATABASE_URL", "~/proj/.env")
+	plantOriginSecret(t, home, "other/TOKEN", "~/other/.env")
+
+	if _, err := execMigrateUndo(t, env, "--format", "json"); err == nil || !strings.Contains(err.Error(), "needs --yes") {
+		t.Errorf("a real JSON run without --yes: err = %v, want needs --yes", err)
+	}
+	out, err := execMigrateUndo(t, env, "--dry-run", "--format", "json")
+	if err != nil {
+		t.Fatalf("undo --dry-run --format json: %v\n%s", err, out)
+	}
+	var r undoReport
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("not one JSON document: %v\n%s", err, out)
+	}
+	if !r.DryRun || len(r.Files) != 1 || len(r.Errors) != 0 {
+		t.Fatalf("plan = %+v", r)
+	}
+	f := r.Files[0]
+	if f.Path != env || f.Action != "restore" || f.Restored || f.BackedUpUnix != 1751000000 {
+		t.Errorf("file = %+v", f)
+	}
+	if strings.Join(f.Secrets, ",") != "proj/DATABASE_URL,proj/STRIPE_KEY" {
+		t.Errorf("secrets = %v, want the two recorded from this file, sorted", f.Secrets)
+	}
+	if !strings.Contains(r.Report, "[DRY RUN]") {
+		t.Errorf("report text lacks the dry-run frame:\n%s", r.Report)
+	}
+}
+
+// A real round trip: migrate a .env with the test key store, then undo it
+// as JSON. The file is plain text again and the row says so.
+func TestMigrateUndoFormatJSONRestores(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	origOpen := openKeyStore
+	t.Cleanup(func() { openKeyStore = origOpen })
+	key := countingKeychainKey{kw: newFakeKeyWrapper(), uses: new(int)}
+	openKeyStore = func(r string) keystore.Store { return keystore.OpenTesting(r, key) }
+	withFakeLaunchd(t)
+
+	env := filepath.Join(home, "billing", ".env")
+	// No vendor prefix: a value shaped like a real provider's key trips
+	// GitHub's push protection however fake it is.
+	const body = "ACME_API_TOKEN=tok_51QzR7bWpKmT4vXnA9dLcE2hJx\n" // gitleaks:allow
+	if err := os.MkdirAll(filepath.Dir(env), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := execMigrate(t, env, "--yes"); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
+	}
+	out, err := execMigrateUndo(t, env, "--yes", "--format", "json")
+	if err != nil {
+		t.Fatalf("undo --yes --format json: %v\n%s", err, out)
+	}
+	var r undoReport
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("not one JSON document: %v\n%s", err, out)
+	}
+	if r.DryRun || len(r.Files) != 1 || !r.Files[0].Restored || r.Files[0].Error != "" {
+		t.Fatalf("report = %+v\n%s", r, r.Report)
+	}
+	if len(r.Files[0].Secrets) == 0 || !strings.HasSuffix(r.Files[0].Secrets[0], "/ACME_API_TOKEN") {
+		t.Errorf("secrets = %v, want the vaulted ACME_API_TOKEN", r.Files[0].Secrets)
+	}
+	if strings.Contains(out, "tok_51QzR7") {
+		t.Error("the document carries the secret's value")
+	}
+	if got, _ := os.ReadFile(env); string(got) != body {
+		t.Errorf(".env after undo = %q, want the original bytes", got)
 	}
 }

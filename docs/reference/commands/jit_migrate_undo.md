@@ -40,7 +40,7 @@ aren't in its index, restore those by hand: `jit vault list` (look under
 _backups/) + `jit vault get <path>`.
 
 ```
-jit migrate undo <path>...
+jit migrate undo <path>... [flags]
 ```
 
 ### Examples
@@ -49,6 +49,12 @@ jit migrate undo <path>...
   jit migrate undo ~/proj/.env    # restore one migrated file
   jit migrate undo ~/proj         # restore everything migrated under a project
   jit migrate undo ~/proj --dry-run
+```
+
+### Options
+
+```
+      --format string   output format: "text" (default), or "json": each file, what happens to it, and the vault secrets whose values return to it; a real run needs --yes (default "text")
 ```
 
 ### Options inherited from parent commands

@@ -7,6 +7,9 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -192,5 +195,57 @@ func TestAgentLogFoldsSimilarSuffix(t *testing.T) {
 	}
 	if strings.Contains(out, "since the last logged one") {
 		t.Errorf("the prose suffix must not survive the fold, got:\n%s", out)
+	}
+}
+
+// TestAgentLogJSONCarriesTheRowsTheTextDraws: --format json is what the
+// JitPass app's Show Log reads. A fold keeps every mount it folded, a
+// lifecycle line has none, the level is the glyph's word, an unparsed
+// line stays byte-exact, and nothing is lost to ~-shortening.
+func TestAgentLogJSONCarriesTheRowsTheTextDraws(t *testing.T) {
+	home := withFixtureHome(t)
+	log := filepath.Join(t.TempDir(), "agent.log")
+	lines := []string{
+		"2026-10-01 15:05:01 jit service: mount " + home + "/a/.env: reader connected (not identified)",
+		"2026-10-01 15:05:02 jit service: mount " + home + "/b/.env: reader connected (not identified)",
+		"2026-10-01 15:06:00 jit service listening on " + home + "/.jit/agent.sock",
+		"panic: runtime error",
+		"2026-10-01 15:07:00 jit service: serve error: broken pipe",
+	}
+	if err := os.WriteFile(log, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := writeAgentLogJSON(&out, log, 0); err != nil {
+		t.Fatal(err)
+	}
+	var doc agentLogJSON
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	if len(doc.Entries) != 4 {
+		t.Fatalf("entries = %+v, want 4 (two mount notes fold into one)", doc.Entries)
+	}
+	fold := doc.Entries[0]
+	if fold.Count != 2 || strings.Join(fold.Subjects, ",") != "~/a/.env,~/b/.env" || fold.Level != "warn" || fold.Time != "15:05" {
+		t.Errorf("folded row = %+v, want both mounts, count 2, warn, 15:05", fold)
+	}
+	if life := doc.Entries[1]; len(life.Subjects) != 0 || life.Message != "listening on ~/.jit/agent.sock" || life.Level != "ok" {
+		t.Errorf("lifecycle row = %+v", life)
+	}
+	if raw := doc.Entries[2]; raw.Raw != "panic: runtime error" || raw.Message != "" {
+		t.Errorf("unparsed row = %+v, want it byte-exact as raw", raw)
+	}
+	if bad := doc.Entries[3]; bad.Level != "risk" {
+		t.Errorf("broken pipe level = %q, want risk", bad.Level)
+	}
+
+	// No log yet: an empty list, not null and not an error.
+	out.Reset()
+	if err := writeAgentLogJSON(&out, filepath.Join(t.TempDir(), "agent.log"), 50); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"entries": []`) {
+		t.Errorf("missing log = %s, want an empty entries array", out.String())
 	}
 }

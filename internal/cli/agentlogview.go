@@ -111,7 +111,8 @@ type logEntry struct {
 	date, clock     string
 	subject, detail string
 	count           int
-	raw             string // set only for a line that didn't parse
+	raw             string   // set only for a line that didn't parse
+	folded          []string // every subject the row folded, subject first
 }
 
 // collapseAgentLog parses the log and folds RUNS of identical events into one
@@ -154,7 +155,11 @@ func collapseAgentLog(lines []string, home string) []logEntry {
 			out[n-1].clock == e.clock && out[n-1].detail == e.detail &&
 			out[n-1].subject != "" && e.subject != "" {
 			out[n-1].count++
+			out[n-1].folded = append(out[n-1].folded, e.subject)
 			continue
+		}
+		if e.subject != "" {
+			e.folded = []string{e.subject}
 		}
 		out = append(out, e)
 	}
@@ -185,6 +190,19 @@ func writeAgentLogEntry(w io.Writer, e logEntry) {
 // red when the service failed at something, amber when it is reporting a
 // degraded or unidentified state, green when it is just narrating its life.
 func agentLogGlyph(msg string) (string, *color.Color) {
+	switch agentLogLevel(msg) {
+	case "risk":
+		return glyphRisk, cRisk
+	case "warn":
+		return glyphWarn, cWarn
+	default:
+		return glyphOK, cOK
+	}
+}
+
+// agentLogLevel is agentLogGlyph's verdict as a word, for --format json:
+// "risk", "warn" or "ok".
+func agentLogLevel(msg string) string {
 	l := strings.ToLower(msg)
 	switch {
 	case strings.Contains(l, "broken pipe"),
@@ -192,7 +210,7 @@ func agentLogGlyph(msg string) (string, *color.Color) {
 		strings.Contains(l, "failed"),
 		strings.Contains(l, "refused"),
 		strings.Contains(l, "panic"):
-		return glyphRisk, cRisk
+		return "risk"
 	case strings.Contains(l, "decoy"),
 		strings.Contains(l, "not identified"),
 		strings.Contains(l, "missed"),
@@ -203,8 +221,8 @@ func agentLogGlyph(msg string) (string, *color.Color) {
 		// through an entire afternoon of the 2026-08-17 incident.
 		strings.Contains(l, "skipped,"),
 		strings.Contains(l, "skipping mount"):
-		return glyphWarn, cWarn
+		return "warn"
 	default:
-		return glyphOK, cOK
+		return "ok"
 	}
 }

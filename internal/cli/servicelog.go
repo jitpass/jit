@@ -7,11 +7,13 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +34,10 @@ var agentLogFollow bool
 // paths, which is what makes it readable and also what would break a grep or
 // a pasted bug report — so the untouched bytes stay one flag away.
 var agentLogRaw bool
+
+// agentLogFormat is --format: "text", or "json" for a program (the JitPass
+// app's Show Log), which gets the same parsed rows the text view draws.
+var agentLogFormat string
 
 // agentLogPollInterval paces --follow's growth checks — comfortably
 // under a human's "is it live?" threshold without hammering stat.
@@ -56,12 +62,21 @@ var agentLogCmd = &cobra.Command{
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(agentLogFormat); err != nil {
+			return fmt.Errorf("jit service log: %w", err)
+		}
+		if agentLogFormat == "json" && (agentLogFollow || agentLogRaw) {
+			return errors.New("jit service log: --format json is one document; it takes neither --follow nor --raw")
+		}
 		root, err := vaultRootDir()
 		if err != nil {
 			return fmt.Errorf("jit service log: %w", err)
 		}
 		logPath := filepath.Join(root, "agent.log")
 		out := cmd.OutOrStdout()
+		if agentLogFormat == "json" {
+			return writeAgentLogJSON(out, logPath, agentLogLines)
+		}
 
 		data, err := os.ReadFile(logPath) // #nosec G304 -- jit's own log file under its config root
 		if err != nil && !os.IsNotExist(err) {
@@ -170,4 +185,54 @@ func tailLines(data []byte, n int) []byte {
 func displayLogPath(logPath string) string {
 	home, _ := os.UserHomeDir()
 	return displayPath(home, logPath)
+}
+
+// agentLogJSON is `jit service log --format json`: the rows the text view
+// draws, oldest first, so a program shows the log without parsing prose.
+// Path is ~-shortened; Entries is empty, never null, when there is no log.
+type agentLogJSON struct {
+	Path    string             `json:"path"`
+	Entries []agentLogJSONLine `json:"entries"`
+}
+
+// agentLogJSONLine is one row. Subjects are the mount paths a mount note
+// is about (none for a lifecycle line); same-minute notes saying the same
+// thing about several mounts fold into one row, so Count is how many
+// notes the row stands for (len(Subjects) for a mount note). Level the text view's
+// glyph as a word: "risk", "warn" or "ok". A line that isn't one of the
+// service's timestamped notes (a panic, a stack frame) carries only Raw,
+// byte-exact.
+type agentLogJSONLine struct {
+	Date     string   `json:"date,omitempty"`
+	Time     string   `json:"time,omitempty"`
+	Subjects []string `json:"subjects,omitempty"`
+	Message  string   `json:"message,omitempty"`
+	Count    int      `json:"count,omitempty"`
+	Level    string   `json:"level,omitempty"`
+	Raw      string   `json:"raw,omitempty"`
+}
+
+func writeAgentLogJSON(out io.Writer, logPath string, lines int) error {
+	data, err := os.ReadFile(logPath) // #nosec G304 -- jit's own log file under its config root
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("jit service log: %w", err)
+	}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		home = ""
+	}
+	doc := agentLogJSON{Path: displayPath(home, logPath), Entries: []agentLogJSONLine{}}
+	if tail := strings.TrimRight(string(tailLines(data, lines)), "\n"); tail != "" {
+		for _, e := range collapseAgentLog(strings.Split(tail, "\n"), home) {
+			if e.raw != "" {
+				doc.Entries = append(doc.Entries, agentLogJSONLine{Raw: e.raw})
+				continue
+			}
+			doc.Entries = append(doc.Entries, agentLogJSONLine{
+				Date: e.date, Time: e.clock, Subjects: e.folded, Message: e.detail,
+				Count: e.count, Level: agentLogLevel(e.detail),
+			})
+		}
+	}
+	return writeJSON(out, doc)
 }

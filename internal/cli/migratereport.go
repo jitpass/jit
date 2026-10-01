@@ -11,6 +11,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jitpass/jit/internal/migrate"
 )
 
 // migrateReport is `jit migrate <path> --format json`'s one document: what
@@ -95,18 +97,24 @@ func (r *migrateReport) fill(in cleanPhaseInputs) {
 		seen[s.Var] = true
 		r.Vaulted = append(r.Vaulted, s.Var)
 	}
-	for _, e := range in.cleanup.Edited {
+	r.fillCaches(in.cleanup, in.cleanErr)
+}
+
+// fillCaches records an agent-cache sweep: `jit migrate`'s per-run one,
+// and `jit migrate caches`, whose whole document is this part.
+func (r *migrateReport) fillCaches(c migrate.AgentCacheCleanup, cleanErr error) {
+	for _, e := range c.Edited {
 		r.Caches.Removed = append(r.Caches.Removed, cacheFileReport{
 			Agent: e.Agent, Area: e.Area, Path: e.Path, Copies: e.Occurrences,
 		})
 	}
-	for _, s := range in.cleanup.Skipped {
+	for _, s := range c.Skipped {
 		r.Caches.Left = append(r.Caches.Left, cacheFileReport{
 			Agent: s.Agent, Area: s.Area, Path: s.Path, Kind: string(s.Kind), Reason: s.Reason,
 		})
 	}
-	if in.cleanErr != nil {
-		r.Errors = append(r.Errors, "clearing AI agent caches: "+in.cleanErr.Error())
+	if cleanErr != nil {
+		r.Errors = append(r.Errors, "clearing AI agent caches: "+cleanErr.Error())
 	}
 }
 

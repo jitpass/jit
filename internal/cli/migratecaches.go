@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -56,16 +58,67 @@ var migrateCachesCmd = &cobra.Command{
 	Example: "  jit migrate caches            # clean copies of every vaulted secret\n" +
 		"  jit migrate caches --dry-run  # show what would be cleaned, change nothing",
 	Args: cobra.NoArgs,
-	RunE: runMigrateCaches,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(migrateFormat); err != nil {
+			return fmt.Errorf("jit migrate caches: %w", err)
+		}
+		if migrateFormat == "json" {
+			return runMigrateCachesJSON(cmd)
+		}
+		return runMigrateCaches(cmd, args)
+	},
 }
 
 func init() {
 	migrateCmd.AddCommand(migrateCachesCmd)
+	migrateCachesCmd.Flags().StringVar(&migrateFormat, "format", "text",
+		`output format: "text" (default), or "json": the migrate report's document, with what the sweep removed and left under caches; needs --yes`)
+	_ = migrateCachesCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+}
+
+// runMigrateCachesJSON is `jit migrate caches --yes --format json`: the
+// same run, its text captured into the report, and one migrateReport on
+// stdout whose caches part is the whole result (targets and vaulted stay
+// empty: this sweep moves nothing into the vault). Written after an error
+// too, like `jit migrate <path> --format json`, since the files already
+// rewritten are real and undoable.
+func runMigrateCachesJSON(cmd *cobra.Command) error {
+	switch {
+	case !migrateYes:
+		return errors.New("jit migrate caches: --format json needs --yes; a plan cannot be confirmed on a JSON stream")
+	case migrateDryRun:
+		return errors.New("jit migrate caches: --format json is for a real run; drop --dry-run")
+	}
+	stdout := cmd.OutOrStdout()
+	var text bytes.Buffer
+	cmd.SetOut(&text)
+	defer cmd.SetOut(nil)
+
+	report := newMigrateReport()
+	runErr := migrateCachesRun(cmd, report)
+	if runErr != nil {
+		report.Errors = append(report.Errors, runErr.Error())
+	}
+	report.Report = text.String()
+	if err := writeJSON(stdout, report); err != nil {
+		return fmt.Errorf("jit migrate caches: writing report: %w", err)
+	}
+	if runErr != nil {
+		cmd.SilenceErrors = true
+		defer func() { cmd.SilenceErrors = false }()
+	}
+	return runErr
 }
 
 const cachesNothingToDo = "No AI agent cache holds a copy of any vaulted secret. Nothing to do."
 
 func runMigrateCaches(cmd *cobra.Command, _ []string) error {
+	return migrateCachesRun(cmd, nil)
+}
+
+// migrateCachesRun is the sweep; report, when non-nil, is filled with what
+// it did for --format json.
+func migrateCachesRun(cmd *cobra.Command, report *migrateReport) error {
 	out := cmd.OutOrStdout()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -120,6 +173,10 @@ func runMigrateCaches(cmd *cobra.Command, _ []string) error {
 	}
 
 	cleanup, cleanErr := migrate.CleanAgentCaches(v, home, secrets)
+	if report != nil {
+		report.Applied = true
+		report.fillCaches(cleanup, cleanErr)
+	}
 	// No plan was shown under --yes, so an empty run says so here.
 	if migrateYes && cleanErr == nil && len(cleanup.Edited) == 0 && len(cleanup.Skipped) == 0 {
 		fmt.Fprintln(out, cachesNothingToDo)
