@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -648,6 +649,17 @@ func relatedGroups(a, b *dupGroup) bool {
 	if shared == 0 {
 		return false
 	}
+	// One origin path holds several entries in the files a category reads
+	// per section: [dev] and [stage] in ~/.aws/credentials are aws-dev and
+	// aws-stage, the same key names with every value different, and they
+	// are two profiles, not one file migrated twice. A second migration of
+	// a file is named by claimNamespace as the first's fork, "<name>-2",
+	// and a fork stays a copy however far its values have drifted. Other
+	// names under one origin (an older jit named the profile another way)
+	// are copies only when every shared value agrees.
+	if a.sourceFile() == b.sourceFile() && forkBase(a.name) != forkBase(b.name) && agreeing < shared {
+		return false
+	}
 	// Two DIFFERENT files that merely share an origin tail need at least
 	// one identical value to be called copies of each other. A tail like
 	// "jamf/.env" is generic — a real vault had one under
@@ -664,6 +676,19 @@ func relatedGroups(a, b *dupGroup) bool {
 		wider = len(b.keys)
 	}
 	return shared == len(b.keys) || shared == len(a.keys) || shared*2 >= wider
+}
+
+// forkBase strips claimNamespace's "-N" fork suffix (N >= 2) from a
+// profile name: "aws-dev-2" and "aws-dev" share the base "aws-dev". A
+// section really named "dev-2" beside "dev" reads as a fork too; it is
+// still reported, as diverged copies, and gets no removal pick.
+func forkBase(name string) string {
+	if i := strings.LastIndexByte(name, '-'); i > 0 {
+		if n, err := strconv.Atoi(name[i+1:]); err == nil && n >= 2 && name[i+1] != '0' {
+			return name[:i]
+		}
+	}
+	return name
 }
 
 // buildDupFinding turns one bucket of related groups into a finding. Keys
