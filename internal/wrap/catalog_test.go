@@ -6,6 +6,7 @@ package wrap
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -188,6 +189,55 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		}
 		if !found || value != tc.want {
 			t.Errorf("%s[%d]: got (%q, %v), want (%q, true)", tc.tool, tc.sourceIdx, value, found, tc.want)
+		}
+	}
+}
+
+// TestVerifyHintsThatPrintASecretSayItSo guards JitPass's Verify, which
+// runs a tool's VerifyHint and shows what it printed. A check whose
+// output is a credential must carry VerifyPrintsSecret, and the set that
+// does is pinned so adding one is a decision. Each verdict was read in
+// the tool's source (2026-10-01): stripe config --list prints config.toml
+// as it is; vault token lookup prints the token as id; snyk config get api
+// prints the stored token.
+func TestVerifyHintsThatPrintASecretSayItSo(t *testing.T) {
+	prints := map[string]bool{"gcloud": true, "sops": true}
+	// Commands that print the credential they check. A hint containing one
+	// must be marked, whichever tool it belongs to.
+	secretCommands := []string{
+		"print-access-token", "print-identity-token", "auth token",
+		"--decrypt", "token lookup", "config get api", "config --list",
+		"--show-token",
+	}
+	for _, tool := range CatalogTools() {
+		e, _ := Lookup(tool)
+		if e.VerifyPrintsSecret && e.VerifyHint == "" {
+			t.Errorf("%s: VerifyPrintsSecret without a VerifyHint", tool)
+		}
+		if e.VerifyPrintsSecret != prints[tool] {
+			t.Errorf("%s: VerifyPrintsSecret = %v, want %v (hint %q)", tool, e.VerifyPrintsSecret, prints[tool], e.VerifyHint)
+		}
+		for _, c := range secretCommands {
+			if strings.Contains(e.VerifyHint, c) && !e.VerifyPrintsSecret {
+				t.Errorf("%s: hint %q contains %q, which prints a secret, but isn't marked", tool, e.VerifyHint, c)
+			}
+		}
+	}
+}
+
+// TestVerifyHintsRunThroughTheWrap: a check the account rules answer
+// (refused, run unwrapped, re-vaulted) would test something other than
+// the wrapped key, so no hint may match one.
+func TestVerifyHintsRunThroughTheWrap(t *testing.T) {
+	home := t.TempDir()
+	for _, tool := range CatalogTools() {
+		e, _ := Lookup(tool)
+		if e.Kind != KindShim || e.VerifyHint == "" {
+			continue
+		}
+		args := strings.Fields(e.VerifyHint)[1:]
+		if m, hit := e.MatchAccount(home, args); hit {
+			t.Errorf("%s: hint %q matches account rule %+v", tool, e.VerifyHint, m.Rule)
 		}
 	}
 }

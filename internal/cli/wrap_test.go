@@ -408,6 +408,17 @@ func TestWrapListJSONAllAddsTheCatalog(t *testing.T) {
 	if clisso := byName["clisso"]; clisso.Kind != "capture" {
 		t.Errorf("clisso kind = %q, want capture", clisso.Kind)
 	}
+	// The app runs verify_hint for the user; a check whose output is a
+	// token must say so, or Verify puts a live token in a window.
+	if g := byName["gcloud"]; g.VerifyHint == "" || !g.VerifyPrintsSecret {
+		t.Errorf("gcloud verify = %q, prints secret %v; want a hint marked as printing one", g.VerifyHint, g.VerifyPrintsSecret)
+	}
+	if gh.VerifyPrintsSecret {
+		t.Error("gh's verify hint is marked as printing a secret; gh auth status masks the token")
+	}
+	if !strings.Contains(out, `"verify_prints_secret": true`) {
+		t.Errorf("listing never says verify_prints_secret: %s", out)
+	}
 
 	// Text mode has no --all view (it would need a rendered table nobody
 	// has designed), so the flag says so rather than printing the same table.

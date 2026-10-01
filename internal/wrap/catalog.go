@@ -84,6 +84,13 @@ type CatalogEntry struct {
 	// keyring copy is already encrypted at rest.
 	TokenCommand []string
 	VerifyHint   string // suggested check after wrapping, e.g. "gh auth status"
+	// VerifyPrintsSecret marks a VerifyHint whose output IS a credential
+	// (gcloud's print-access-token, sops --decrypt). Where the tool has a
+	// check that prints none, the hint uses it instead; this is for the
+	// ones that don't. A consumer that runs the hint for the user, as
+	// JitPass's Verify does, keeps the exit status and discards the
+	// output unread.
+	VerifyPrintsSecret bool
 	// ShimEnv is plain, non-secret settings the shim sets for every call
 	// (unless the user already set them): switches that stop a tool
 	// writing the injected token back to disk, e.g. pulumi's

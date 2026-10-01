@@ -24,8 +24,11 @@ encrypted), and installs the `~/.jit/shims/stripe` shim plus the
 ## Verify
 
 ```sh
-stripe config --list
+stripe balance retrieve
 ```
+
+It calls the API with the wrapped key and prints your balance.
+`stripe config --list` reads only the config file, which shows a key.
 
 ## How it works
 

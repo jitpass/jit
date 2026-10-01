@@ -22,8 +22,11 @@ shim plus the `wrap-vault` profile.
 ## Verify
 
 ```sh
-vault token lookup
+vault read -field=display_name auth/token/lookup-self
 ```
+
+It prints the token's display name. Plain `vault token lookup` works too,
+but it prints the token itself, as `id`.
 
 ## How it works
 
