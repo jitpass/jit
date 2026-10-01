@@ -2180,7 +2180,8 @@ func discoverFileTarget(d *discovered, home, path string) error {
 		}
 		d.dockerRegistries = append(d.dockerRegistries, regs...)
 		return nil
-	case migrate.GitCredentialsPath(home):
+	case migrate.GitCredentialsPath(home), migrate.GitCredentialsXDGPath(home):
+		// One discovery reads both store files, whichever was named.
 		creds, err := migrate.DiscoverGitCredentials(home)
 		if err != nil {
 			return err

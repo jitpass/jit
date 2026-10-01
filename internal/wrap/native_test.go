@@ -14,25 +14,27 @@ func TestDelegationForNativeTools(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s missing from catalog", tool)
 		}
-		d, err := Delegation("/Users/me", entry)
+		d, err := Delegation(entry, []string{"/Users/me/.creds"})
 		if err != nil {
 			t.Fatalf("Delegation(%s): %v", tool, err)
 		}
 		if d.Category != category {
 			t.Errorf("%s delegates to category %q, want %q", tool, d.Category, category)
 		}
-		// An absolute path, never the literal "home": migrate resolves its
-		// argument against the working directory, so the literal failed
-		// from every directory without a home/ entry.
-		if got := strings.Join(d.Command, " "); got != "migrate /Users/me --only "+category {
+		// The category's files, never the home directory: a directory
+		// target is walked for project files only.
+		if got := strings.Join(d.Command, " "); got != "migrate /Users/me/.creds --only "+category {
 			t.Errorf("%s delegation command = %q", tool, got)
+		}
+		if _, err := Delegation(entry, nil); err == nil || !strings.Contains(err.Error(), "nothing to protect") {
+			t.Errorf("%s with no files: err = %v, want nothing to protect", tool, err)
 		}
 	}
 }
 
 func TestDelegationRefusesShimEntry(t *testing.T) {
 	gh, _ := Lookup("gh")
-	if _, err := Delegation("/Users/me", gh); err == nil {
+	if _, err := Delegation(gh, []string{"/Users/me/.creds"}); err == nil {
 		t.Fatal("expected an error delegating a shim entry")
 	}
 }

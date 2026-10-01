@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -102,14 +103,18 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		d, err := wrap.Delegation(home, entry)
+		d, err := wrap.Delegation(entry, migrate.NativeTargets(home, entry.NativeCategory))
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		fmt.Fprintf(out, "%s: %s.\n", entry.Tool, entry.Doc)
 		// Shown with ~ for the home path, run with the absolute one.
 		shown := append([]string{}, d.Command...)
-		shown[1] = "~"
+		for i, a := range shown {
+			if filepath.IsAbs(a) {
+				shown[i] = displayPath(home, a)
+			}
+		}
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("Running `jit %s`, no shim needed or installed.\n\n", strings.Join(shown, " "))))
 		self, err := os.Executable()
 		if err != nil {
