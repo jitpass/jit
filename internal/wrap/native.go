@@ -18,19 +18,25 @@ type NativeDelegation struct {
 	Command  []string // the exact jit command the delegation runs, for display
 }
 
-// Delegation returns the migrate delegation for a KindNative entry, scoped
-// to home. The path is passed absolute and explicit: migrate takes a path
-// argument and resolves it against the working directory, so the literal
-// "home" this used to emit was a directory named home under wherever the
-// user happened to be, and `jit wrap aws` failed with "path: ./home does
-// not exist" from every directory but one that had it.
-func Delegation(home string, e CatalogEntry) (NativeDelegation, error) {
+// Delegation returns the migrate delegation for a KindNative entry: the
+// category's own credential files, named one by one (files, from
+// migrate.NativeTargets at the cli layer, which can import migrate).
+// It used to name the home directory, but a directory target is walked
+// for project files only, so `jit migrate ~ --only aws` answered "Nothing
+// to migrate" with ~/.aws/credentials full of keys. Before that it named a
+// literal "home", which failed with "./home does not exist". With no files
+// there is nothing to delegate, and the error says where it looked.
+func Delegation(e CatalogEntry, files []string) (NativeDelegation, error) {
 	if e.Kind != KindNative {
 		return NativeDelegation{}, fmt.Errorf("%s is not a native-delegated tool", e.Tool)
 	}
+	if len(files) == 0 {
+		return NativeDelegation{}, fmt.Errorf("no %s credential file on this Mac, nothing to protect", e.Tool)
+	}
+	cmd := append([]string{"migrate"}, files...)
 	return NativeDelegation{
 		Tool:     e.Tool,
 		Category: e.NativeCategory,
-		Command:  []string{"migrate", home, "--only", e.NativeCategory},
+		Command:  append(cmd, "--only", e.NativeCategory),
 	}, nil
 }
