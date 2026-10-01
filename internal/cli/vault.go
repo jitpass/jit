@@ -386,7 +386,12 @@ func duplicateGroupClusters(secrets []string, meta map[string]vault.SecretInfo) 
 		}
 		keys := append([]string(nil), members[g]...)
 		sort.Strings(keys)
-		sig := strings.Join(keys, "\x00") + "\x00\x00" + originTail(origin)
+		// And on the name's fork base: a copy of a file is named after the
+		// same file and folder, so its name is the first's claimNamespace
+		// fork ("ws", "ws-2"). Without it, [dev] and [stage] in one
+		// ~/.aws/credentials (aws-dev, aws-stage: one origin, one key set)
+		// read as one file migrated twice.
+		sig := strings.Join(keys, "\x00") + "\x00\x00" + originTail(origin) + "\x00\x00" + forkBase(g)
 		if _, ok := byEvidence[sig]; !ok {
 			byEvidence[sig] = &dupEvidenceCluster{}
 			clusterOrder = append(clusterOrder, sig)

@@ -140,6 +140,45 @@ func TestSameFileFindings(t *testing.T) {
 	}
 }
 
+// TestSameFileFindingsKeepsAFileSectionsApart: ~/.aws/credentials with
+// [dev] and [stage] migrates to aws-dev and aws-stage, one origin, the
+// same four key names, every value different. Doctor reported that as
+// "one file, migrated more than once ... the copies no longer agree".
+// Two sections of one file are not copies; a re-migration is the fork.
+func TestSameFileFindingsKeepsAFileSectionsApart(t *testing.T) {
+	keys := func(v string) map[string]string {
+		return map[string]string{"ACCESS_KEY_ID": "id-" + v, "SECRET_ACCESS_KEY": "s-" + v, "SESSION_TOKEN": "t-" + v, "EXPIRATION": "e-" + v}
+	}
+	const origin = "~/.aws/credentials"
+	groups := map[string]*dupGroup{
+		"aws-dev":   dupTestGroup("aws-dev", origin, true, []string{"aws-dev"}, keys("dev")),
+		"aws-stage": dupTestGroup("aws-stage", origin, true, []string{"aws-stage"}, keys("stage")),
+	}
+	if fs := sameFileFindings(groups); len(fs) != 0 {
+		t.Errorf("two sections of one file reported as copies: %+v", fs)
+	}
+	// Sharing one value doesn't make them copies either; a credential used
+	// by two profiles is the shared-credential finding's to report. (Every
+	// shared value agreeing does: TestGatherDupGroupsExpandsTildeOrigins.)
+	shared := keys("stage")
+	shared["ACCESS_KEY_ID"] = "id-dev"
+	groups["aws-stage"] = dupTestGroup("aws-stage", origin, true, []string{"aws-stage"}, shared)
+	if fs := sameFileFindings(groups); len(fs) != 0 {
+		t.Errorf("sections sharing one value reported as copies: %+v", fs)
+	}
+	// The same section migrated twice is the fork, and still reported.
+	groups["aws-dev-2"] = dupTestGroup("aws-dev-2", origin, true, nil, keys("dev-rotated"))
+	fs := sameFileFindings(groups)
+	if len(fs) != 1 || strings.Join(fs[0].Groups, ",") != "aws-dev,aws-dev-2" || fs[0].ValuesMatch {
+		t.Errorf("re-migrated section = %+v, want aws-dev with aws-dev-2, values diverged", fs)
+	}
+	for name, base := range map[string]string{"aws-dev-2": "aws-dev", "aws-dev": "aws-dev", "proj-10": "proj", "proj-1": "proj-1", "proj-02": "proj-02", "x-": "x-", "-2": "-2"} {
+		if got := forkBase(name); got != base {
+			t.Errorf("forkBase(%q) = %q, want %q", name, got, base)
+		}
+	}
+}
+
 // TestSharedCredentialFindings pins the shared-credential verdict: the same
 // value under the same key across independent groups clusters into ONE
 // finding per group set, config-named keys never count, and groups already

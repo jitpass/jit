@@ -645,6 +645,29 @@ func TestDoctorDuplicatesHint(t *testing.T) {
 	}
 }
 
+// TestDoctorDuplicatesKeepsAFileSectionsApart: [dev] and [stage] in one
+// ~/.aws/credentials migrate to aws-dev and aws-stage, one origin and one
+// key set. They are two profiles, and doctor reported them as one file
+// migrated twice.
+func TestDoctorDuplicatesKeepsAFileSectionsApart(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	origin := filepath.Join(home, ".aws", "credentials")
+	writeProfileAt(t, origin, "[dev]\n[stage]\n")
+	writeFixtureProfile(t, cwd, "app",
+		"A: aws-dev/AWS_ACCESS_KEY_ID\nB: aws-dev/AWS_SECRET_ACCESS_KEY\nC: aws-stage/AWS_ACCESS_KEY_ID\nD: aws-stage/AWS_SECRET_ACCESS_KEY\n")
+	for _, p := range []string{"aws-dev/AWS_ACCESS_KEY_ID", "aws-dev/AWS_SECRET_ACCESS_KEY", "aws-stage/AWS_ACCESS_KEY_ID", "aws-stage/AWS_SECRET_ACCESS_KEY"} {
+		plantOriginSecret(t, home, p, origin)
+	}
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("jit doctor: %v", err)
+	}
+	if strings.Contains(out, "[duplicates]") {
+		t.Errorf("two sections of one file reported as duplicates:\n%s", out)
+	}
+}
+
 // TestDoctorOriginGoneForReferencedSecret: a secret a profile still uses,
 // whose recorded origin file has been deleted, gets an advisory [origin gone]
 // line — while a sibling whose origin still exists stays silent. Nothing is
