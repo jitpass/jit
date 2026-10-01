@@ -24,8 +24,10 @@ encrypted), and installs the `~/.jit/shims/circleci` shim plus the
 ## Verify
 
 ```sh
-circleci diagnostic
+circleci auth me
 ```
+
+On a release older than v1, run `circleci diagnostic` instead.
 
 ## How it works
 

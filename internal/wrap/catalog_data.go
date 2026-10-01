@@ -85,7 +85,10 @@ var catalog = map[string]CatalogEntry{
 			{Path: "~/.config/stripe/config.toml", Format: "toml", Selector: "default/live_mode_api_key"},
 			{Path: "~/.config/stripe/config.toml", Format: "toml", Selector: "default/test_mode_api_key"},
 		},
-		VerifyHint: "stripe config --list",
+		// GET /v1/balance with the key from STRIPE_API_KEY: it prints
+		// amounts, not a key. `config --list` printed config.toml as it
+		// is (the test key in full) and never read the env var.
+		VerifyHint: "stripe balance retrieve",
 	},
 	"hcloud": {
 		Tool:    "hcloud",
@@ -402,7 +405,10 @@ var catalog = map[string]CatalogEntry{
 			// is the CLI's documented env credential and takes priority.
 			{Path: "~/.config/configstore/snyk.json", Format: "json", Selector: "api"},
 		},
-		VerifyHint: "snyk config get api",
+		// whoami reads SNYK_TOKEN and prints the user name. `config get
+		// api` printed the token, and only the one in the file the wrap
+		// scrubs. --experimental is still accepted, and older CLIs need it.
+		VerifyHint: "snyk whoami --experimental",
 	},
 	"circleci": {
 		Tool: "circleci",
@@ -423,7 +429,9 @@ var catalog = map[string]CatalogEntry{
 			{Path: "~/.config/circleci/config.yml", Format: "yaml", Selector: "token"},
 			{Path: "~/.circleci/cli.yml", Format: "yaml", Selector: "token"},
 		},
-		VerifyHint: "circleci diagnostic",
+		// v1 dropped `diagnostic`; `auth me` asks the API who the token
+		// belongs to and prints name and login. v0 users: `circleci diagnostic`.
+		VerifyHint: "circleci auth me",
 	},
 	"vault": {
 		Tool:    "vault",
@@ -440,7 +448,9 @@ var catalog = map[string]CatalogEntry{
 			// docs page), the same caveat wrangler's OAuth token has.
 			{Path: "~/.vault-token", Format: "raw"},
 		},
-		VerifyHint: "vault token lookup",
+		// `token lookup` prints the token itself, as id, and has no -field
+		// flag; reading lookup-self keeps only the token's display name.
+		VerifyHint: "vault read -field=display_name auth/token/lookup-self",
 	},
 	"pulumi": {
 		Tool:    "pulumi",
@@ -590,6 +600,8 @@ var catalog = map[string]CatalogEntry{
 		Grant:      "gcp",
 		Doc:        "Google Cloud application-default credentials, served as a live mount to gcloud and the Google SDKs",
 		VerifyHint: "gcloud auth application-default print-access-token",
+		// The only check that exercises the mount; its output is the token.
+		VerifyPrintsSecret: true,
 	},
 	"sops": {
 		Tool:       "sops",
@@ -597,6 +609,8 @@ var catalog = map[string]CatalogEntry{
 		Grant:      "sops",
 		Doc:        "SOPS age private key, served as a live mount to sops and the tools that call it",
 		VerifyHint: "sops --decrypt <an encrypted file>",
+		// It prints the decrypted file: every secret in it.
+		VerifyPrintsSecret: true,
 	},
 	"kubectl": {
 		Tool:       "kubectl",

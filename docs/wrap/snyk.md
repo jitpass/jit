@@ -22,8 +22,11 @@ installs the `~/.jit/shims/snyk` shim plus the `wrap-snyk` profile.
 ## Verify
 
 ```sh
-snyk config get api
+snyk whoami --experimental
 ```
+
+It prints your Snyk user name. `snyk config get api` reads only the
+config file, which the wrap emptied, so it can't tell you the wrap works.
 
 ## How it works
 

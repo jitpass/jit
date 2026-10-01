@@ -61,6 +61,9 @@ type wrapToolJSON struct {
 	With       string           `json:"with,omitempty"`
 	Capture    string           `json:"capture,omitempty"`
 	VerifyHint string           `json:"verify_hint,omitempty"`
+	// VerifyPrintsSecret says VerifyHint's output is itself a credential:
+	// run it for its exit status and never show, log or keep what it prints.
+	VerifyPrintsSecret bool `json:"verify_prints_secret,omitempty"`
 	// Sources are the catalog's plaintext locations for the token, "~"-rooted,
 	// and TokenCommand the tool's own export command — where `jit wrap
 	// <tool>` will look, for a consumer that wants to say so before running
@@ -212,6 +215,7 @@ func applyCatalog(row *wrapToolJSON, ce wrap.CatalogEntry) {
 	row.Catalog = true
 	row.Doc = ce.Doc
 	row.VerifyHint = ce.VerifyHint
+	row.VerifyPrintsSecret = ce.VerifyPrintsSecret
 	row.NativeCategory = ce.NativeCategory
 	for _, s := range ce.Sources {
 		row.Sources = append(row.Sources, s.Path)
