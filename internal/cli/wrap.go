@@ -167,7 +167,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string, rep *wrapReport) error {
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("From now on `%s` runs inside a jit run grant: a Secret manifest migrated with "+
 			"`jit migrate <secret.yaml>` serves %s the real manifest, while anything not "+
 			"launched through jit reads decoys kubectl rejects.", tool, tool)))
-		if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
+		if err := ensureShimOnPath(cmd, home, tool, rep); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
@@ -206,7 +206,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string, rep *wrapReport) error {
 			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: the %s credential file is not migrated yet, so there is no mount to grant: "+
 				"`jit migrate <its file>` first (see `jit scan`); the shim then serves it per run.\n", entry.Grant)))
 		}
-		if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
+		if err := ensureShimOnPath(cmd, home, tool, rep); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
@@ -267,7 +267,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string, rep *wrapReport) error {
 				fmt.Fprintf(out, "Provider %q has a name that can't map to a vault path; its client-secret\nwas left in place.\n", p)
 			}
 		}
-		if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
+		if err := ensureShimOnPath(cmd, home, tool, rep); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
@@ -376,7 +376,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string, rep *wrapReport) error {
 			discovery.Source.Path, srcPath)))
 	}
 
-	if err := ensureShimOnPathTo(cmd, home, tool, rep); err != nil {
+	if err := ensureShimOnPath(cmd, home, tool, rep); err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
 	if entry.VerifyHint != "" {
@@ -527,7 +527,7 @@ func runWrapAdd(cmd *cobra.Command, tool string, rep *wrapReport) error {
 			rep.GrantMigrated = &migrated
 		}
 		fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: %s must be migrated first (name its file: `jit migrate <path-to-%s-file>`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)))
-		return ensureShimOnPathTo(cmd, home, tool, rep)
+		return ensureShimOnPath(cmd, home, tool, rep)
 	}
 
 	env, order, err := parseWrapEnv(wrapAddEnv)
@@ -561,19 +561,15 @@ func runWrapAdd(cmd *cobra.Command, tool string, rep *wrapReport) error {
 		rep.Kind, rep.Profile = string(wrap.KindShim), res.ProfileName
 	}
 
-	return ensureShimOnPathTo(cmd, home, tool, rep)
+	return ensureShimOnPath(cmd, home, tool, rep)
 }
 
 // ensureShimOnPath puts the one shim PATH line in the user's rc file (once)
 // and tells them how to apply it to the current shell — shared by the
 // catalog flow and `wrap add`.
-func ensureShimOnPath(cmd *cobra.Command, home, tool string) error {
-	return ensureShimOnPathTo(cmd, home, tool, nil)
-}
-
-// ensureShimOnPathTo is ensureShimOnPath recording, for --format json,
-// the rc file it added the PATH line to.
-func ensureShimOnPathTo(cmd *cobra.Command, home, tool string, rep *wrapReport) error {
+// rep, when non-nil, records the rc file the line was added to, for
+// --format json.
+func ensureShimOnPath(cmd *cobra.Command, home, tool string, rep *wrapReport) error {
 	out := cmd.OutOrStdout()
 	rc := wrap.RcFile(home, os.Getenv("SHELL"))
 	changed, err := wrap.EnsurePathLine(rc)
