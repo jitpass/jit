@@ -20,6 +20,7 @@ var jitPathRecorders = []string{
 	"mcpconfig.go",
 	"kubeconfig.go",
 	"awscreds.go",
+	"awssso.go",
 	"dockercreds.go",
 	"gitcreds.go",
 	"terraform.go",

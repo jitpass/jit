@@ -303,6 +303,7 @@ func Discover(opts Options) (*Map, error) {
 	d.readProfileLaunches(SourceAWS, KindAWS, migrate.AWSConfigProfileLaunches)
 	d.readProfileLaunches(SourceKube, KindKube, migrate.KubeconfigProfileLaunches)
 	d.readWrap()
+	d.readAWSSSO()
 	d.readProfileLaunches(SourceShellRC, KindShellRC, migrate.ShellRCProfileLaunches)
 	d.resolveByName()
 	d.readHelpers()
@@ -506,6 +507,20 @@ func (d *discovery) readWrap() {
 			continue
 		}
 		d.byName = append(d.byName, Launcher{Kind: KindWrap, File: wrap.ManifestPath(d.home), Detail: t, Profile: wrap.ProfileName(t)})
+	}
+}
+
+// readAWSSSO records the sealed AWS SSO login as used while any profile in
+// ~/.aws/config fetches through `jit aws-sso` (design/aws-sso-sealed.md):
+// one StoreWraps entry, like a store-wrap family's.
+func (d *discovery) readAWSSSO() {
+	launches, err := migrate.AWSSSOProfileLaunches(d.home)
+	if err != nil {
+		d.fail(SourceAWS, migrate.AWSConfigPath(d.home), err)
+		return
+	}
+	if len(launches) > 0 {
+		d.m.StoreWraps = append(d.m.StoreWraps, Launcher{Kind: KindStoreWrap, File: migrate.AWSConfigPath(d.home), Detail: "aws-sso", VaultPath: migrate.AWSSSOStorePath})
 	}
 }
 

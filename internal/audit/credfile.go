@@ -68,6 +68,7 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanGCPApplicationDefaultCredentials,
 		scanGcloudCLICredentials,
 		scanGcloudLogs,
+		scanAWSSSOCache,
 		scanNetrc,
 		scanClissoConfig,
 	} {
@@ -1116,6 +1117,125 @@ func scanGcloudLogs(cfg Config) ([]Finding, error) {
 		}
 	}
 	return findings, nil
+}
+
+// scanAWSSSOCache reports the IAM Identity Center logins `aws sso login`
+// left in ~/.aws/sso/cache. With an sso_session config the token carries a
+// refresh token, and a copy of the file mints role credentials for every
+// account and role the user is assigned until the session ends (8 h by
+// default, up to 90 days): a finding, not the advisory it used to be,
+// because `jit migrate ~/.aws/config` now seals it (design/aws-sso-sealed.md).
+//
+// A registration-only file (client id and secret, no token) and an expired
+// access token with no refresh token are not credentials anyone can use,
+// so they are skipped. Once the profiles are sealed, a token here is a
+// fresh `aws sso login` the next fetch will capture: the advisory says so
+// (ScanDerivedCredentials), and it is not charged as exposed.
+func scanAWSSSOCache(cfg Config) ([]Finding, error) {
+	dir := filepath.Join(cfg.HomeDir, ".aws", "sso", "cache")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sealable, sealed := awsSSOConfigState(filepath.Join(cfg.HomeDir, ".aws", "config"))
+	if sealed && !sealable {
+		return nil, nil
+	}
+	var findings []Finding
+	for _, e := range entries {
+		if !e.Type().IsRegular() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := readCappedFile(path)
+		if err != nil {
+			continue
+		}
+		var tok struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+			ExpiresAt    string `json:"expiresAt"`
+			StartURL     string `json:"startUrl"`
+		}
+		if json.Unmarshal(data, &tok) != nil {
+			continue
+		}
+		key, value := "refreshToken", tok.RefreshToken
+		if value == "" {
+			exp, ok := parseCacheExpiry(tok.ExpiresAt)
+			if tok.AccessToken == "" || !ok || !exp.After(time.Now()) {
+				continue
+			}
+			key, value = "accessToken", tok.AccessToken
+		}
+		what := "an IAM Identity Center login"
+		if tok.StartURL != "" {
+			what += " (" + tok.StartURL + ")"
+		}
+		f := cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      key,
+			RawValue:     value,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     what + " cached in plaintext: it mints role credentials for every account you're assigned until the session ends",
+		})
+		if sealable {
+			f.Remedy = RemedyMigrate
+			f.FixCommand = "jit migrate ~/.aws/config"
+			f.Evidence += "; `jit migrate ~/.aws/config` seals it"
+		} else {
+			// No profile in ~/.aws/config uses it (a hand-rolled client, a
+			// config elsewhere): nothing for jit to rewrite.
+			f.Remedy = RemedyManual
+		}
+		findings = append(findings, f)
+	}
+	return findings, nil
+}
+
+// awsSSOConfigState reads ~/.aws/config for its SSO profiles: sealable when
+// a profile still has an SSO role (sso_account_id or sso_role_name, the keys
+// botocore's SSO provider needs), sealed when a credential_process line runs
+// `jit aws-sso`. A local parse rather than migrate's, which audit cannot
+// import; the rule is the one DiscoverAWSSSOProfiles applies.
+func awsSSOConfigState(path string) (sealable, sealed bool) {
+	data, err := readCappedFile(path)
+	if err != nil {
+		return false, false
+	}
+	section := ""
+	role, login := map[string]bool{}, map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+			section = strings.TrimSpace(t[1 : len(t)-1])
+			continue
+		}
+		key, value, ok := strings.Cut(t, "=")
+		if !ok {
+			continue
+		}
+		key, value = strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value)
+		switch {
+		case key == "sso_account_id" || key == "sso_role_name":
+			role[section] = true
+		case key == "sso_session" || key == "sso_start_url":
+			login[section] = true
+		case key == "credential_process" && strings.Contains(value, " aws-sso "):
+			sealed = true
+		}
+	}
+	for s := range role {
+		if login[s] && (s == "default" || strings.HasPrefix(s, "profile ")) {
+			sealable = true
+		}
+	}
+	return sealable, sealed
 }
 
 // isGcloudLog reports whether path is one of gcloud's own command logs.

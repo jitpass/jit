@@ -37,6 +37,10 @@ func TestDerivedCredentialsFoundWhereTheScannerWalksPast(t *testing.T) {
 	// content sweep never opens these and never reports them.
 	writeFileIn(t, filepath.Join(home, ".aws", "cli", "cache", "3f2a91c8b7.json"), `{"Credentials":{"SessionToken":"x"}}`)
 	writeFileIn(t, filepath.Join(home, ".aws", "sso", "cache", "c0ffee1234.json"), `{"accessToken":"x"}`)
+	// The SSO cache is an advisory only once the profiles are sealed: then a
+	// token there is a fresh login the next fetch captures. Before that it is
+	// a finding (scanAWSSSOCache).
+	writeFileIn(t, filepath.Join(home, ".aws", "config"), "[profile dev]\nsso_session = corp\ncredential_process = /opt/homebrew/bin/jit aws-sso --profile dev\n")
 
 	got := ScanDerivedCredentials(Config{HomeDir: home})
 	if len(got) != 2 {

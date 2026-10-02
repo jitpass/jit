@@ -147,7 +147,7 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 	}
 
 	hasScoped := len(d.envFiles) > 0 || len(d.tfvarsFiles) > 0 || len(d.k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(streamlitScoped) > 0 || len(d.looseSecretFiles) > 0
-	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0 || len(d.cargoRegistries) > 0 || len(streamlitFixed) > 0 || len(d.jitPaths) > 0
+	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.awsSSOProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0 || len(d.cargoRegistries) > 0 || len(streamlitFixed) > 0 || len(d.jitPaths) > 0
 
 	if hasScoped {
 		// The annotation callback below is handed the display-shortened path,
@@ -301,6 +301,9 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 			pluralWord(len(d.awsProfiles), "AWS profile", "AWS profiles")+" in ~/.aws/credentials "+glyphAction+" secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
 			d.awsProfiles)
 		printMigratePlanCategory(w,
+			pluralWord(len(d.awsSSOProfiles), "AWS SSO profile", "AWS SSO profiles")+" in ~/.aws/config "+glyphAction+" the SSO login moves to the vault; each profile fetches through jit, and AWS's own CLI still refreshes it",
+			d.awsSSOProfiles)
+		printMigratePlanCategory(w,
 			pluralWord(len(d.k8sUsers), "kubeconfig user", "kubeconfig users")+" in ~/.kube/config "+glyphAction+" secrets move to the vault; fetched automatically whenever kubectl runs",
 			d.k8sUsers)
 		printMigratePlanCategory(w,
@@ -365,7 +368,7 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 	printPlanExtras(w, home, extras)
 
 	categories, total := 0, 0
-	for _, items := range [][]string{d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts, d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles, d.cargoRegistries, d.streamlitFiles, d.looseSecretFiles} {
+	for _, items := range [][]string{d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.awsSSOProfiles, d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts, d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles, d.cargoRegistries, d.streamlitFiles, d.looseSecretFiles} {
 		if len(items) > 0 {
 			categories++
 		}

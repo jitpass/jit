@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -59,18 +60,71 @@ func contains(list []string, s string) bool {
 // decides the bytes.
 var epoch = time.Unix(0, 0).UTC()
 
+// entry is one packed file or directory, by its slash path.
+type entry struct {
+	dir  bool
+	mode int64
+	data []byte
+}
+
 // Pack returns a canonical tar of dir's secret entries. Missing entries are
 // skipped, so an empty or logged-out dir packs to an empty archive. Symlinks
 // and other non-regular files are refused: the store is files the tool wrote
 // itself, and following a link would pack whatever it points at.
 func (l Layout) Pack(dir string) ([]byte, error) {
-	var paths []string
+	entries := map[string]entry{}
+	if err := l.collect(dir, entries); err != nil {
+		return nil, err
+	}
+	return emit(entries)
+}
+
+// Merge returns blob (a Pack result) with dir's secret entries laid over
+// it: a file in dir replaces the packed file of the same path, and every
+// other packed entry is kept. For folding a login the tool just wrote into
+// a store sealed earlier, without unpacking the store anywhere.
+func (l Layout) Merge(blob []byte, dir string) ([]byte, error) {
+	entries := map[string]entry{}
+	tr := tar.NewReader(bytes.NewReader(blob))
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading sealed store: %w", err)
+		}
+		rel, err := l.checkName(hdr.Name)
+		if err != nil {
+			return nil, err
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			entries[rel] = entry{dir: true, mode: hdr.Mode}
+		case tar.TypeReg:
+			data, err := io.ReadAll(io.LimitReader(tr, maxBlob))
+			if err != nil {
+				return nil, err
+			}
+			entries[rel] = entry{mode: hdr.Mode, data: data}
+		default:
+			return nil, fmt.Errorf("sealed store entry %q: unsupported type %q", hdr.Name, hdr.Typeflag)
+		}
+	}
+	if err := l.collect(dir, entries); err != nil {
+		return nil, err
+	}
+	return emit(entries)
+}
+
+// collect adds dir's secret entries to entries, replacing same paths.
+func (l Layout) collect(dir string, entries map[string]entry) error {
 	for _, name := range l.Secrets {
 		root := filepath.Join(dir, name)
 		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
 			continue
 		} else if err != nil {
-			return nil, err
+			return err
 		}
 		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -80,50 +134,78 @@ func (l Layout) Pack(dir string) ([]byte, error) {
 			if err != nil {
 				return err
 			}
-			paths = append(paths, filepath.ToSlash(rel))
+			rel = filepath.ToSlash(rel)
+			info, err := os.Lstat(p)
+			if err != nil {
+				return err
+			}
+			switch {
+			case info.Mode().IsDir():
+				entries[rel] = entry{dir: true, mode: int64(info.Mode().Perm())}
+			case info.Mode().IsRegular():
+				data, err := readRegularNoFollow(p)
+				if err != nil {
+					return err
+				}
+				entries[rel] = entry{mode: int64(info.Mode().Perm()), data: data}
+			default:
+				return fmt.Errorf("%s: not a regular file or directory", rel)
+			}
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	sort.Strings(paths)
+	return nil
+}
 
+// readRegularNoFollow reads p only if it is still a regular file when
+// opened: O_NOFOLLOW refuses a symlink swapped in after the walk's Lstat,
+// and the fstat refuses anything else that took its place (a FIFO would
+// block the read). Without it, a link planted between the two calls could
+// pack an arbitrary file into the vault.
+func readRegularNoFollow(p string) ([]byte, error) {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- p is under dir, built from the layout's own names
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", p)
+	}
+	return io.ReadAll(io.LimitReader(f, maxBlob))
+}
+
+// emit writes entries as a canonical tar: sorted paths, fixed times and
+// owners, PAX format, so the same content is always the same bytes.
+func emit(entries map[string]entry) ([]byte, error) {
+	paths := make([]string, 0, len(entries))
+	for p := range entries {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, rel := range paths {
-		p := filepath.Join(dir, filepath.FromSlash(rel))
-		info, err := os.Lstat(p)
-		if err != nil {
-			return nil, err
-		}
-		hdr := &tar.Header{
-			Name:    rel,
-			Mode:    int64(info.Mode().Perm()),
-			ModTime: epoch,
-			Format:  tar.FormatPAX,
-		}
-		switch {
-		case info.Mode().IsDir():
+		e := entries[rel]
+		hdr := &tar.Header{Name: rel, Mode: e.mode, ModTime: epoch, Format: tar.FormatPAX}
+		if e.dir {
 			hdr.Typeflag = tar.TypeDir
 			hdr.Name += "/"
-		case info.Mode().IsRegular():
+		} else {
 			hdr.Typeflag = tar.TypeReg
-			hdr.Size = info.Size()
-		default:
-			return nil, fmt.Errorf("%s: not a regular file or directory", rel)
+			hdr.Size = int64(len(e.data))
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return nil, err
 		}
-		if hdr.Typeflag == tar.TypeReg {
-			f, err := os.Open(p) // #nosec G304 -- p is under dir, built from the layout's own names
-			if err != nil {
-				return nil, err
-			}
-			_, err = io.Copy(tw, f)
-			_ = f.Close()
-			if err != nil {
+		if !e.dir {
+			if _, err := tw.Write(e.data); err != nil {
 				return nil, err
 			}
 		}

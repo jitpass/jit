@@ -279,6 +279,9 @@ func migrateUndoRun(cmd *cobra.Command, args []string, report *undoReport) error
 		}
 	}
 	restoreErr := runRestores(out, home, latest, restoreOne)
+	if restoreErr == nil {
+		restoreCurrentAWSSSOLogin(out, v, home, latest)
+	}
 	// A restored loose secret file's dedicated vault secret is still there —
 	// undo reverses files, never the vault. Unlike a project secret it is
 	// unshared and has no further use once its file is back, so point the user
@@ -287,6 +290,31 @@ func migrateUndoRun(cmd *cobra.Command, args []string, report *undoReport) error
 	// the nudge only names files whose secret genuinely still exists.
 	nudgeLooseRemainders(out, v, home, latest)
 	return restoreErr
+}
+
+// restoreCurrentAWSSSOLogin replaces the seal-day token cache an undo just
+// put back with the vault's current one (design/aws-sso-sealed.md D10): the
+// SSO refresh token rotates on every refresh, so the backup's copy is one
+// Identity Center has long since retired, and handing it back would leave
+// the user signed out. Only when the undo touched AWS and a login is sealed.
+func restoreCurrentAWSSSOLogin(out io.Writer, v *vault.Vault, home string, recs []migrate.BackupRecord) {
+	touched := false
+	for _, rec := range recs {
+		if rec.OriginalPath == migrate.AWSConfigPath(home) || migrate.IsAWSSSOCacheFile(home, rec.OriginalPath) {
+			touched = true
+		}
+	}
+	if !touched {
+		return
+	}
+	if sealed, err := migrate.AWSSSOSealed(v); err != nil || !sealed {
+		return
+	}
+	if _, err := migrate.UnsealAWSSSOCache(v, home, true); err != nil {
+		fmt.Fprintf(out, "  warning: the AWS SSO login came back as of sealing, not the current one: %v\n", err)
+		return
+	}
+	fmt.Fprintln(out, "  the AWS SSO login written back is the current one from the vault")
 }
 
 // nudgeLooseRemainders prints, for each just-restored file that still has a

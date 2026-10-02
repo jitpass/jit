@@ -19,7 +19,17 @@ func NativeTargets(home, category string) []string {
 	var candidates []string
 	switch category {
 	case "aws":
-		candidates = []string{AWSCredentialsPath(home)}
+		// Both AWS files: the static keys in ~/.aws/credentials, and the SSO
+		// profiles in ~/.aws/config whose login sealing takes. The config is
+		// named only when it has one, since every AWS user has a config.
+		var out []string
+		if info, err := os.Lstat(AWSCredentialsPath(home)); err == nil && info.Mode().IsRegular() {
+			out = append(out, AWSCredentialsPath(home))
+		}
+		if p, _ := DiscoverAWSSSOProfiles(home); len(p) > 0 {
+			out = append(out, AWSConfigPath(home))
+		}
+		return out
 	case "terraform":
 		candidates = []string{TerraformCredentialsPath(home)}
 	case "docker":

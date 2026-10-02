@@ -43,6 +43,44 @@ rather than a shim; nothing about how you invoke your tools changes.
   `jit migrate ~/.aws/config` (or `--only aws`) [refreshes
   it](./index.md#a-recorded-jit-path-that-went-stale).
 
+## AWS SSO (IAM Identity Center)
+
+`aws sso login` leaves its login in `~/.aws/sso/cache` in plaintext. With an
+`sso-session` config the login carries a refresh token: a copy of the file
+gets role credentials for **every account and role you're assigned** until
+the Identity Center session ends (8 hours by default, up to 90 days). Each
+credential fetch also caches role credentials in `~/.aws/cli/cache`.
+
+`jit migrate ~/.aws/config` (or bare `jit migrate`, when `jit scan` reports
+the login) seals both:
+
+```ini
+[profile dev]
+sso_session = corp
+credential_process = jit aws-sso --profile dev
+region = us-east-1
+```
+
+- The login moves into the vault. Each SSO profile keeps `sso_session` and
+  gives up `sso_account_id` and `sso_role_name` for a `credential_process`
+  line. The original definitions are kept in jit's own folder.
+- Each fetch unpacks the login into a private folder for one run of AWS's
+  own `aws configure export-credentials`, which does the refresh, then seals
+  it again. jit sends nothing to AWS itself.
+- `aws sso login --profile dev` keeps working; jit seals the new login on
+  the next fetch.
+- `jit aws-sso logout` signs out. Plain `aws sso logout` finds nothing to
+  sign out of once the login is sealed.
+- Nothing is left in `~/.aws/sso/cache` or `~/.aws/cli/cache`.
+
+Each process that fetches credentials takes about a quarter of a second
+longer: AWS's CLI runs once more inside it. SDKs fetch once an hour; a
+one-off `aws` command pays it every time.
+
+[`jit migrate undo`](./undo-and-remove.md) puts the original profiles back,
+with the current login rather than the one from the day it was sealed (the
+refresh token changes each time it is used).
+
 ## What jit does not cover
 
 jit protects the credential *you* stored. The AWS CLI also mints credentials
@@ -50,9 +88,7 @@ of its own, downstream of the one it just fetched, and those are not jit's:
 
 - **`~/.aws/cli/cache`** holds the plaintext STS session the CLI receives
   after assuming a role. It expires on its own; deleting the directory clears
-  it now.
-- **`~/.aws/sso/cache`** holds the access token and role credentials
-  `aws sso login` wrote. `aws sso logout` clears them.
+  it now. (Sealed SSO profiles no longer write here; see above.)
 - **`~/.aws/credentials-cache`** holds the temporary session credentials
   [clisso](https://github.com/allcloud-io/clisso) caches when its
   `cache-enable` option is on. They expire on their own; deleting the file
@@ -87,7 +123,7 @@ its next fetch.
 
 ## Plumbing
 
-`jit aws-credential-process` is the [plumbing
-command](../reference/plumbing.md) the config invokes - you never run it by
-hand. Reversing the migration: [`jit migrate
+`jit aws-credential-process` and `jit aws-sso` are the [plumbing
+commands](../reference/plumbing.md) the config invokes - you never run them
+by hand (except `jit aws-sso logout`). Reversing the migration: [`jit migrate
 undo`](./undo-and-remove.md).

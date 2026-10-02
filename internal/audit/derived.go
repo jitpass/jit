@@ -70,14 +70,20 @@ func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 		d.Status, d.StatusLive = cacheFreshness(dirCacheExpiries(dir), now)
 		out = append(out, d)
 	}
+	// The SSO token cache is a finding now (scanAWSSSOCache), except in the
+	// one state where it is a moment in a working setup: the profiles are
+	// sealed and `aws sso login` has just written a login the next fetch
+	// through jit captures (design/aws-sso-sealed.md D5).
 	if dir := filepath.Join(cfg.HomeDir, ".aws", "sso", "cache"); countFilesIn(dir) > 0 {
-		d := DerivedCredential{
-			Path:   dir,
-			What:   "SSO access tokens and role credentials, in plaintext",
-			Advice: "`aws sso logout` clears them",
+		if sealable, sealed := awsSSOConfigState(filepath.Join(cfg.HomeDir, ".aws", "config")); sealed && !sealable {
+			d := DerivedCredential{
+				Path:   dir,
+				What:   "an AWS SSO login `aws sso login` just wrote, in plaintext until it is sealed",
+				Advice: "the next AWS call through jit seals it; or `jit aws-sso logout` to sign out",
+			}
+			d.Status, d.StatusLive = cacheFreshness(dirCacheExpiries(dir), now)
+			out = append(out, d)
 		}
-		d.Status, d.StatusLive = cacheFreshness(dirCacheExpiries(dir), now)
-		out = append(out, d)
 	}
 	if hasAssumeRoleProfile(filepath.Join(cfg.HomeDir, ".aws", "config")) {
 		out = append(out, DerivedCredential{

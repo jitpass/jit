@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -389,5 +390,88 @@ func TestNewRunDirRefusesALooseBase(t *testing.T) {
 	}
 	if _, err := NewRunDir(link, 1, 1); err == nil {
 		t.Fatal("made a run dir under a symlinked base")
+	}
+}
+
+// Merge folds a login the tool just wrote over a store sealed earlier: the
+// new file wins, every other sealed file stays, and the result is the same
+// bytes Pack would make of the union.
+func TestMerge(t *testing.T) {
+	layout := Layout{Secrets: []string{"cache"}}
+	sealedDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sealedDir, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"a.json": "old login", "reg.json": "registration"} {
+		if err := os.WriteFile(filepath.Join(sealedDir, "cache", name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sealed, err := layout.Pack(sealedDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(fresh, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"a.json": "new login", "b.json": "another session"} {
+		if err := os.WriteFile(filepath.Join(fresh, "cache", name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged, err := layout.Merge(sealed, fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	if err := layout.Unpack(merged, out); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"a.json": "new login", "b.json": "another session", "reg.json": "registration"} {
+		if b, _ := os.ReadFile(filepath.Join(out, "cache", name)); string(b) != want {
+			t.Errorf("%s = %q, want %q", name, b, want)
+		}
+	}
+	repacked, _ := layout.Pack(out)
+	if !bytes.Equal(repacked, merged) {
+		t.Error("Merge is not canonical: Pack of its unpacked result differs")
+	}
+	if _, err := layout.Merge([]byte("not a tar"), fresh); err == nil {
+		t.Error("merged over a store that is not one")
+	}
+}
+
+// The read itself refuses what the walk's Lstat could not see coming: a
+// symlink or a FIFO swapped in between the two. A FIFO must not block it.
+func TestReadRegularNoFollow(t *testing.T) {
+	d := t.TempDir()
+	reg := filepath.Join(d, "reg")
+	if err := os.WriteFile(reg, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := readRegularNoFollow(reg); err != nil || string(b) != "ok" {
+		t.Fatalf("regular file: %q, %v", b, err)
+	}
+	link := filepath.Join(d, "link")
+	if err := os.Symlink(reg, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegularNoFollow(link); err == nil {
+		t.Error("read through a symlink")
+	}
+	fifo := filepath.Join(d, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := readRegularNoFollow(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("read a FIFO as a store file")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reading a FIFO blocked")
 	}
 }

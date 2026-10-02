@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -349,5 +350,115 @@ func TestUninstallRestoreBringsBackTheSealedGcloudLogin(t *testing.T) {
 	}
 	if kindsByPath(plan)[creds] == restoreStore {
 		t.Error("planned to write the vaulted login over a plaintext one")
+	}
+}
+
+// writeAWSSSOSetup writes an SSO profile and its cached login into home.
+func writeAWSSSOSetup(t *testing.T, home, refresh string) {
+	t.Helper()
+	for rel, body := range map[string]string{
+		".aws/config":             "[profile dev]\nsso_session = corp\nsso_account_id = 111122223333\nsso_role_name = Developer\n\n[sso-session corp]\nsso_start_url = https://corp.awsapps.com/start\nsso_region = us-east-1\n",
+		".aws/sso/cache/tok.json": `{"accessToken":"a","refreshToken":"` + refresh + `"}`,
+	} {
+		p := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// rotateSealedAWSLogin stands in for an hour of use: a refresh rotated the
+// token and jit aws-sso resealed it.
+func rotateSealedAWSLogin(t *testing.T, v *vault.Vault, home, refresh string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cache", "tok.json"), []byte(`{"accessToken":"b","refreshToken":"`+refresh+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := migrate.AWSSSOLayout.Pack(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.StoreAWSSSOCache(v, home, blob); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Remove JitPass puts the original SSO profiles back and the CURRENT login:
+// the seal-day backup's refresh token was rotated away by the first hour of
+// use (design/aws-sso-sealed.md D10).
+func TestUninstallRestoreBringsBackTheCurrentAWSSSOLogin(t *testing.T) {
+	home, root, v := restoreFixture(t)
+	t.Cleanup(migrate.SetJitExecutableForTesting("/usr/local/bin/jit"))
+	writeAWSSSOSetup(t, home, "1//SEAL-DAY")
+	if _, err := migrate.ApplyAWSSSO(v, home, []string{"dev"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rotateSealedAWSLogin(t, v, home, "1//CURRENT")
+
+	plan, err := buildUninstallRestorePlan(root, home, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := kindsByPath(plan)
+	if kinds[migrate.AWSSSOCacheDir(home)] != restoreStore || kinds[migrate.AWSConfigPath(home)] != restoreBackup {
+		t.Fatalf("kinds = %v", kinds)
+	}
+	for _, g := range plan.Gone {
+		if migrate.IsAWSSSOCacheFile(home, g) {
+			t.Errorf("a sealed token file was planned as Gone: %s", g)
+		}
+	}
+	res := runUninstallRestore(v, root, home, plan, nil)
+	if len(res.Failures) != 0 {
+		t.Fatalf("failures: %v", res.Failures)
+	}
+	cfg, _ := os.ReadFile(migrate.AWSConfigPath(home)) // #nosec G304 -- test path
+	if !strings.Contains(string(cfg), "sso_account_id = 111122223333") || strings.Contains(string(cfg), "aws-sso") {
+		t.Fatalf("config after restore:\n%s", cfg)
+	}
+	tok, err := os.ReadFile(filepath.Join(migrate.AWSSSOCacheDir(home), "tok.json")) // #nosec G304 -- test path
+	if err != nil || !strings.Contains(string(tok), "1//CURRENT") {
+		t.Fatalf("token after restore %q, %v; want the current login", tok, err)
+	}
+}
+
+// Undo restores the files from their backups, then the AWS step replaces
+// the seal-day token with the current one.
+func TestUndoRestoresTheCurrentAWSSSOLogin(t *testing.T) {
+	home, _, v := restoreFixture(t)
+	t.Cleanup(migrate.SetJitExecutableForTesting("/usr/local/bin/jit"))
+	writeAWSSSOSetup(t, home, "1//SEAL-DAY")
+	if _, err := migrate.ApplyAWSSSO(v, home, []string{"dev"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rotateSealedAWSLogin(t, v, home, "1//CURRENT")
+	recs, err := migrate.LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine []migrate.BackupRecord
+	for _, r := range migrate.LatestBackups(recs) {
+		if r.OriginalPath == migrate.AWSConfigPath(home) || migrate.IsAWSSSOCacheFile(home, r.OriginalPath) {
+			if err := migrate.RestoreFromBackup(v, r); err != nil {
+				t.Fatal(err)
+			}
+			mine = append(mine, r)
+		}
+	}
+	tok := filepath.Join(migrate.AWSSSOCacheDir(home), "tok.json")
+	if b, _ := os.ReadFile(tok); !strings.Contains(string(b), "1//SEAL-DAY") { // #nosec G304 -- test path
+		t.Fatalf("the backups did not restore the seal-day token: %q", b)
+	}
+	var out bytes.Buffer
+	restoreCurrentAWSSSOLogin(&out, v, home, mine)
+	if b, _ := os.ReadFile(tok); !strings.Contains(string(b), "1//CURRENT") { // #nosec G304 -- test path
+		t.Fatalf("undo left the seal-day token: %q (%s)", b, out.String())
 	}
 }

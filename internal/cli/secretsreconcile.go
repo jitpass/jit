@@ -344,6 +344,11 @@ func storeWrapVaultPaths() []string {
 	}
 	seen := map[string]bool{}
 	var out []string
+	// The sealed AWS SSO login is used by ~/.aws/config, not the manifest.
+	if launches, err := migrate.AWSSSOProfileLaunches(home); err == nil && len(launches) > 0 {
+		seen[migrate.AWSSSOStorePath] = true
+		out = append(out, migrate.AWSSSOStorePath)
+	}
 	for _, e := range m.Tools {
 		if !e.IsStore() {
 			continue
