@@ -102,6 +102,57 @@ var selfRotatingCaches = []selfRotatingCache{
 		title:  "A gcloud legacy credential copy (rewritten on every login)",
 		action: "`jit wrap gcloud` seals it in the vault; if it was exposed, `gcloud auth revoke` first",
 	},
+	// `aws login` (AWS CLI 2.32+): console-session credentials, a refresh
+	// token, and the DPoP private key that is meant to bind the token to this
+	// machine, all in one file the CLI rewrites on every refresh. A copy of
+	// the file carries the key with it, so it works anywhere.
+	{
+		match:      filepath.Join(".aws", "login", "cache"),
+		dir:        true,
+		title:      "An AWS console login (`aws login`, renews itself)",
+		action:     "if exposed, `aws logout` and log in again; jit cannot seal this one yet",
+		toolMinted: true,
+	},
+	// kubelogin (kubectl oidc-login): an OIDC refresh token per issuer and
+	// client, in a file named by a SHA-256 of the login's parameters,
+	// rewritten on every refresh. kubelogin can keep it in the keychain
+	// instead (--token-cache-storage=keyring): the one fix that ends it.
+	{
+		match:      filepath.Join(".kube", "cache", "oidc-login"),
+		dir:        true,
+		title:      "A kubelogin OIDC login (renews itself)",
+		action:     "add `--token-cache-storage=keyring` to kubelogin's args in your kubeconfig, then delete this file",
+		toolMinted: true,
+	},
+	// gke-gcloud-auth-plugin's cache beside the kubeconfig: the access token
+	// kubectl's exec plugin got from gcloud (access_token, token_expiry,
+	// current_context), about an hour live, rewritten on the next kubectl
+	// call. The Google token format matches it, so without this entry the
+	// sweep offered to mount a file the plugin writes.
+	{
+		match:      filepath.Join(".kube", "gke_gcloud_auth_plugin_cache"),
+		title:      "The GKE auth plugin's access token (about an hour; renews itself)",
+		action:     "it expires on its own; delete the file to clear it now",
+		toolMinted: true,
+	},
+	// The Azure CLI's MSAL token cache: refresh tokens that last 90 days and
+	// renew on every use, in plaintext on macOS (encryption is Windows-only
+	// by default). `az logout` only edits the file; the token stays valid at
+	// Microsoft until its sessions are revoked.
+	{
+		match:      filepath.Join(".azure", "msal_token_cache.json"),
+		title:      "An Azure CLI login (renews itself on every use)",
+		action:     "if exposed, revoke your sign-in sessions in Entra ID (Revoke-MgUserSignInSession), then `az login`; `az logout` only deletes the file",
+		toolMinted: true,
+	},
+	// `az login --service-principal --password` keeps the client secret
+	// here in plaintext. The secret is the user's, not tool-minted, so it
+	// counts; the CLI rewrites the file, so no mount is ever offered.
+	{
+		match:  filepath.Join(".azure", "service_principal_entries.json"),
+		title:  "An Azure service principal's secret (the Azure CLI keeps it after login)",
+		action: "rotate the secret in Entra ID; a certificate or a federated credential keeps nothing here",
+	},
 	// A variant of the class: the value (a OneLogin API client-secret)
 	// never rotates, but the file is still tool-rewritten — clisso creates
 	// it on any run and rewrites it wholesale from `clisso apps create`,

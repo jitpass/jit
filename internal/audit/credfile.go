@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,6 +70,9 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanGcloudCLICredentials,
 		scanGcloudLogs,
 		scanAWSSSOCache,
+		scanAWSLoginCache,
+		scanKubeloginCache,
+		scanAzureCLI,
 		scanNetrc,
 		scanClissoConfig,
 	} {
@@ -1196,6 +1200,219 @@ func scanAWSSSOCache(cfg Config) ([]Finding, error) {
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// scanAWSLoginCache reports `aws login` sessions in ~/.aws/login/cache: a
+// refresh token beside the DPoP private key that signs its refreshes, plus
+// hour-long credentials (botocore LoginCredentialFetcher, AWS CLI 2.37.7).
+// The key is meant to bind the token to this machine; a copy of the file
+// takes the key with it. Tool-minted (selfRotatingCaches): reported, with
+// the advice to sign out, outside the ledger.
+func scanAWSLoginCache(cfg Config) ([]Finding, error) {
+	dir := filepath.Join(cfg.HomeDir, ".aws", "login", "cache")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var findings []Finding
+	for _, e := range entries {
+		if !e.Type().IsRegular() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := readCappedFile(path)
+		if err != nil {
+			continue
+		}
+		var tok struct {
+			RefreshToken string `json:"refreshToken"`
+			DPoPKey      string `json:"dpopKey"`
+		}
+		if json.Unmarshal(data, &tok) != nil || tok.RefreshToken == "" {
+			continue
+		}
+		evidence := "an `aws login` console session's refresh token, in plaintext"
+		if tok.DPoPKey != "" {
+			evidence += ", beside the private key that binds it to this Mac, so a copy works anywhere"
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      "refreshToken",
+			RawValue:     tok.RefreshToken,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     evidence,
+		}))
+	}
+	return findings, nil
+}
+
+// kubeloginCacheName matches kubelogin's cache files: a lowercase hex
+// SHA-256 of the gob-encoded login parameters, no extension
+// (pkg/tokencache/repository/repository.go, computeChecksum). The .lock
+// files beside them hold nothing.
+var kubeloginCacheName = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// scanKubeloginCache reports kubelogin's OIDC refresh tokens in
+// ~/.kube/cache/oidc-login ({"id_token":…,"refresh_token":…}, 0600). An ID
+// token alone expires within the hour and is left out.
+func scanKubeloginCache(cfg Config) ([]Finding, error) {
+	dir := filepath.Join(cfg.HomeDir, ".kube", "cache", "oidc-login")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var findings []Finding
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !kubeloginCacheName.MatchString(e.Name()) {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := readCappedFile(path)
+		if err != nil {
+			continue
+		}
+		var tok struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		if json.Unmarshal(data, &tok) != nil || tok.RefreshToken == "" {
+			continue
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      "refresh_token",
+			RawValue:     tok.RefreshToken,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     "a kubelogin OIDC refresh token, in plaintext: it signs in to the cluster's identity provider again until the provider revokes it",
+		}))
+	}
+	return findings, nil
+}
+
+// scanAzureCLI reports what the Azure CLI keeps in ~/.azure in plaintext,
+// which on macOS is everything (azure-cli encrypts only on Windows by
+// default; core.encrypt_token_cache moves it to the keychain, leaving a .bin
+// signal file this never reads):
+//
+//   - msal_token_cache.json: MSAL's serialized cache; each RefreshToken
+//     entry's "secret" is a 90-day refresh token that renews on use.
+//   - service_principal_entries.json: a list of {client_id, tenant,
+//     client_secret | certificate | client_assertion}; a client_secret is
+//     the service principal's long-lived password.
+//   - accessTokens.json: what CLIs before 2.30 wrote (ADAL); newer ones do
+//     not read it and do not delete it. A user entry's refreshToken, or a
+//     service principal entry's accessToken, which held its client secret.
+func scanAzureCLI(cfg Config) ([]Finding, error) {
+	dir := filepath.Join(cfg.HomeDir, ".azure")
+	var findings []Finding
+
+	if data, err := readCappedFile(filepath.Join(dir, "msal_token_cache.json")); err == nil {
+		var cache struct {
+			RefreshToken map[string]struct {
+				Secret string `json:"secret"`
+			} `json:"RefreshToken"`
+		}
+		if json.Unmarshal(data, &cache) == nil {
+			var first string
+			n := 0
+			keys := make([]string, 0, len(cache.RefreshToken))
+			for k := range cache.RefreshToken {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if s := cache.RefreshToken[k].Secret; s != "" {
+					if first == "" {
+						first = s
+					}
+					n++
+				}
+			}
+			if n > 0 {
+				evidence := "an Azure CLI refresh token, in plaintext: 90 days, renewed on every use"
+				if n > 1 {
+					evidence = fmt.Sprintf("Azure CLI refresh tokens for %d sign-ins, in plaintext: 90 days, renewed on every use", n)
+				}
+				findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+					FindingType:  FindingTypeCredentialFile,
+					FilePath:     filepath.Join(dir, "msal_token_cache.json"),
+					KeyName:      "RefreshToken",
+					RawValue:     first,
+					BaseSeverity: SeverityHigh,
+					Confidence:   ConfidenceHigh,
+					Evidence:     evidence,
+				}))
+			}
+		}
+	}
+
+	if data, err := readCappedFile(filepath.Join(dir, "service_principal_entries.json")); err == nil {
+		var entries []struct {
+			ClientID     string `json:"client_id"`
+			Tenant       string `json:"tenant"`
+			ClientSecret string `json:"client_secret"`
+		}
+		if json.Unmarshal(data, &entries) == nil {
+			for _, e := range entries {
+				if e.ClientSecret == "" {
+					continue // a certificate path or a short-lived assertion: no password here
+				}
+				findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+					FindingType:  FindingTypeCredentialFile,
+					FilePath:     filepath.Join(dir, "service_principal_entries.json"),
+					KeyName:      e.ClientID + "/client_secret",
+					RawValue:     e.ClientSecret,
+					BaseSeverity: SeverityHigh,
+					Confidence:   ConfidenceHigh,
+					Evidence:     fmt.Sprintf("the client secret of service principal %s (tenant %s), in plaintext: it signs in as that principal until rotated", e.ClientID, e.Tenant),
+				}))
+			}
+		}
+	}
+
+	legacy := filepath.Join(dir, "accessTokens.json")
+	if data, err := readCappedFile(legacy); err == nil {
+		var entries []map[string]any
+		if json.Unmarshal(data, &entries) == nil {
+			for i, e := range entries {
+				key, value := "", ""
+				if sp, _ := e["servicePrincipalId"].(string); sp != "" {
+					key, value = sp+"/client_secret", stringField(e, "accessToken")
+				} else {
+					key, value = fmt.Sprintf("refreshToken[%d]", i), stringField(e, "refreshToken")
+				}
+				if value == "" {
+					continue
+				}
+				f := cfg.ValueFinding(ValueFindingParams{
+					FindingType:  FindingTypeCredentialFile,
+					FilePath:     legacy,
+					KeyName:      key,
+					RawValue:     value,
+					BaseSeverity: SeverityHigh,
+					Confidence:   ConfidenceHigh,
+					Evidence:     "left by an Azure CLI older than 2.30, which newer ones neither read nor delete; what it holds may still sign in",
+				})
+				f.Remedy = RemedyManual
+				findings = append(findings, f)
+			}
+		}
+	}
+	return findings, nil
+}
+
+func stringField(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
 }
 
 // awsSSOConfigState reads ~/.aws/config for its SSO profiles: sealable when
