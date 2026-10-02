@@ -134,6 +134,28 @@ The same wrap also vaults the tool's own long-lived secret (clisso's
 OneLogin `client-secret`), leaving a `jit://vault/` pointer in
 `~/.clisso.yaml` and serving the real config per run over a pipe.
 
+## Store plugins: tools that keep their own login
+
+Some CLIs keep their login in a store they write themselves, in a shape no
+mount can serve: the Google Cloud CLI's `credentials.db` is a SQLite file
+holding a refresh token that does not expire on its own. The wrap seals
+that store in the vault. Each run unpacks it into a private folder for
+that one command and seals it again if the command changed it (a login, a
+revoke). One wrap covers every tool that reads the store:
+
+| Tool | Reads | Why it has its own shim |
+|---|---|---|
+| [`gcloud`](./gcloud.md) | the login store in `~/.config/gcloud` | the CLI itself; also covers the GKE auth plugin, which runs `gcloud` |
+| [`bq`](./bq.md) | the same store | its own entry point |
+| [`gsutil`](./gsutil.md) | the same store's `legacy_credentials/` | its own entry point |
+| [`docker-credential-gcloud`](./docker-credential-gcloud.md) | the same store, in-process | docker runs it by name |
+| [`git-credential-gcloud`](./git-credential-gcloud.md) | the same store, in-process | git runs it by name |
+
+```
+jit wrap gcloud      # shims all five that are installed, seals the store
+gcloud auth list     # as before; the login is unsealed for this one run
+```
+
 ## Not in the catalog?
 
 Any tool that reads its credential from an environment variable works even
@@ -151,14 +173,17 @@ silently. Migrate the file first; the wrap only takes the grant for you:
 
 | Tool | Grants | Migrate first |
 |---|---|---|
-| [`gcloud`](./gcloud.md) | the `gcp` mount: application-default credentials | [`jit migrate ~/.config/gcloud/application_default_credentials.json`](../migrate/gcp.md) |
 | [`sops`](./sops.md) | the `sops` mount: the age private key | [`jit migrate ~/.config/sops/age/keys.txt`](../migrate/sops.md) |
 
 ```
-jit migrate ~/.config/gcloud/application_default_credentials.json  # into the vault, mount the file
-jit wrap gcloud                 # shim: `gcloud` now runs jit run --with gcp
-gcloud storage ls               # native; the shim grants the real ADC
+jit migrate ~/.config/sops/age/keys.txt  # into the vault, mount the file
+jit wrap sops                            # shim: `sops` now runs jit run --with sops
+sops --decrypt secrets.enc.yaml          # native; the shim grants the real key
 ```
+
+Application-default credentials (the `gcp` mount) are still granted this
+way to `gcloud auth application-default` commands, through the gcloud
+store wrap below.
 
 Any other tool that reads one of these files wraps the same way by hand:
 `jit wrap add <tool> --grant <name>`, with names `gcp`, `sops`, `npm`,

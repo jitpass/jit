@@ -206,6 +206,41 @@ func AddRunGrant(home, tool, jitBinary string) (AddResult, error) {
 	return AddResult{ShimPath: shimPath}, nil
 }
 
+// AddStore installs a STORE-wrap: a shim that routes the tool through
+// `jit <store>-run`, which unseals the named login store for the one run.
+// No profile, like AddGrant and AddCapture: the store is sealed by the
+// caller (internal/migrate), not by the shim.
+func AddStore(home, tool, store, jitBinary string) (AddResult, error) {
+	if err := ValidateToolName(tool); err != nil {
+		return AddResult{}, err
+	}
+	if store == "" {
+		return AddResult{}, fmt.Errorf("a store-wrap needs a store name")
+	}
+	manifest, err := LoadManifest(home)
+	if err != nil {
+		return AddResult{}, err
+	}
+	// Same guard as the other profileless kinds: never shadow a
+	// hand-written env profile jit wrap doesn't manage.
+	if _, managed := manifest.Tools[tool]; !managed {
+		if profilePath, perr := profile.Path(home, ProfileName(tool)); perr == nil {
+			if _, statErr := os.Stat(profilePath); statErr == nil {
+				return AddResult{}, fmt.Errorf("profile %s already exists at %s but wasn't created by jit wrap, refusing to store-wrap over it", ProfileName(tool), profilePath)
+			}
+		}
+	}
+	shimPath, err := InstallShim(home, jitBinary, tool)
+	if err != nil {
+		return AddResult{}, err
+	}
+	manifest.Tools[tool] = Entry{Store: store, AddedAt: time.Now().UTC()}
+	if err := manifest.Save(home); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{ShimPath: shimPath}, nil
+}
+
 // AddCapture installs a CAPTURE-wrap: a shim that routes the tool through
 // `jit <tool>-capture`, so credentials the tool mints are captured from its
 // own output — in the user's terminal, where the tool's MFA prompts still

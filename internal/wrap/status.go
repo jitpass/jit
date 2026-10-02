@@ -68,10 +68,11 @@ func CheckTool(home, pathEnv, tool string, entry Entry) ToolStatus {
 
 	st.InstalledPath = RealBinary(home, pathEnv, tool)
 
-	// Grant, capture and run-grant wraps have no profile: the mount, the
-	// per-capture aws-<app> profiles, or the project's own mounts serve
-	// them at use time, so their absence before first use is health.
-	if entry.IsGrant() || entry.IsCapture() || entry.IsRunGrant() {
+	// Grant, capture, run-grant and store wraps have no profile: the mount,
+	// the per-capture aws-<app> profiles, the project's own mounts or the
+	// sealed store serve them at use time, so their absence before first
+	// use is health.
+	if entry.IsProfileless() {
 		return st
 	}
 	// profile.Path owns this layout, and every other call site in the repo

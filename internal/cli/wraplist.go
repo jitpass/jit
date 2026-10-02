@@ -60,6 +60,7 @@ type wrapToolJSON struct {
 	Injects    []wrapInjectJSON `json:"injects,omitempty"`
 	With       string           `json:"with,omitempty"`
 	Capture    string           `json:"capture,omitempty"`
+	Store      string           `json:"store,omitempty"`
 	VerifyHint string           `json:"verify_hint,omitempty"`
 	// VerifyPrintsSecret says VerifyHint's output is itself a credential:
 	// run it for its exit status and never show, log or keep what it prints.
@@ -141,6 +142,8 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			row.Kind, row.Capture = "capture", entry.Capture
 		case entry.IsRunGrant():
 			row.Kind = "rungrant"
+		case entry.IsStore():
+			row.Kind, row.Store = "store", entry.Store
 		default:
 			row.Profile = entry.Profile
 			row.Injects = wrapInjectsFromProfile(home, entry, store)
@@ -185,6 +188,9 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			if ce.Kind == wrap.KindGrant {
 				row.With = ce.Grant
 				row.VaultSecrets = store.classCount(ce.Grant)
+			}
+			if ce.Kind == wrap.KindStore {
+				row.Store = ce.Store
 			}
 			res.Tools = append(res.Tools, row)
 		}

@@ -486,7 +486,7 @@ func (d *discovery) readWrap() {
 	sort.Strings(tools)
 	for _, t := range tools {
 		e := manifest.Tools[t]
-		if e.IsGrant() || e.IsCapture() || e.IsRunGrant() {
+		if e.IsProfileless() {
 			continue
 		}
 		d.byName = append(d.byName, Launcher{Kind: KindWrap, File: wrap.ManifestPath(d.home), Detail: t, Profile: wrap.ProfileName(t)})

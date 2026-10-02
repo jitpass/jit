@@ -39,9 +39,12 @@ type Entry struct {
 	// env var, no global mount name: which mounts apply is decided per
 	// invocation from the tool's working directory, exactly as if the user
 	// had typed `jit run -- <tool> ...` themselves.
-	RunGrant bool      `json:"run_grant,omitempty"`
-	Vars     []string  `json:"vars,omitempty"` // env var names the profile injects, for `jit wrap list`
-	AddedAt  time.Time `json:"added_at"`
+	RunGrant bool `json:"run_grant,omitempty"`
+	// Store marks a store-wrap: the shim runs `jit <Store>-run`, which
+	// unseals the named login store for the one run (KindStore).
+	Store   string    `json:"store,omitempty"`
+	Vars    []string  `json:"vars,omitempty"` // env var names the profile injects, for `jit wrap list`
+	AddedAt time.Time `json:"added_at"`
 }
 
 // IsGrant reports whether e is a grant-wrap (runs `jit run --with`) rather
@@ -54,6 +57,16 @@ func (e Entry) IsCapture() bool { return e.Capture != "" }
 // IsRunGrant reports whether e is a run-grant-wrap (runs `jit run
 // --grant-only`, no profile and no named mount).
 func (e Entry) IsRunGrant() bool { return e.RunGrant }
+
+// IsStore reports whether e is a store-wrap (runs `jit <store>-run`).
+func (e Entry) IsStore() bool { return e.Store != "" }
+
+// IsProfileless reports whether e injects no profile: every kind but the
+// env-wrap. The places that only care "is there a wrap-<tool> profile
+// behind this shim" ask this, so a new kind is one predicate, not four.
+func (e Entry) IsProfileless() bool {
+	return e.IsGrant() || e.IsCapture() || e.IsRunGrant() || e.IsStore()
+}
 
 // ManifestPath returns the manifest's location under home.
 func ManifestPath(home string) string {

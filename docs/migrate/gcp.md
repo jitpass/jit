@@ -25,7 +25,7 @@ its own.
 
 ```sh
 jit run --with gcp -- terraform apply     # scoped to this run, gone on exit
-jit wrap add gcloud --grant gcp           # or: keep typing gcloud directly
+jit wrap add tofu --grant gcp             # or: keep typing a tool's name directly
 ```
 
 ## Why a mount and not a credential hook?
@@ -56,9 +56,9 @@ leaves it alone.)
   convert it (a project directory walk never touches it).
 - The gcloud CLI's *own* login (`gcloud auth login`) lives elsewhere
   (`~/.config/gcloud/credentials.db`) and isn't part of this migration.
-  `jit scan` reports it — the refresh token inside mints access tokens
-  from any machine — but gcloud rewrites that store on login and reauth,
-  so jit never mounts or migrates it; if it was exposed, revoke with
+  gcloud rewrites that store itself, so it can't be a mount;
+  [`jit wrap gcloud`](../wrap/gcloud.md) seals it in the vault instead and
+  unseals it for each gcloud run. If it was exposed before, revoke with
   `gcloud auth revoke` and log in again.
 - Re-running `gcloud auth application-default login` replaces the mount
   with a fresh plaintext file; run `jit migrate <path-to-ADC-json>` again

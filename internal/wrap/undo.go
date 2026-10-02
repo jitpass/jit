@@ -68,7 +68,7 @@ func PreviewUndo(home, tool string) (UndoPreview, error) {
 			prev.Leftovers = append(prev.Leftovers, name)
 		}
 	}
-	if !entry.IsGrant() && !entry.IsCapture() && !entry.IsRunGrant() {
+	if !entry.IsProfileless() {
 		prev.ProfilePath, err = profile.Path(home, entry.Profile)
 		if err != nil {
 			return prev, err
@@ -115,8 +115,11 @@ func Undo(home, tool string) (UndoResult, error) {
 	// it doesn't unprotect what was already captured. A run-grant-wrap has
 	// no profile either: the manifest mount it grants belongs to the
 	// k8s-secret migration, which keeps serving (decoys by default) after
-	// the wrap is gone. An env-wrap removes its wrap-<tool> profile too.
-	if !entry.IsGrant() && !entry.IsCapture() && !entry.IsRunGrant() {
+	// the wrap is gone. A store-wrap has none: its sealed store stays in the
+	// vault, and putting it back in plaintext is the caller's separate,
+	// fresh-Touch-ID step (`jit wrap undo gcloud`). An env-wrap removes its
+	// wrap-<tool> profile too.
+	if !entry.IsProfileless() {
 		res.ProfilePath, err = profile.Path(home, entry.Profile)
 		if err != nil {
 			return res, err

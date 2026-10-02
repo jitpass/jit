@@ -104,6 +104,11 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 			// (aws-<app>) appear per capture, so their absence before the
 			// first `clisso get` is health, not sickness.
 			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; captures via `jit " + entry.Capture + "-capture`"})
+		case entry.IsStore():
+			// A store-wrap has no profile: the sealed store is unpacked per
+			// run by `jit <store>-run`, and an empty store (not logged in
+			// yet) is a state, not a fault.
+			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; unseals the " + entry.Store + " login per run via `jit " + entry.Store + "-run`"})
 		case entry.IsRunGrant():
 			// A run-grant-wrap has no profile and no named mount — which
 			// project mounts apply is decided per invocation from the tool's

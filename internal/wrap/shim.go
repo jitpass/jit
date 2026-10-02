@@ -156,6 +156,9 @@ func shimArgv(tool, realTool string, entry Entry, args []string) []string {
 	if entry.IsCapture() {
 		return append([]string{"jit", entry.Capture + "-capture", "--real", realTool, "--"}, args...)
 	}
+	if entry.IsStore() {
+		return append([]string{"jit", entry.Store + "-run", "--real", realTool, "--"}, args...)
+	}
 	if entry.IsRunGrant() {
 		// A run-grant-wrap injects nothing by name: --grant-only makes
 		// `jit run` best-effort about the injection profile (a wrapped
@@ -183,6 +186,13 @@ func applyShimEnv(tool string, e Entry) error {
 	}
 	return nil
 }
+
+// GuardVar is the recursion-guard variable a shim sets for tool. A command
+// that forks the real tool itself (gcloud-run) drops it from the child's
+// environment: the real binary is already resolved, and a nested shim
+// invocation of the same tool from inside the run (the GKE auth plugin
+// calling gcloud) is legitimate there, not a loop.
+func GuardVar(tool string) string { return guardVar(tool) }
 
 // guardVar maps a tool name onto its recursion-guard environment variable:
 // alphanumerics uppercased, everything else flattened to '_'.

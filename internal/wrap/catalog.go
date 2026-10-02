@@ -50,6 +50,15 @@ const (
 	// --grant <name>` installs by hand; the catalog entry is what lets
 	// `jit wrap sops` and a listing know the tool at all.
 	KindGrant Kind = "grant"
+	// KindStore: the tool keeps its own LOGIN STORE in its config dir —
+	// state it writes itself, in a shape no mount can serve (gcloud's
+	// SQLite credentials.db). The wrap seals the store into the vault; the
+	// shim execs `jit <Store>-run`, which unpacks it into a private dir for
+	// the one run, points the tool there, and seals it again if the run
+	// changed it (design/gcloud-sealed-store.md). Several tools can share
+	// one store: every catalog entry with the same Store is one family, and
+	// wrapping any of them wraps all that are installed.
+	KindStore Kind = "store"
 )
 
 // TokenSource names one place a tool's plaintext credential lives today and
@@ -114,6 +123,27 @@ type CatalogEntry struct {
 
 	// KindGrant fields.
 	Grant string // the global mount name `jit run --with` takes: gcp, sops, npm, netrc, pypi
+
+	// KindStore fields.
+	Store string // the sealed store's name; the shim runs `jit <Store>-run`
+}
+
+// StoreFamily lists the catalog tools that read the named store, sorted
+// with the store's own namesake first (gcloud before its companions).
+func StoreFamily(store string) []string {
+	var tools []string
+	for tool, e := range catalog {
+		if e.Kind == KindStore && e.Store == store {
+			tools = append(tools, tool)
+		}
+	}
+	sort.Slice(tools, func(i, j int) bool {
+		if (tools[i] == store) != (tools[j] == store) {
+			return tools[i] == store
+		}
+		return tools[i] < tools[j]
+	})
+	return tools
 }
 
 // Lookup returns the catalog entry for tool.

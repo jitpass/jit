@@ -125,8 +125,8 @@ jit run --with gcp -- terraform apply   # explicit grant: scripts/CI, or a hard 
 for you, then keep typing the tool by name:
 
 ```sh
-jit wrap add gcloud --grant gcp   # once
-gcloud storage ls                 # the shim runs `jit run --with gcp` per call
+jit wrap add tofu --grant gcp     # once
+tofu plan                         # the shim runs `jit run --with gcp` per call
 ```
 
 A project's `.jit/config.yaml` can auto-select

@@ -29,6 +29,7 @@ jit [flags]
 * [jit docker-credential](jit_docker-credential.md)	 - Implement Docker's credential-helper protocol for migrated registry logins
 * [jit doctor](jit_doctor.md)	 - One-shot health check: profiles, secrets, service, backup, and wrap shims
 * [jit export](jit_export.md)	 - Print shell export statements for a profile's secrets
+* [jit gcloud-run](jit_gcloud-run.md)	 - Run a Google Cloud CLI with its login unsealed for that one run
 * [jit git-credential](jit_git-credential.md)	 - Implement git's credential-helper protocol for migrated HTTPS logins
 * [jit grant](jit_grant.md)	 - Pre-approve a program to use profiles unattended
 * [jit guard](jit_guard.md)	 - Prevention hooks that keep credentials from being recorded in the first place
