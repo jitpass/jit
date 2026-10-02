@@ -392,3 +392,28 @@ func TestDiscoverCompanionTargetsAreCheckedNotCounted(t *testing.T) {
 		t.Errorf("missing pointers = %+v, want none: both real pointer targets are stored", m.MissingPointers)
 	}
 }
+
+// A store-wrap family uses one vault path, the sealed store, with no
+// profile between: recorded once per store, never as a pointer (a missing
+// store is a logged-out tool, not a broken reference) and never by name.
+func TestDiscoverStoreWrap(t *testing.T) {
+	f := newFixture(t)
+	write(t, filepath.Join(f.home, ".jit", "wrap.json"), `{"tools":{
+		"gh":{"profile":"wrap-gh","added_at":"2026-01-01T00:00:00Z"},
+		"gcloud":{"store":"gcloud","added_at":"2026-01-01T00:00:00Z"},
+		"bq":{"store":"gcloud","added_at":"2026-01-01T00:00:00Z"}}}`)
+	m := f.discover(t, Options{SecretExists: func(string) (bool, error) { return false, nil }})
+	if len(m.StoreWraps) != 1 {
+		t.Fatalf("store wraps = %+v, want one for the gcloud store", m.StoreWraps)
+	}
+	sw := m.StoreWraps[0]
+	if sw.Kind != KindStoreWrap || sw.Detail != "gcloud" || sw.VaultPath != migrate.GcloudStorePath ||
+		sw.File != filepath.Join(f.home, ".jit", "wrap.json") {
+		t.Errorf("store wrap = %+v", sw)
+	}
+	for _, l := range append(m.Broken, m.MissingPointers...) {
+		if l.Detail == "gcloud" || l.Detail == "bq" || l.VaultPath == migrate.GcloudStorePath {
+			t.Errorf("a store-wrap was read as a by-name launcher or a pointer: %+v", l)
+		}
+	}
+}

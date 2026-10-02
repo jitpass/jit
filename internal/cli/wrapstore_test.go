@@ -13,8 +13,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/keystore"
+	"github.com/jitpass/jit/internal/lineage"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/sealstore"
+	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -216,5 +218,109 @@ func TestGcloudRunWithPlaintextBackIsDetected(t *testing.T) {
 	secrets, ephemeral, err := splitPlaintext(migrate.GcloudConfigDir(home))
 	if err != nil || len(secrets) != 2 || len(ephemeral) != 1 {
 		t.Fatalf("secrets %q ephemeral %q, %v", secrets, ephemeral, err)
+	}
+}
+
+// writeStoreWrapManifest records the gcloud family as wrapped, or (with
+// wrapped false) as nothing at all.
+func writeStoreWrapManifest(t *testing.T, home string, wrapped bool) {
+	t.Helper()
+	body := `{"tools":{}}`
+	if wrapped {
+		body = `{"tools":{"gcloud":{"store":"gcloud","added_at":"2026-01-01T00:00:00Z"},"bq":{"store":"gcloud","added_at":"2026-01-01T00:00:00Z"}}}`
+	}
+	p := wrap.ManifestPath(home)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A wrapped tool's sealed login is in use: `jit vault orphans` must never
+// offer to prune it. Once the wrap is gone (undo keeps the vault copy and
+// says so), it is a genuine orphan again.
+func TestVaultOrphansSparesASealedStore(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	stubUserPresence(t)
+	t.Cleanup(func() { vaultOrphansPrune = false; vaultOrphansYes = false })
+	writeFixtureProfile(t, cwd, "myapp", "API_KEY: kept/API_KEY\n")
+	root := seedFixtureVault(t, "kept/API_KEY")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.Set(migrate.GcloudStorePath, []byte("sealed")); err != nil {
+		t.Fatal(err)
+	}
+
+	orphans := func() string {
+		t.Helper()
+		var buf bytes.Buffer
+		rootCmd.SetOut(&buf)
+		rootCmd.SetErr(&buf)
+		rootCmd.SetArgs([]string{"vault", "orphans"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("jit vault orphans: %v", err)
+		}
+		return buf.String()
+	}
+
+	writeStoreWrapManifest(t, home, true)
+	if out := orphans(); strings.Contains(out, "gcloud-cli") {
+		t.Fatalf("a wrapped tool's sealed login was listed as an orphan:\n%s", out)
+	}
+	rec, err := reconcileSecrets(root, cwd, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range rec.Groups {
+		if g.Name == "gcloud-cli" && g.State != stateManagedElsewhere {
+			t.Fatalf("status classes the sealed login %v, want managed elsewhere", g.State)
+		}
+	}
+
+	writeStoreWrapManifest(t, home, false)
+	if out := orphans(); !strings.Contains(out, "gcloud-cli") {
+		t.Fatalf("with no wrap left, the vault copy is an orphan and must be listed:\n%s", out)
+	}
+}
+
+func TestStoreWrapDoctorFindings(t *testing.T) {
+	home := withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := storeWrapFindings(home, root); len(got) != 0 {
+		t.Fatalf("nothing wrapped, nothing left: %+v", got)
+	}
+
+	// A folder a killed run left: its owner pid cannot be alive with that
+	// fork time. Our own process's folder is a live run and must not count.
+	if _, err := sealstore.NewRunDir(gcloudRunBase(root), 999999, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := staleGcloudRuns(gcloudRunBase(root)); len(got) != 1 {
+		t.Fatalf("stale runs %q, want the dead owner's one", got)
+	}
+	start, _ := lineage.ProcessStartTime(int32(os.Getpid()))
+	if _, err := sealstore.NewRunDir(gcloudRunBase(root), os.Getpid(), start); err != nil {
+		t.Fatal(err)
+	}
+	got := storeWrapFindings(home, root)
+	if len(got) != 1 || got[0].Kind != kindWrap || !strings.Contains(got[0].Detail, "interrupted run") {
+		t.Fatalf("findings %+v, want one leftover finding", got)
+	}
+
+	// Plaintext back in the config dir only matters while the wrap is in
+	// place: unwrapped, it is simply gcloud as it always was.
+	plantGcloudLogin(t, home, "1//BACK")
+	if got := storeWrapFindings(home, root); len(got) != 1 {
+		t.Fatalf("unwrapped plaintext was reported: %+v", got)
+	}
+	writeStoreWrapManifest(t, home, true)
+	got = storeWrapFindings(home, root)
+	if len(got) != 2 || !strings.Contains(got[1].Detail, "back in plaintext") || !strings.Contains(got[1].Detail, "jit wrap gcloud") {
+		t.Fatalf("findings %+v, want the plaintext-back finding too", got)
 	}
 }

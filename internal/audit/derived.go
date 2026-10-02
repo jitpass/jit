@@ -95,7 +95,7 @@ func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 		d := DerivedCredential{
 			Path:   p,
 			What:   "access tokens gcloud cached for itself (about an hour each), in plaintext",
-			Advice: "they expire on their own; delete the file to clear them now (gcloud rewrites it in use)",
+			Advice: "`jit wrap gcloud` keeps them off disk; or delete the file now (gcloud rewrites it in use)",
 		}
 		// A SQLite file, not JSON: gcloud stores token_expiry as a plain
 		// timestamp in the row, so the bytes carry it verbatim (best-effort —

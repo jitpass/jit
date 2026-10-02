@@ -312,6 +312,11 @@ func wrapOwnerForPath(home, path string) (string, bool) {
 	if path == migrate.ClissoConfigPath(home) {
 		return "clisso", true
 	}
+	// gcloud's own login store (KindStore): sealed by `jit wrap gcloud`,
+	// never migrated in place.
+	if migrate.IsGcloudStoreFile(home, path) {
+		return "gcloud", true
+	}
 	return "", false
 }
 
@@ -368,8 +373,17 @@ func wrapPlanDetail(home, tool string) string {
 	case wrap.KindGrant:
 		detail = entry.Doc + ": shim only; every run grants the " + entry.Grant + " mount to that one process"
 	case wrap.KindStore:
-		detail = entry.Doc + ": the login store moves to the vault (backed up encrypted first); " +
-			strings.Join(wrap.StoreFamily(entry.Store), ", ") + " unseal it per run"
+		// The installed members only: those are the shims the wrap makes.
+		var tools []string
+		for _, t := range wrap.StoreFamily(entry.Store) {
+			if wrap.RealBinary(home, os.Getenv("PATH"), t) != "" {
+				tools = append(tools, t)
+			}
+		}
+		detail = entry.Doc + ": the login store moves to the vault (backed up encrypted first)"
+		if len(tools) > 0 {
+			detail += "; " + strings.Join(tools, ", ") + " unseal it per run"
+		}
 	}
 	// A first shim also puts ~/.jit/shims on PATH by appending to the
 	// shell rc — a file edit the plan must disclose (ensureShimOnPath).

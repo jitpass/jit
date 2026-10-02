@@ -33,6 +33,7 @@ const (
 	KindShellRC      Kind = "shell_rc"      // `jit export --profile` in a shell rc file; Detail is "line N"
 	KindPointerFile  Kind = "pointer_file"  // a jit://vault pointer; VaultPath is set, Profile is not
 	KindProjectStore Kind = "project_store" // a project profile, launched by `jit run` inside File (the project root)
+	KindStoreWrap    Kind = "store_wrap"    // a store-wrap in ~/.jit/wrap.json; Detail is the store, VaultPath the sealed store it unseals
 )
 
 // ByName reports whether a kind names its profile by NAME, resolved the way
@@ -161,6 +162,12 @@ type Map struct {
 	// would make a secret only it names look referenced. Kept so its
 	// targets can be checked.
 	Companions []Launcher
+	// StoreWraps lists every sealed login store a store-wrap unseals, one per
+	// store (a family of shims shares one). Like a pointer it names a vault
+	// PATH, not a profile, but it is not a pointer: a store the vault lacks
+	// is a logged-out tool, not a broken reference, so it is never checked
+	// against the vault.
+	StoreWraps []Launcher
 	// MissingPointers is the subset of Pointers whose secret the vault does
 	// not hold. Only computed when Options.SecretExists is set
 	// (PointersChecked).
@@ -472,7 +479,9 @@ func (d *discovery) readProfileLaunches(src Source, kind Kind, read func(home st
 }
 
 // readWrap adds every env-wrap: its shim runs `jit run --profile
-// wrap-<tool>`. Grant, capture and run-grant wraps name no profile.
+// wrap-<tool>`. Grant, capture and run-grant wraps name no profile. A
+// store-wrap names no profile either, but it uses a vault path, the sealed
+// store: recorded once per store in StoreWraps.
 func (d *discovery) readWrap() {
 	manifest, err := wrap.LoadManifest(d.home)
 	if err != nil {
@@ -484,8 +493,15 @@ func (d *discovery) readWrap() {
 		tools = append(tools, t)
 	}
 	sort.Strings(tools)
+	stores := map[string]bool{}
 	for _, t := range tools {
 		e := manifest.Tools[t]
+		if e.IsStore() && !stores[e.Store] {
+			stores[e.Store] = true
+			if vp, ok := migrate.StoreVaultPath(e.Store); ok {
+				d.m.StoreWraps = append(d.m.StoreWraps, Launcher{Kind: KindStoreWrap, File: wrap.ManifestPath(d.home), Detail: e.Store, VaultPath: vp})
+			}
+		}
 		if e.IsProfileless() {
 			continue
 		}

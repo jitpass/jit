@@ -18,6 +18,7 @@ import (
 
 	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -287,5 +288,66 @@ func TestUninstallRestoreFailureDeletesNothing(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "nothing was deleted") {
 		t.Errorf("output does not say nothing was deleted:\n%s", out.String())
+	}
+}
+
+// Sealing gcloud's store deletes credentials.db on purpose, so to the plan
+// it looked Gone (and its gcp class mount-born): Remove JitPass would have
+// dropped the gcloud login. It comes back as one store item, from the
+// vault's current copy — the latest login, not the one from the wrap day.
+func TestUninstallRestoreBringsBackTheSealedGcloudLogin(t *testing.T) {
+	home, root, v := restoreFixture(t)
+	dir := migrate.GcloudConfigDir(home)
+	plantGcloudLogin(t, home, "1//WRAP-DAY")
+	if _, err := migrate.SealGcloudStore(v, home); err != nil {
+		t.Fatal(err)
+	}
+	// A later login through the wrap, resealed.
+	run := t.TempDir()
+	plantGcloudLogin(t, run, "1//LATEST")
+	runStore := migrate.GcloudConfigDir(run)
+	blob, err := sealstore.Gcloud.Pack(runStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.ResealGcloudStore(v, home, runStore, blob); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := buildUninstallRestorePlan(root, home, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds := filepath.Join(dir, "credentials.db")
+	if kindsByPath(plan)[creds] != restoreStore {
+		t.Fatalf("kinds = %v, want the gcloud store item", kindsByPath(plan))
+	}
+	for _, g := range plan.Gone {
+		if migrate.IsGcloudStoreFile(home, g) {
+			t.Errorf("a sealed store file was planned as Gone: %s", g)
+		}
+	}
+	for _, s := range plan.VaultOnly {
+		if s.Path == migrate.GcloudStorePath {
+			t.Error("the sealed login was planned as lost with the vault")
+		}
+	}
+
+	res := runUninstallRestore(v, root, home, plan, nil)
+	if len(res.Failures) != 0 {
+		t.Fatalf("failures: %v", res.Failures)
+	}
+	b, err := os.ReadFile(creds) // #nosec G304 -- test-controlled path
+	if err != nil || !strings.Contains(string(b), "1//LATEST") {
+		t.Fatalf("credentials.db after restore: %q, %v; want the latest login", b, err)
+	}
+
+	// Already back in plaintext: nothing to write over it.
+	plan, err = buildUninstallRestorePlan(root, home, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kindsByPath(plan)[creds] == restoreStore {
+		t.Error("planned to write the vaulted login over a plaintext one")
 	}
 }

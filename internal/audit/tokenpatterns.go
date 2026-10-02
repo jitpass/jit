@@ -258,6 +258,16 @@ var knownTokenPatterns = []tokenPattern{
 	// CLI — wrap moves the key it knows about, scan has to recognize one
 	// pasted anywhere else.
 	{"Google API Key", regexp.MustCompile(`\bAIza[A-Za-z0-9_\-]{35}\b`), true, nil, false},
+	// Google OAuth user tokens, as gcloud and every Google SDK hold them. A
+	// refresh token ("1//0" then ~100 characters) does not expire on its own
+	// and mints access tokens from any machine; an access token ("ya29.")
+	// lasts about an hour. Neither format is documented by Google, hence
+	// unverified, but both are what `gcloud auth print-refresh-token` and
+	// `print-access-token` print, and an agent that runs one leaves the token
+	// in its transcript. The refresh-token floor of 40 keeps "1//0" from
+	// matching anything short enough to be prose.
+	{"Google OAuth Refresh Token", regexp.MustCompile(`\b1//0[A-Za-z0-9_\-]{40,}`), false, nil, false},
+	{"Google OAuth Access Token", regexp.MustCompile(`\bya29\.[A-Za-z0-9_\-]{30,}`), false, nil, false},
 	{"Slack App-Level Token", regexp.MustCompile(`\bxapp-[0-9A-Za-z\-]{10,}\b`), true, nil, false},
 	{"Slack Workflow Token", regexp.MustCompile(`\bxwfp-[0-9A-Za-z\-]{10,}\b`), true, nil, false},
 	{"Stripe Webhook Signing Secret", regexp.MustCompile(`\bwhsec_[A-Za-z0-9]{24,}\b`), true, nil, false},

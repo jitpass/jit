@@ -388,8 +388,13 @@ func exitStatus(err error) (int, error) {
 // sweepGcloudRuns removes the run dirs of runs that died before cleaning up
 // (D1). Best effort: a sweep failure must not stop this run.
 func sweepGcloudRuns(base string) {
-	_, _ = sealstore.Sweep(base, func(pid int, start int64) bool {
-		got, ok := lineage.ProcessStartTime(int32(pid)) // #nosec G115 -- parsed from a dir name NewRunDir wrote from a real pid
-		return ok && got == start
-	})
+	_, _ = sealstore.Sweep(base, gcloudRunOwnerAlive)
+}
+
+// gcloudRunOwnerAlive reports whether the run that made a dir is still
+// running: the same pid, forked at the same moment (a recycled pid is a
+// different process).
+func gcloudRunOwnerAlive(pid int, start int64) bool {
+	got, ok := lineage.ProcessStartTime(int32(pid)) // #nosec G115 -- parsed from a dir name NewRunDir wrote from a real pid
+	return ok && got == start
 }

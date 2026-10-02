@@ -40,6 +40,8 @@ SG.AbCdEfGhIj.KlMnOpQrStUv
 ntn_|abcdefghijklmnopqrstuvwx
 secr|et_0123456789abcdefghijklmnopqrstuvwxyzABCD
 AIza|SyC1234567890abcdefghijklmnopqrstuv
+gcloud auth activate-refresh-token u@example.com 1//0|gXwVuTsRqPoNmLkJiHgFeDcBa9z8y7x6w5v4u3t2s1rQpOnMlKjIhGfEd
+curl -H "Authorization: Bearer ya29.|a0AfB_byCdEfGhIjKlMnOpQrStUvWxYz0123456789aBcDeFgHiJkL" https://storage.googleapis.com
 whse|c_AbCdEfGhIjKlMnOpQrStUvWx
 sb_s|ecret_AbCdEfGhIjKlMnOpQrStUv
 glsa|_AbCdEfGhIjKlMnOpQrStUv_abcdef12

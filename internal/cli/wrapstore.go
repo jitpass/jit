@@ -6,11 +6,13 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/selfpath"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -168,4 +170,60 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("The vault copy was kept: `jit vault rm %s` removes it for good.\n", migrate.GcloudStorePath)))
 	}
 	return finishUnwrapPath(out, home, last)
+}
+
+// storeWrapFindings is doctor's view of a sealed store beyond its shims
+// (wrap.Doctor checks those): the two states in which the login sits in
+// plaintext although the wrap is installed. Read-only, like every doctor
+// probe: it names the fix and changes nothing.
+//
+//   - Folders a gcloud-run left behind when it was killed before cleaning
+//     up, each holding the unsealed login. The next gcloud run removes them,
+//     and so does a service start (D1); until then they are on disk.
+//   - A plaintext store back in ~/.config/gcloud: something logged in
+//     without the shim. gcloud-run passes through to it (D7).
+func storeWrapFindings(home, root string) []checkFinding {
+	m, err := wrap.LoadManifest(home)
+	if err != nil {
+		return nil
+	}
+	wrapped := false
+	for _, e := range m.Tools {
+		if e.Store == "gcloud" {
+			wrapped = true
+		}
+	}
+	var out []checkFinding
+	if left := staleGcloudRuns(gcloudRunBase(root)); len(left) > 0 {
+		out = append(out, checkFinding{Kind: kindWrap, Detail: fmt.Sprintf(
+			"gcloud: %s an interrupted run left the login unsealed in %s; the next gcloud run removes it, or `jit service restart`",
+			countWord(len(left), "folder where", "folders where"), displayPath(home, gcloudRunBase(root)))})
+	}
+	if wrapped {
+		if secrets, _, err := splitPlaintext(migrate.GcloudConfigDir(home)); err == nil && len(secrets) > 0 {
+			out = append(out, checkFinding{Kind: kindWrap, Detail: fmt.Sprintf(
+				"gcloud: the login is back in plaintext in %s (something logged in without the shim); `jit wrap gcloud` seals it again",
+				displayPath(home, migrate.GcloudConfigDir(home)))})
+		}
+	}
+	return out
+}
+
+// staleGcloudRuns lists the run folders whose owner is gone: what Sweep
+// would remove, found without removing it.
+func staleGcloudRuns(base string) []string {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if pid, start, ok := sealstore.Owner(e.Name()); ok && !gcloudRunOwnerAlive(pid, start) {
+			out = append(out, filepath.Join(base, e.Name()))
+		}
+	}
+	return out
 }
