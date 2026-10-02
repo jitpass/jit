@@ -348,6 +348,8 @@ func DescribeUse(op string) string {
 		return "served mounted files"
 	case OpGrantUse:
 		return "read a secret via grant"
+	case OpAWSCacheGet:
+		return "read cached AWS credentials"
 	default:
 		return op
 	}

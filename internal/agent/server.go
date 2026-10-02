@@ -161,6 +161,14 @@ type Server struct {
 	trustMu    sync.Mutex
 	trustRoots map[int32]int64
 
+	// The AWS SSO role-credential cache (awscache.go): credentials `jit
+	// aws-sso` fetched, by profile, and the processes allowed to fill it.
+	// Memory only, dropped on every re-lock. Its own mutex: a cache hit must
+	// never wait behind a session challenge.
+	awsCacheMu sync.Mutex
+	awsCache   map[string]awsCacheEntry
+	awsProofs  map[int32]awsCacheProof
+
 	// grants are the live process grants (design/process-grants.md, grant.go):
 	// scoped DEK caches a disclosed challenge pre-authorized for one process
 	// tree until an absolute deadline. Guarded by grantMu for trustMu's exact
@@ -771,6 +779,15 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: "job_run: missing job_name"}
 		}
 		return s.runJob(req.JobName, c)
+	case OpAWSCacheGet:
+		return s.awsCacheGet(req, c)
+	case OpAWSCachePut:
+		return s.awsCachePut(req, c)
+	case OpAWSCacheClear:
+		// No prompt and no proof: emptying the cache only costs the next
+		// fetch its speed, like any revoke.
+		s.clearAWSCache()
+		return Response{OK: true}
 	case OpUnwrap:
 		// A live process grant answers first: the human already approved this
 		// exact tree reaching these exact secrets (one disclosed challenge,
@@ -783,6 +800,9 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// minutes-old unlock are different facts in an audit. Any miss falls
 		// through to the ordinary path unchanged.
 		if dek, path, ok := s.grantUnwrap(c, req.Data); ok {
+			if req.Class == awsClass {
+				s.noteAWSUnwrap(c)
+			}
 			// Collapse on the RAW argv, never the redacted form — the same
 			// requirement recordUse documents at length and has a test for.
 			// Redaction can map two different callers onto one string, and
@@ -830,6 +850,12 @@ func (s *Server) handle(req Request, c *caller) Response {
 		dek, err := open(mek, req.Data, []byte(req.Class))
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
+		}
+		// The class is AEAD-verified by open() just above: this caller now
+		// holds an aws credential it was allowed, which is what lets it
+		// fill the AWS cache (awscache.go).
+		if req.Class == awsClass {
+			s.noteAWSUnwrap(c)
 		}
 		return Response{OK: true, Data: dek}
 	default:
