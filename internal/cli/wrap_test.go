@@ -521,7 +521,7 @@ func TestWrapGrantToolInstallsShimAndSaysMigrateFirst(t *testing.T) {
 		if r.Tool == "sops" && (r.Kind != "grant" || !r.Wrapped || r.With != "sops" || !r.Catalog) {
 			t.Errorf("sops row = %+v, want catalog grant kind, wrapped, with sops", r)
 		}
-		if r.Tool == "gcloud" && (r.Kind != "store" || r.Store != "gcloud" || r.With != "") {
+		if r.Tool == "gcloud" && (r.Kind != "store" || r.Store != "gcloud" || r.StorePath != "gcloud-cli/store" || r.With != "") {
 			t.Errorf("gcloud row = %+v, want catalog store kind on the gcloud store", r)
 		}
 	}

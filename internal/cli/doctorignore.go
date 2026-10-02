@@ -170,7 +170,7 @@ func ignoreName(f checkFinding) string {
 		if f.Path != "" {
 			return shortPath(f.Path)
 		}
-	case kindWrap, kindWrapEnv:
+	case kindWrap, kindWrapEnv, kindWrapStore:
 		// wrapFindings writes "<check>: <detail>"; the check is the tool
 		// or the shim-dir/PATH/rc-file line the row is about.
 		if name, _, ok := strings.Cut(f.Detail, ": "); ok && name != "" {
@@ -626,6 +626,8 @@ func ignoreStillFails(u *ignoreUnit) string {
 		return "that MCP server still fails to start"
 	case kindWrap:
 		return "that wrap check still fails"
+	case kindWrapStore:
+		return "the login is still on disk"
 	case kindJitPath:
 		return u.name + " still runs a jit that isn't there"
 	case kindVaultKey:

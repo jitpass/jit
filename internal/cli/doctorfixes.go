@@ -114,6 +114,9 @@ var jitFixClasses = map[string]fixClass{
 	"unmount":         {destructive: true, presence: true},
 	"service restart": {},
 	"service log":     {},
+	// A catalog wrap: the tool's secret moves to the vault (backed up
+	// first, undone by `jit wrap undo`), the way migrate moves a file's.
+	"wrap": {},
 }
 
 // fixClassFlags are the flags that change what a command does enough to

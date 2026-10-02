@@ -84,6 +84,15 @@ func TestWrapGcloudSealsTheStoreAndUndoPutsItBack(t *testing.T) {
 	if m.Tools["gcloud"].Store != "gcloud" || m.Tools["bq"].Store != "gcloud" {
 		t.Errorf("manifest %+v, want store-wraps on gcloud and bq", m.Tools)
 	}
+	// Wrapped store rows name the sealed store, so the app can count each
+	// tool's reads by the use events labelled with it.
+	listed, err := execWrap(t, "list", "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(listed, `"store_path": "gcloud-cli/store"`) {
+		t.Errorf("wrap list lacks the store path:\n%s", listed)
+	}
 	if left, _ := sealstore.Gcloud.Plaintext(dir); len(left) != 0 {
 		t.Fatalf("plaintext left after the wrap: %q", left)
 	}
@@ -308,8 +317,17 @@ func TestStoreWrapDoctorFindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := storeWrapFindings(home, root)
-	if len(got) != 1 || got[0].Kind != kindWrap || !strings.Contains(got[0].Detail, "interrupted run") {
+	if len(got) != 1 || got[0].Kind != kindWrapStore || !strings.Contains(got[0].Detail, "interrupted run") {
 		t.Fatalf("findings %+v, want one leftover finding", got)
+	}
+	// The command is the Action, so doctor's fixes (and the app's button)
+	// carry it, and it is no destructive one.
+	fixes := fixesFor(got[0].Kind, got[0].Action)
+	if len(fixes) != 1 || fixes[0].Command != "jit service restart" || fixes[0].Destructive {
+		t.Fatalf("leftover fixes %+v", fixes)
+	}
+	if !got[0].Kind.warning() {
+		t.Error("a login on disk is advisory: gcloud still runs")
 	}
 
 	// Plaintext back in the config dir only matters while the wrap is in
@@ -320,7 +338,11 @@ func TestStoreWrapDoctorFindings(t *testing.T) {
 	}
 	writeStoreWrapManifest(t, home, true)
 	got = storeWrapFindings(home, root)
-	if len(got) != 2 || !strings.Contains(got[1].Detail, "back in plaintext") || !strings.Contains(got[1].Detail, "jit wrap gcloud") {
+	if len(got) != 2 || !strings.Contains(got[1].Detail, "back in plaintext") {
 		t.Fatalf("findings %+v, want the plaintext-back finding too", got)
+	}
+	fixes = fixesFor(got[1].Kind, got[1].Action)
+	if len(fixes) != 1 || fixes[0].Command != "jit wrap gcloud" || fixes[0].Destructive {
+		t.Fatalf("plaintext-back fixes %+v", fixes)
 	}
 }

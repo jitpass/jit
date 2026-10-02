@@ -195,15 +195,22 @@ func storeWrapFindings(home, root string) []checkFinding {
 	}
 	var out []checkFinding
 	if left := staleGcloudRuns(gcloudRunBase(root)); len(left) > 0 {
-		out = append(out, checkFinding{Kind: kindWrap, Detail: fmt.Sprintf(
-			"gcloud: %s an interrupted run left the login unsealed in %s; the next gcloud run removes it, or `jit service restart`",
-			countWord(len(left), "folder where", "folders where"), displayPath(home, gcloudRunBase(root)))})
+		out = append(out, checkFinding{
+			Kind: kindWrapStore,
+			Path: gcloudRunBase(root),
+			Detail: fmt.Sprintf("gcloud: %s an interrupted run left the login unsealed in %s",
+				countWord(len(left), "folder where", "folders where"), displayPath(home, gcloudRunBase(root))),
+			Action: "`jit service restart` removes it now; the next gcloud run would too",
+		})
 	}
 	if wrapped {
 		if secrets, _, err := splitPlaintext(migrate.GcloudConfigDir(home)); err == nil && len(secrets) > 0 {
-			out = append(out, checkFinding{Kind: kindWrap, Detail: fmt.Sprintf(
-				"gcloud: the login is back in plaintext in %s (something logged in without the shim); `jit wrap gcloud` seals it again",
-				displayPath(home, migrate.GcloudConfigDir(home)))})
+			out = append(out, checkFinding{
+				Kind:   kindWrapStore,
+				Path:   migrate.GcloudConfigDir(home),
+				Detail: fmt.Sprintf("gcloud: the login is back in plaintext in %s (something logged in without the shim)", displayPath(home, migrate.GcloudConfigDir(home))),
+				Action: "`jit wrap gcloud` seals it again",
+			})
 		}
 	}
 	return out
