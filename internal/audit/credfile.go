@@ -1269,6 +1269,7 @@ func scanKubeloginCache(cfg Config) ([]Finding, error) {
 		}
 		return nil, err
 	}
+	fixable := kubeloginOnDisk(filepath.Join(cfg.HomeDir, ".kube", "config"))
 	var findings []Finding
 	for _, e := range entries {
 		if !e.Type().IsRegular() || !kubeloginCacheName.MatchString(e.Name()) {
@@ -1285,7 +1286,7 @@ func scanKubeloginCache(cfg Config) ([]Finding, error) {
 		if json.Unmarshal(data, &tok) != nil || tok.RefreshToken == "" {
 			continue
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      "refresh_token",
@@ -1293,9 +1294,61 @@ func scanKubeloginCache(cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     "a kubelogin OIDC refresh token, in plaintext: it signs in to the cluster's identity provider again until the provider revokes it",
-		}))
+		})
+		if fixable {
+			// ~/.kube/config runs kubelogin with its on-disk cache: the
+			// migrate switches it to the keychain (migrate/kubelogin.go).
+			f.Remedy = RemedyMigrate
+			f.FixCommand = "jit migrate ~/.kube/config"
+			f.Evidence += "; `jit migrate ~/.kube/config` moves kubelogin to the keychain"
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// kubeloginOnDisk reports whether a kubeconfig runs kubelogin's get-token
+// with its default on-disk cache (no --token-cache-storage, or =disk): the
+// state `jit migrate ~/.kube/config` switches. The rule is
+// migrate.DiscoverKubeloginUsers', read locally (audit cannot import migrate).
+func kubeloginOnDisk(path string) bool {
+	data, err := readCappedFile(path)
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		Users []struct {
+			User struct {
+				Exec struct {
+					Command string   `yaml:"command"`
+					Args    []string `yaml:"args"`
+				} `yaml:"exec"`
+			} `yaml:"user"`
+		} `yaml:"users"`
+	}
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	for _, u := range doc.Users {
+		base, args := filepath.Base(u.User.Exec.Command), u.User.Exec.Args
+		isKubelogin := base == "kubectl" && len(args) > 1 && args[0] == "oidc-login" && args[1] == "get-token" ||
+			(base == "kubelogin" || base == "kubectl-oidc_login") && len(args) > 0 && args[0] == "get-token"
+		if !isKubelogin {
+			continue
+		}
+		storage := ""
+		for i, a := range args {
+			if v, ok := strings.CutPrefix(a, "--token-cache-storage="); ok {
+				storage = v
+			} else if a == "--token-cache-storage" && i+1 < len(args) {
+				storage = args[i+1]
+			}
+		}
+		if storage == "" || storage == "disk" {
+			return true
+		}
+	}
+	return false
 }
 
 // scanAzureCLI reports what the Azure CLI keeps in ~/.azure in plaintext,

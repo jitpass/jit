@@ -121,7 +121,7 @@ var selfRotatingCaches = []selfRotatingCache{
 		match:      filepath.Join(".kube", "cache", "oidc-login"),
 		dir:        true,
 		title:      "A kubelogin OIDC login (renews itself)",
-		action:     "add `--token-cache-storage=keyring` to kubelogin's args in your kubeconfig, then delete this file",
+		action:     "add `--token-cache-storage=keyring` to kubelogin's args in the kubeconfig that uses it, then delete this file",
 		toolMinted: true,
 	},
 	// gke-gcloud-auth-plugin's cache beside the kubeconfig: the access token
@@ -213,6 +213,12 @@ func toolMintedLoginFor(path string) (selfRotatingCache, bool) {
 // rest, unchanged.
 func toolMintedLogin(f Finding) bool {
 	if f.TestFixture || f.SourceExample {
+		return false
+	}
+	// A login jit CAN fix (the scanner set a runnable remedy: kubelogin's
+	// switch to the keychain) is not "left to its tool": it counts, and
+	// the one command fixes it.
+	if f.Remedy == RemedyMigrate || f.Remedy == RemedyWrap {
 		return false
 	}
 	switch f.Severity {

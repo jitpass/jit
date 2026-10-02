@@ -34,6 +34,19 @@ standard `ExecCredential` response; nothing about your workflow changes.
   (or `--only kube`) [refreshes
   it](./index.md#a-recorded-jit-path-that-went-stale).
 
+## OIDC logins (kubelogin)
+
+[kubelogin](https://github.com/int128/kubelogin) (`kubectl oidc-login`)
+keeps each login's refresh token in `~/.kube/cache/oidc-login` in
+plaintext by default. It can keep them in the keychain instead, and
+`jit migrate ~/.kube/config` switches it there: each user whose exec runs
+kubelogin gets `--token-cache-storage=keyring`, and the plaintext cache is
+removed (backed up first, so undo brings it back).
+
+The next `kubectl` call for each cluster signs in once more, then keeps its
+token in the keychain. Every file in the default cache goes, so a login a
+*different* kubeconfig keeps on disk also signs in again on its next use.
+
 `jit k8s-exec-credential` is the [plumbing
 command](../reference/plumbing.md) the kubeconfig invokes - you never run
 it by hand. Reversing the migration: [`jit migrate
