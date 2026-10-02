@@ -110,6 +110,10 @@ type Request struct {
 	// each KindJobProposal, and job_request only accepts a proposal while
 	// one such stream is open.
 	ShowsProposals bool `json:"shows_proposals,omitempty"`
+	// CacheKey names an AWS cache entry (aws_cache_get/put): the AWS profile.
+	// ExpiresUnix is, on aws_cache_put, when the credentials in Data expire.
+	CacheKey    string `json:"cache_key,omitempty"`
+	ExpiresUnix int64  `json:"expires_unix,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees
@@ -257,15 +261,26 @@ const (
 )
 
 const (
-	OpWrap      = "wrap"
-	OpUnwrap    = "unwrap"
-	OpUnlock    = "unlock"
-	OpLock      = "lock"
-	OpStatus    = "status"
-	OpRefresh   = "refresh"
-	OpRevealPID = "reveal_pid"
-	OpStopMount = "stop_mount"
-	OpHistory   = "history"
+	OpWrap   = "wrap"
+	OpUnwrap = "unwrap"
+	// The AWS SSO role-credential cache (awscache.go, design/aws-sso-
+	// sealed.md D7). aws_cache_get serves a profile's cached credentials
+	// after the same consent gate an aws unwrap passes, prompt-free on a
+	// miss and with no live session; aws_cache_put fills it, only from a
+	// process that just completed a consented aws unwrap (a socket client
+	// cannot plant credentials of its own); aws_cache_clear empties it,
+	// free like every revoke. Unknown to an older service, which answers
+	// "unknown op": a miss, so no protocol bump.
+	OpAWSCacheGet   = "aws_cache_get"
+	OpAWSCachePut   = "aws_cache_put"
+	OpAWSCacheClear = "aws_cache_clear"
+	OpUnlock        = "unlock"
+	OpLock          = "lock"
+	OpStatus        = "status"
+	OpRefresh       = "refresh"
+	OpRevealPID     = "reveal_pid"
+	OpStopMount     = "stop_mount"
+	OpHistory       = "history"
 	// OpSubscribe is the one streaming op: the agent answers with a single
 	// Response{OK: true} line and then keeps the connection open, writing one
 	// SessionEvent JSON document per line as each is recorded (the same

@@ -5,14 +5,18 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
@@ -33,7 +37,7 @@ case "$1 $2" in
       echo "aws: [ERROR]: Error loading SSO Token: Token for corp does not exist" >&2; exit 253
     fi
     if [ "$ROTATE" = 1 ]; then printf '{"accessToken":"a2","refreshToken":"1//ROTATED"}' > "$cache/tok.json"; fi
-    echo '{"Version":1,"AccessKeyId":"ASIAFAKE","SecretAccessKey":"s","SessionToken":"t"}' ;;
+    echo '{"Version":1,"AccessKeyId":"ASIAFAKE","SecretAccessKey":"s","SessionToken":"t","Expiration":"2099-01-01T00:00:00+00:00"}' ;;
   "sso logout") rm -f "$cache"/tok*.json ;;
 esac
 `
@@ -419,4 +423,186 @@ func TestMigrateSealsAWSSSOProfiles(t *testing.T) {
 	if !strings.Contains(buf.String(), `"store": "aws-sso"`) {
 		t.Errorf("vault list --users does not name the store:\n%s", buf.String())
 	}
+}
+
+// fakeCredCache stands in for the service's AWS cache.
+type fakeCredCache struct {
+	mu      sync.Mutex
+	data    map[string][]byte
+	getErr  error
+	gets    int
+	puts    map[string]time.Time
+	cleared int
+}
+
+func (f *fakeCredCache) AWSCacheGet(p string) ([]byte, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gets++
+	if f.getErr != nil {
+		return nil, false, f.getErr
+	}
+	d, ok := f.data[p]
+	return d, ok, nil
+}
+
+func (f *fakeCredCache) AWSCachePut(p string, d []byte, exp time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.puts == nil {
+		f.puts = map[string]time.Time{}
+	}
+	f.puts[p] = exp
+	return nil
+}
+
+func (f *fakeCredCache) AWSCacheClear() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleared++
+	return nil
+}
+
+func withFakeCredCache(t *testing.T, f *fakeCredCache) {
+	t.Helper()
+	orig := awsSSOCache
+	awsSSOCache = func() awsCredCache { return f }
+	t.Cleanup(func() { awsSSOCache = orig })
+}
+
+func execAWSSSO(t *testing.T, f awsSSOFixture, args ...string) (string, error) {
+	t.Helper()
+	orig := awsSSOBinary
+	awsSSOBinary = func(string) string { return f.aws }
+	t.Cleanup(func() { awsSSOBinary = orig })
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs(append([]string{"aws-sso"}, args...))
+	err := rootCmd.Execute()
+	return buf.String(), err
+}
+
+// A cache hit answers without the AWS CLI and without unsealing anything.
+func TestAWSSSOServesFromTheServiceCache(t *testing.T) {
+	f := newAWSSSOFixture(t)
+	f.seal(t, "1//SEALED")
+	cache := &fakeCredCache{data: map[string][]byte{"dev": []byte(`{"AccessKeyId":"ASIACACHED"}`)}}
+	withFakeCredCache(t, cache)
+	out, err := execAWSSSO(t, f, "--profile", "dev")
+	if err != nil || !strings.Contains(out, "ASIACACHED") {
+		t.Fatalf("out %q err %v", out, err)
+	}
+	if _, err := os.Stat(f.out); !os.IsNotExist(err) {
+		t.Fatal("a cache hit still ran the AWS CLI")
+	}
+}
+
+// A miss fetches, then offers the result with the expiry AWS gave it.
+func TestAWSSSOFillsTheServiceCache(t *testing.T) {
+	f := newAWSSSOFixture(t)
+	f.seal(t, "1//SEALED")
+	cache := &fakeCredCache{}
+	withFakeCredCache(t, cache)
+	out, err := execAWSSSO(t, f, "--profile", "dev")
+	if err != nil || !strings.Contains(out, "ASIAFAKE") {
+		t.Fatalf("out %q err %v", out, err)
+	}
+	if exp, ok := cache.puts["dev"]; !ok || exp.Year() != 2099 {
+		t.Fatalf("puts %v", cache.puts)
+	}
+}
+
+// While `aws sso login` has a login waiting in plaintext, the cache must
+// not answer: only a real fetch seals that login. And capturing it clears
+// what was cached from the previous one.
+func TestAWSSSOWaitingLoginBypassesTheCache(t *testing.T) {
+	f := newAWSSSOFixture(t)
+	f.seal(t, "1//OLD")
+	cache := &fakeCredCache{data: map[string][]byte{"dev": []byte(`{"AccessKeyId":"ASIASTALE"}`)}}
+	withFakeCredCache(t, cache)
+	dir := migrate.AWSSSOCacheDir(f.home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tok.json"), []byte(`{"accessToken":"n","refreshToken":"1//NEW"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execAWSSSO(t, f, "--profile", "dev")
+	if err != nil || strings.Contains(out, "ASIASTALE") {
+		t.Fatalf("out %q err %v", out, err)
+	}
+	if cache.gets != 0 || cache.cleared != 1 {
+		t.Fatalf("gets %d cleared %d; want the cache skipped and cleared by the capture", cache.gets, cache.cleared)
+	}
+}
+
+// A consent refusal at the cache is the user's answer: no second prompt
+// from a fallback unseal.
+func TestAWSSSOCacheRefusalIsFinal(t *testing.T) {
+	f := newAWSSSOFixture(t)
+	f.seal(t, "1//SEALED")
+	withFakeCredCache(t, &fakeCredCache{getErr: errors.New("consent: access to your aws credential was not granted")})
+	if _, err := execAWSSSO(t, f, "--profile", "dev"); err == nil || !strings.Contains(err.Error(), "not granted") {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := os.Stat(f.out); !os.IsNotExist(err) {
+		t.Fatal("a refused cache read fell through to a fetch")
+	}
+}
+
+// The real service, end to end: `jit aws-sso`'s unseal is the consented
+// aws read the service records, so its offer after the fetch is accepted,
+// and the next fetch is served from memory without the AWS CLI.
+func TestAWSSSOCacheWithTheRealService(t *testing.T) {
+	f := newAWSSSOFixture(t)
+	socket := filepath.Join(shortTempDir(t), "a.sock")
+	server := agent.NewServer(socket, func() agent.MEKFetcher { return &fakeMEKFetcher{key: bytes.Repeat([]byte{0x24}, 32)} }, time.Minute)
+	if err := server.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = server.Serve(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); _ = server.Close(); <-done })
+
+	client := agent.NewClient(socket)
+	v := &vault.Vault{Root: f.root, KeyWrapper: client, RecipientID: "test-device"}
+	f.v = v
+	f.seal(t, "1//SEALED")
+	orig := awsSSOCache
+	awsSSOCache = func() awsCredCache { return client }
+	t.Cleanup(func() { awsSSOCache = orig })
+
+	if _, _, err := f.fetch(t); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(f.out); err != nil {
+		t.Fatal(err)
+	}
+	out, ok, err := awsSSOCachedCredentials("dev")
+	if err != nil || !ok || !strings.Contains(string(out), "ASIAFAKE") {
+		t.Fatalf("cache after a fetch: %q, %v, %v", out, ok, err)
+	}
+	if _, err := os.Stat(f.out); !os.IsNotExist(err) {
+		t.Fatal("the cached answer ran the AWS CLI")
+	}
+	if err := client.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := awsSSOCachedCredentials("dev"); ok {
+		t.Fatal("the cache answered after the vault locked")
+	}
+}
+
+// shortTempDir is a temp dir short enough for a Unix socket path (macOS
+// caps those near 104 bytes; t.TempDir under /var/folders is too long).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := os.MkdirTemp("/tmp", "jit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	return d
 }

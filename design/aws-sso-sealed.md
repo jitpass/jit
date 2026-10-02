@@ -6,8 +6,7 @@ Scope: IAM Identity Center logins the AWS CLI caches in
 and the `~/.aws/config` profiles that use them.
 Non-goals: minting in jit (no SSO, OIDC or SigV4 code, `minting-broker.md`
 Part C stays rejected); `aws login` console credentials
-(`~/.aws/login/cache`, a separate store); caching role credentials in the
-agent's memory (a later speed-up, D7).
+(`~/.aws/login/cache`, a separate store).
 
 Evidence: `spike/aws-sso-process/FINDINGS.md` (E1–E12, AWS CLI 2.37.7,
 boto3). Companion: `design/gcloud-sealed-store.md`, whose run-dir and
@@ -84,11 +83,26 @@ loop guard would otherwise refuse `dev` inside an outer `export-credentials
 --profile dev` (Result 2). Role credentials the inner CLI caches die with
 the run dir; the outer CLI never caches credential_process output (E11).
 
-**D7. No role-credential cache yet.** Each process that resolves
-credentials pays about 260 ms for the inner CLI (Result 6). SDKs resolve
-once per hour; a one-shot `aws` command pays it each time. An agent-memory
-cache keyed by profile is the follow-up; it needs a protocol op, so it is
-its own change.
+**D7. Role credentials are cached in the service's memory.** Each fetch
+that runs the inner CLI costs about 260 ms (Result 6), and the role
+credentials it returns live an hour. The service keeps them, by profile,
+and `jit aws-sso` asks it first (`internal/agent/awscache.go`, ops
+`aws_cache_get`, `aws_cache_put`, `aws_cache_clear`). Rules:
+
+- Memory only, dropped on every re-lock with the consent cache; served only
+  while more than 15 minutes remain (botocore refreshes inside that).
+- A read passes the same consent gate an aws unwrap does, naming the
+  caller, and needs a live session; a miss prompts nothing.
+- A write is accepted only from a process that completed a consented unwrap
+  of an aws-class secret in this session, within 5 minutes, anchored to its
+  fork time. The threat is a filler that lies: a socket client planting
+  credentials for an account it controls, so the user's next upload goes
+  there. Such a client has read nothing and is refused; a process that has
+  read the sealed login already held more than a cache entry is worth.
+- A new login (captured) and a sign-out clear it; a login waiting in the
+  real cache bypasses it, so a real fetch seals that login promptly.
+- An older service answers "unknown op", which the CLI reads as a miss: no
+  protocol bump.
 
 **D8. Signing out is `jit aws-sso logout`.** Plain `aws sso logout` finds
 an empty real cache and does nothing (E10). jit's runs AWS's logout on the

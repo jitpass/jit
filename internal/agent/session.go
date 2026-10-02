@@ -919,6 +919,7 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 		s.Consent.Clear()
 	}
 	s.clearTrust()
+	s.clearAWSCache()
 
 	s.notifySessionEvents(flushed)
 	if hadSession && s.OnSessionEvent != nil {
