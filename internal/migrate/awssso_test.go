@@ -276,3 +276,34 @@ func TestApplyAWSSSORefusesANonSSOProfile(t *testing.T) {
 		t.Fatal("a refused migration changed the config")
 	}
 }
+
+// The listing's prompt-free view of the sealed login: signed in after
+// sealing a login, signed out once only the registration is left, unknown
+// before anything was sealed.
+func TestAWSSSOSignedInState(t *testing.T) {
+	home := awsSSOHome(t, "1//R1")
+	v := newTestVault(t)
+	if _, known := AWSSSOSignedIn(v.Root); known {
+		t.Fatal("state known before anything was sealed")
+	}
+	profiles, _ := DiscoverAWSSSOProfiles(home)
+	if _, err := ApplyAWSSSO(v, home, profiles, nil); err != nil {
+		t.Fatal(err)
+	}
+	if in, known := AWSSSOSignedIn(v.Root); !in || !known {
+		t.Fatalf("after sealing a login: signedIn %v known %v", in, known)
+	}
+	regOnly := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(regOnly, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(regOnly, "cache", "reg.json"), []byte(`{"clientId":"c","clientSecret":"s"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := StoreAWSSSOCache(v, home, mustPack(t, regOnly)); err != nil {
+		t.Fatal(err)
+	}
+	if in, known := AWSSSOSignedIn(v.Root); in || !known {
+		t.Fatalf("after sign-out: signedIn %v known %v", in, known)
+	}
+}

@@ -51,6 +51,7 @@ type rmInUseJSON struct {
 	Project     string    `json:"project,omitempty"`
 	Mount       string    `json:"mount,omitempty"`
 	PointerFile string    `json:"pointer_file,omitempty"`
+	Store       string    `json:"store,omitempty"` // a sealed login's user: "gcloud" or "aws-sso"
 	LaunchedBy  []string  `json:"launched_by,omitempty"`
 	Tools       []toolUse `json:"tools,omitempty"`
 }
@@ -386,7 +387,7 @@ func rmDryRunResult(existing, missing []string, uses map[string][]secretUse, ref
 	}
 	for _, p := range existing {
 		for _, u := range uses[p] {
-			row := rmInUseJSON{Path: p, PointerFile: u.PointerFile}
+			row := rmInUseJSON{Path: p, PointerFile: u.PointerFile, Store: u.Store}
 			if u.PointerFile == "" {
 				row.Profile = u.ProfileName
 				row.Scope = string(u.Scope)

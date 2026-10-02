@@ -29,6 +29,11 @@ type secretUse struct {
 	MountPath   string        // a registered mount this profile feeds, "" when none
 	OwnerConfig string        // the profile's recorded source config (.source sidecar)
 	PointerFile string        // a pointer file naming the secret, for a pointer use
+	// Store names the sealed login a store use unseals ("gcloud",
+	// "aws-sso"); PointerFile is then the file that uses it (the wrap
+	// manifest, ~/.aws/config), so a reader can key on the store rather
+	// than on file names.
+	Store string
 	// LaunchedBy lists the MCP configs whose entries start this profile, in
 	// any wrapper layer. Display evidence only (attachLaunchers): an MCP
 	// config that fails to parse is skipped there, so an empty list means
@@ -161,7 +166,7 @@ func vaultUsageFromMap(m *launchers.Map) vaultUsage {
 	// orphans` must never offer to prune a wrapped tool's login, and `jit
 	// vault rm` must name what still unseals it.
 	for _, sw := range m.StoreWraps {
-		usage.byPath[sw.VaultPath] = append(usage.byPath[sw.VaultPath], secretUse{PointerFile: sw.File})
+		usage.byPath[sw.VaultPath] = append(usage.byPath[sw.VaultPath], secretUse{PointerFile: sw.File, Store: sw.Detail})
 	}
 
 	for p, list := range usage.byPath {

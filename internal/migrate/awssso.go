@@ -4,9 +4,12 @@
 package migrate
 
 import (
+	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -201,7 +204,70 @@ func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
 	if err := v.SetWithMeta(AWSSSOStorePath, blob, meta); err != nil {
 		return fmt.Errorf("storing the AWS SSO login in the vault: %w", err)
 	}
-	return nil
+	return writeAWSSSOState(v.Root, blob)
+}
+
+// awsSSOState is the one fact about the sealed login a listing may know
+// without decrypting it: whether it holds a login at all (a token, not
+// just the client registration a sign-out leaves). Not secret. Written
+// beside every write of the sealed login, StoreAWSSSOCache being the only
+// writer, so the two cannot disagree.
+type awsSSOState struct {
+	SignedIn bool `json:"signed_in"`
+}
+
+func awsSSOStatePath(root string) string { return filepath.Join(root, "aws-sso", "state.json") }
+
+func writeAWSSSOState(root string, blob []byte) error {
+	state := awsSSOState{SignedIn: blobHasAWSSSOToken(blob)}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(awsSSOStatePath(root)), 0o700); err != nil {
+		return err
+	}
+	return atomicfile.WriteFileMode(awsSSOStatePath(root), data, 0o600)
+}
+
+// AWSSSOSignedIn reports, prompt-free, whether the vault holds an AWS SSO
+// login: known is false when nothing was ever sealed.
+func AWSSSOSignedIn(root string) (signedIn, known bool) {
+	data, err := os.ReadFile(awsSSOStatePath(root)) // #nosec G304 -- jit's own file under its root
+	if err != nil {
+		return false, false
+	}
+	var state awsSSOState
+	if json.Unmarshal(data, &state) != nil {
+		return false, false
+	}
+	return state.SignedIn, true
+}
+
+// blobHasAWSSSOToken reports whether a sealed cache holds a token file (an
+// access or refresh token), as opposed to only a client registration.
+func blobHasAWSSSOToken(blob []byte) bool {
+	tr := tar.NewReader(bytes.NewReader(blob))
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			return false
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+		if err != nil {
+			return false
+		}
+		var tok struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+		}
+		if json.Unmarshal(data, &tok) == nil && (tok.AccessToken != "" || tok.RefreshToken != "") {
+			return true
+		}
+	}
 }
 
 // AWSSSOSealed reports whether the vault holds a sealed AWS SSO cache.

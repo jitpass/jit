@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -381,5 +382,41 @@ func TestMigrateSealsAWSSSOProfiles(t *testing.T) {
 	blob, err := v.Get(migrate.AWSSSOStorePath)
 	if err != nil || !strings.Contains(string(blob), "1//LOGIN") {
 		t.Fatalf("vault: %q, %v", blob, err)
+	}
+
+	// The app's view, prompt-free: the aws row says which profiles fetch
+	// through jit and that a login is sealed (to offer Sign Out), and the
+	// sealed login's user names its store rather than only a file.
+	listed, err := execWrap(t, "list", "--format", "json", "--all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res wrapListResult
+	if err := json.Unmarshal([]byte(listed), &res); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range res.Tools {
+		if r.Tool == "aws" {
+			found = true
+			if len(r.SSOProfiles) != 1 || r.SSOProfiles[0] != "dev" || r.SSOSignedIn == nil || !*r.SSOSignedIn {
+				t.Errorf("aws row SSO fields: profiles %q signed in %v", r.SSOProfiles, r.SSOSignedIn)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no aws row in wrap list --all")
+	}
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	vaultListFormat, vaultListUsers = "json", true
+	t.Cleanup(func() { vaultListFormat, vaultListUsers = "text", false })
+	rootCmd.SetArgs([]string{"vault", "list", "--format", "json", "--users"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"store": "aws-sso"`) {
+		t.Errorf("vault list --users does not name the store:\n%s", buf.String())
 	}
 }
