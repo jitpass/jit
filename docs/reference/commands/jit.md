@@ -23,6 +23,7 @@ jit [flags]
 * [jit audit](jit_audit.md)	 - Show the audit log: what jit commands ran, when, by whom, and every unlock
 * [jit aws-credential-process](jit_aws-credential-process.md)	 - Print AWS credential_process JSON for a migrated profile
 * [jit aws-sso](jit_aws-sso.md)	 - Print AWS credential_process JSON for a sealed AWS profile
+* [jit az-run](jit_az-run.md)	 - Run the Azure CLI with its login unsealed for that one run
 * [jit cargo-credential](jit_cargo-credential.md)	 - Implement cargo's credential-provider protocol for a migrated registry token
 * [jit clisso-capture](jit_clisso-capture.md)	 - Run clisso, capturing minted AWS credentials into the vault
 * [jit completion](jit_completion.md)	 - Generate the autocompletion script for the specified shell

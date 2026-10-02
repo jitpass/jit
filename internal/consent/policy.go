@@ -35,6 +35,7 @@ var credentialClasses = map[string]bool{
 	"git":       true,
 	"kube":      true,
 	"gcp":       true,
+	"azure":     true,
 	"sops":      true,
 	"npmrc":     true,
 	"netrc":     true,

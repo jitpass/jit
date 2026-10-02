@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/sealstore"
 )
 
@@ -58,12 +59,12 @@ func TestGcloudChildEnv(t *testing.T) {
 		"CLOUDSDK_CONFIG=/somewhere/else",
 		"HOME=/Users/u",
 	}
-	got := gcloudChildEnv(in, "gcloud", "/run/dir")
+	got := storeChildEnv(migrate.GcloudStore, in, "gcloud", "/run/dir")
 	want := []string{"PATH=/bin", "JIT_SHIM_GUARD_BQ=1", "HOME=/Users/u", "CLOUDSDK_CONFIG=/run/dir"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("env %q, want %q", got, want)
 	}
-	if got := gcloudChildEnv(in, "gcloud", ""); strings.Contains(strings.Join(got, "|"), "CLOUDSDK_CONFIG") {
+	if got := storeChildEnv(migrate.GcloudStore, in, "gcloud", ""); strings.Contains(strings.Join(got, "|"), "CLOUDSDK_CONFIG") {
 		t.Fatalf("an empty run dir still set CLOUDSDK_CONFIG: %q", got)
 	}
 }
@@ -90,9 +91,9 @@ type fakeVault struct {
 	err   error
 }
 
-func (f *fakeVault) reseal(_, _ string, _ []byte) error {
+func (f *fakeVault) reseal(_, _ string, _, _, after []byte) ([]byte, error) {
 	f.calls++
-	return f.err
+	return after, f.err
 }
 
 // runFixture is a materialized run: a real settings dir and a run dir
@@ -115,7 +116,7 @@ func TestResealOnlyWhenTheStoreChanged(t *testing.T) {
 	dir, runDir, baseline := runFixture(t, "1//SAME")
 	f := &fakeVault{}
 	var out bytes.Buffer
-	resealGcloudRun(&out, f, "", dir, runDir, baseline)
+	resealStoreRun(&out, migrate.GcloudStore, f, "", dir, runDir, baseline, nil)
 	if f.calls != 0 {
 		t.Fatalf("an unchanged store was resealed %d times (D4: no vault write, no Touch ID)", f.calls)
 	}
@@ -123,7 +124,7 @@ func TestResealOnlyWhenTheStoreChanged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(runDir, "credentials.db"), []byte("1//NEW"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resealGcloudRun(&out, f, "", dir, runDir, baseline)
+	resealStoreRun(&out, migrate.GcloudStore, f, "", dir, runDir, baseline, nil)
 	if f.calls != 1 || !strings.Contains(out.String(), "sealed gcloud's login") {
 		t.Fatalf("a changed store: %d reseals, output %q", f.calls, out.String())
 	}
@@ -140,7 +141,7 @@ func TestFailedResealKeepsTheLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	resealGcloudRun(&out, &fakeVault{err: errors.New("denied")}, "", dir, runDir, baseline)
+	resealStoreRun(&out, migrate.GcloudStore, &fakeVault{err: errors.New("denied")}, "", dir, runDir, baseline, nil)
 	b, err := os.ReadFile(filepath.Join(dir, "credentials.db"))
 	if err != nil || string(b) != "1//NEW" {
 		t.Fatalf("after a failed reseal the settings dir holds %q, %v; want the new login", b, err)
@@ -157,7 +158,7 @@ func TestSignOutReportsAnEmptyStore(t *testing.T) {
 	}
 	var out bytes.Buffer
 	f := &fakeVault{}
-	resealGcloudRun(&out, f, "", dir, runDir, baseline)
+	resealStoreRun(&out, migrate.GcloudStore, f, "", dir, runDir, baseline, nil)
 	if f.calls != 1 || !strings.Contains(out.String(), "signed out") {
 		t.Fatalf("sign-out: %d reseals, output %q", f.calls, out.String())
 	}
@@ -185,7 +186,7 @@ func TestMaterializeGcloud(t *testing.T) {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
-	baseline, err := materializeGcloud(blob, settings, runDir)
+	baseline, err := materializeStore(migrate.GcloudStore, blob, settings, runDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestMaterializeGcloud(t *testing.T) {
 	// A logged-out wrap (no store yet) materializes an empty one, so a
 	// login through it is captured (D5).
 	empty := t.TempDir()
-	baseline, err = materializeGcloud(nil, settings, empty)
+	baseline, err = materializeStore(migrate.GcloudStore, nil, settings, empty)
 	if err != nil || !sealstore.Empty(baseline) {
 		t.Fatalf("logged-out baseline: %v, empty=%v", err, sealstore.Empty(baseline))
 	}

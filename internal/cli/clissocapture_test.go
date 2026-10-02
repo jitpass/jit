@@ -264,11 +264,22 @@ type countingKeychainKey struct {
 	uses *int
 }
 
-func (k countingKeychainKey) WrapKey(dek []byte) ([]byte, error) { *k.uses++; return k.kw.WrapKey(dek) }
-func (k countingKeychainKey) UnwrapKey(w []byte) ([]byte, error) { *k.uses++; return k.kw.UnwrapKey(w) }
-func (k countingKeychainKey) RequireUserPresence(string) error   { *k.uses++; return nil }
-func (k countingKeychainKey) FetchMEK(string) ([]byte, error) {
+// countingKeyMu guards every countingKeychainKey's counter: a test that
+// runs store runs side by side (TestGcloudRunE2E, TestAzRunE2E) unwraps
+// from several goroutines at once.
+var countingKeyMu sync.Mutex
+
+func (k countingKeychainKey) count() {
+	countingKeyMu.Lock()
 	*k.uses++
+	countingKeyMu.Unlock()
+}
+
+func (k countingKeychainKey) WrapKey(dek []byte) ([]byte, error) { k.count(); return k.kw.WrapKey(dek) }
+func (k countingKeychainKey) UnwrapKey(w []byte) ([]byte, error) { k.count(); return k.kw.UnwrapKey(w) }
+func (k countingKeychainKey) RequireUserPresence(string) error   { k.count(); return nil }
+func (k countingKeychainKey) FetchMEK(string) ([]byte, error) {
+	k.count()
 	return append([]byte(nil), k.kw.key...), nil
 }
 func (countingKeychainKey) Close() {}

@@ -1268,11 +1268,13 @@ func TestScanAzureCLI(t *testing.T) {
 	for _, f := range findings {
 		switch filepath.Base(f.FilePath) {
 		case "msal_token_cache.json":
-			if !toolMintedLogin(f) || !strings.Contains(f.Evidence, "2 sign-ins") {
-				t.Errorf("MSAL cache: tool-minted %v evidence %q", toolMintedLogin(f), f.Evidence)
+			// `jit wrap az` seals it: counted, with the command, not left
+			// to the tool.
+			if toolMintedLogin(f) || !CountedAsSecret(f) || f.Remedy != RemedyWrap || f.FixCommand != "jit wrap az" || !strings.Contains(f.Evidence, "2 sign-ins") {
+				t.Errorf("MSAL cache: tool-minted %v remedy %q fix %q evidence %q", toolMintedLogin(f), f.Remedy, f.FixCommand, f.Evidence)
 			}
 		case "service_principal_entries.json":
-			if *f.KeyName != "11111111-2222-3333-4444-555555555555/client_secret" || !CountedAsSecret(f) || f.Remedy != RemedyManual {
+			if *f.KeyName != "11111111-2222-3333-4444-555555555555/client_secret" || !CountedAsSecret(f) || f.Remedy != RemedyWrap || f.FixCommand != "jit wrap az" {
 				t.Errorf("service principal: %+v", f)
 			}
 		case "accessTokens.json":

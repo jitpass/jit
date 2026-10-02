@@ -150,12 +150,15 @@ const (
 	ClassAWS       = "aws"
 	ClassDocker    = "docker"
 	ClassGCP       = "gcp"
-	ClassSOPS      = "sops"
-	ClassNpmrc     = "npmrc"
-	ClassPypirc    = "pypirc"
-	ClassCargo     = "cargo"
-	ClassGit       = "git"
-	ClassNetrc     = "netrc"
+	// ClassAzure is the Azure CLI's own login store (`jit wrap az`): its
+	// MSAL token cache and service principal secrets, sealed as one value.
+	ClassAzure  = "azure"
+	ClassSOPS   = "sops"
+	ClassNpmrc  = "npmrc"
+	ClassPypirc = "pypirc"
+	ClassCargo  = "cargo"
+	ClassGit    = "git"
+	ClassNetrc  = "netrc"
 	// ClassStreamlit is a value migrated out of a .streamlit/secrets.toml
 	// (project or global) — Streamlit's own application-secrets file, read
 	// directly by st.secrets. Origin is the file path.

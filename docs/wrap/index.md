@@ -138,10 +138,11 @@ OneLogin `client-secret`), leaving a `jit://vault/` pointer in
 
 Some CLIs keep their login in a store they write themselves, in a shape no
 mount can serve: the Google Cloud CLI's `credentials.db` is a SQLite file
-holding a refresh token that does not expire on its own. The wrap seals
-that store in the vault. Each run unpacks it into a private folder for
-that one command and seals it again if the command changed it (a login, a
-revoke). One wrap covers every tool that reads the store:
+holding a refresh token that does not expire on its own, and the Azure
+CLI rewrites its token cache on every refresh. The wrap seals that store
+in the vault. Each run unpacks it into a private folder for that one
+command and seals it again if the command changed it (a login, a refresh,
+a revoke). One wrap covers every tool that reads the store:
 
 | Tool | Reads | Why it has its own shim |
 |---|---|---|
@@ -150,10 +151,12 @@ revoke). One wrap covers every tool that reads the store:
 | [`gsutil`](./gsutil.md) | the same store's `legacy_credentials/` | its own entry point |
 | [`docker-credential-gcloud`](./docker-credential-gcloud.md) | the same store, in-process | docker runs it by name |
 | [`git-credential-gcloud`](./git-credential-gcloud.md) | the same store, in-process | git runs it by name |
+| [`az`](./az.md) | the Azure CLI's login in `~/.azure` | the CLI itself; the Azure SDKs, Terraform and kubelogin borrow the login by running `az` |
 
 ```
 jit wrap gcloud      # shims all five that are installed, seals the store
 gcloud auth list     # as before; the login is unsealed for this one run
+jit wrap az          # the same for the Azure CLI
 ```
 
 ## Not in the catalog?

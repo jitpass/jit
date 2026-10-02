@@ -635,6 +635,20 @@ var catalog = map[string]CatalogEntry{
 		Store: "gcloud",
 		Doc:   "git credential helper for Google source repositories, reading the sealed Google Cloud CLI login",
 	},
+	// The Azure CLI keeps its login in ~/.azure: Entra ID refresh tokens
+	// in msal_token_cache.json (rotated on every refresh) and service
+	// principal secrets in service_principal_entries.json, plaintext on
+	// macOS (spike/azure-cli-store). Every tool that borrows the login
+	// (azure-identity's AzureCliCredential, Terraform's azurerm, kubelogin
+	// -l azurecli) runs `az account get-access-token` from PATH, so the
+	// one shim covers them.
+	"az": {
+		Tool:       "az",
+		Kind:       KindStore,
+		Store:      "az",
+		Doc:        "Azure CLI login (refresh tokens, service principal secrets), sealed in the vault and unsealed per run",
+		VerifyHint: "az account get-access-token --query expiresOn -o tsv",
+	},
 	"sops": {
 		Tool:       "sops",
 		Kind:       KindGrant,

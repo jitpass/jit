@@ -142,11 +142,13 @@ var selfRotatingCaches = []selfRotatingCache{
 	// The Azure CLI's MSAL token cache: refresh tokens that last 90 days and
 	// renew on every use, in plaintext on macOS (encryption is Windows-only
 	// by default). `az logout` only edits the file; the token stays valid at
-	// Microsoft until its sessions are revoked.
+	// Microsoft until its sessions are revoked. scanAzureCLI marks it for
+	// `jit wrap az`, which seals it, so it counts; the entry still keeps
+	// the mount offer away and carries the advice if it was exposed.
 	{
 		match:      filepath.Join(".azure", "msal_token_cache.json"),
 		title:      "An Azure CLI login (renews itself on every use)",
-		action:     "if exposed, revoke your sign-in sessions in Entra ID (Revoke-MgUserSignInSession), then `az login`; `az logout` only deletes the file",
+		action:     "`jit wrap az` seals it in the vault; if it was exposed, revoke your sign-in sessions in Entra ID first",
 		toolMinted: true,
 	},
 	// `az login --service-principal --password` keeps the client secret
@@ -155,7 +157,7 @@ var selfRotatingCaches = []selfRotatingCache{
 	{
 		match:  filepath.Join(".azure", "service_principal_entries.json"),
 		title:  "An Azure service principal's secret (the Azure CLI keeps it after login)",
-		action: "rotate the secret in Entra ID; a certificate or a federated credential keeps nothing here",
+		action: "`jit wrap az` seals it in the vault; if it was exposed, rotate the secret in Entra ID",
 	},
 	// A variant of the class: the value (a OneLogin API client-secret)
 	// never rotates, but the file is still tool-rewritten — clisso creates

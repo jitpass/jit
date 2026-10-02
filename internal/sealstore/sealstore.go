@@ -37,6 +37,14 @@ var Gcloud = Layout{
 	Ephemeral: []string{"access_tokens.db"},
 }
 
+// Azure is the layout of an Azure CLI config dir (azure-cli 2.90.0,
+// spike/azure-cli-store): the MSAL token cache (refresh tokens) and the
+// service principal secrets. Everything else, settings and caches alike,
+// is written through the run's links (spike E3), so nothing is ephemeral.
+var Azure = Layout{
+	Secrets: []string{"msal_token_cache.json", "service_principal_entries.json"},
+}
+
 // maxBlob bounds what Unpack will extract. A gcloud store is a few KB per
 // account; anything near this is not a store this package wrote.
 const maxBlob = 64 << 20
@@ -301,6 +309,43 @@ func (l Layout) checkName(name string) (string, error) {
 		return "", fmt.Errorf("sealed store entry %q: outside the store", name)
 	}
 	return clean, nil
+}
+
+// Files returns a store's regular files by path: for a store merged in
+// memory (migrate.MergeAzureStore) rather than unpacked anywhere.
+func Files(blob []byte) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	tr := tar.NewReader(bytes.NewReader(blob))
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading sealed store: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxBlob))
+		if err != nil {
+			return nil, err
+		}
+		out[hdr.Name] = data
+	}
+}
+
+// PackFiles returns the canonical tar of top-level files, owner-only: the
+// store Pack makes of a dir holding them, for one built in memory.
+func PackFiles(files map[string][]byte) ([]byte, error) {
+	entries := map[string]entry{}
+	for name, data := range files {
+		if name == "" || strings.Contains(name, "/") || name == "." || name == ".." {
+			return nil, fmt.Errorf("sealed store entry %q: not a top-level file", name)
+		}
+		entries[name] = entry{mode: 0o600, data: data}
+	}
+	return emit(entries)
 }
 
 // Empty reports whether blob holds no entries (a logged-out store).

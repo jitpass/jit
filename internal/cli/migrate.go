@@ -320,10 +320,10 @@ func wrapOwnerForPath(home, path string) (string, bool) {
 	if path == migrate.ClissoConfigPath(home) {
 		return "clisso", true
 	}
-	// gcloud's own login store (KindStore): sealed by `jit wrap gcloud`,
+	// A CLI's own login store (KindStore): sealed by `jit wrap <store>`,
 	// never migrated in place.
-	if migrate.IsGcloudStoreFile(home, path) {
-		return "gcloud", true
+	if s, ok := migrate.ToolStoreForFile(home, path); ok {
+		return s.Name, true
 	}
 	return "", false
 }

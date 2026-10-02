@@ -233,7 +233,7 @@ func awsSSOWithLogin(stderr io.Writer, v *vault.Vault, home, root, awsBin string
 	}
 
 	base := awsSSORunBase(root)
-	_, _ = sealstore.Sweep(base, gcloudRunOwnerAlive)
+	_, _ = sealstore.Sweep(base, runOwnerAlive)
 	start, _ := lineage.ProcessStartTime(int32(os.Getpid())) // #nosec G115 -- a pid always fits in int32 on darwin
 	runDir, err := sealstore.NewRunDir(base, os.Getpid(), start)
 	if err != nil {
