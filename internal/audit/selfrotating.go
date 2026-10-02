@@ -105,12 +105,16 @@ var selfRotatingCaches = []selfRotatingCache{
 	// `aws login` (AWS CLI 2.32+): console-session credentials, a refresh
 	// token, and the DPoP private key that is meant to bind the token to this
 	// machine, all in one file the CLI rewrites on every refresh. A copy of
-	// the file carries the key with it, so it works anywhere.
+	// the file carries the key with it, so it works anywhere. A session a
+	// profile in ~/.aws/config uses is sealed by `jit migrate` and counted
+	// (scanAWSLoginCache); this entry is for the rest. `aws logout` only
+	// deletes the local file; a password change is what ends the session
+	// (botocore LoginRefreshPasswordChanged).
 	{
 		match:      filepath.Join(".aws", "login", "cache"),
 		dir:        true,
 		title:      "An AWS console login (`aws login`, renews itself)",
-		action:     "if exposed, `aws logout` and log in again; jit cannot seal this one yet",
+		action:     "no profile in ~/.aws/config uses it; if exposed, change the console password, then `aws logout`",
 		toolMinted: true,
 	},
 	// kubelogin (kubectl oidc-login): an OIDC refresh token per issuer and

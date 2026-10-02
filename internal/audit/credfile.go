@@ -5,7 +5,9 @@ package audit
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1204,10 +1206,14 @@ func scanAWSSSOCache(cfg Config) ([]Finding, error) {
 
 // scanAWSLoginCache reports `aws login` sessions in ~/.aws/login/cache: a
 // refresh token beside the DPoP private key that signs its refreshes, plus
-// hour-long credentials (botocore LoginCredentialFetcher, AWS CLI 2.37.7).
+// 15-minute credentials (botocore LoginCredentialFetcher, AWS CLI 2.37.7).
 // The key is meant to bind the token to this machine; a copy of the file
-// takes the key with it. Tool-minted (selfRotatingCaches): reported, with
-// the advice to sign out, outside the ledger.
+// takes the key with it.
+//
+// A session a profile in ~/.aws/config uses (its login_session hashes to
+// the file's name) is one `jit migrate ~/.aws/config` seals: a counted
+// finding with that command. Any other is tool-minted (selfRotatingCaches):
+// reported outside the ledger, with the tool's own advice.
 func scanAWSLoginCache(cfg Config) ([]Finding, error) {
 	dir := filepath.Join(cfg.HomeDir, ".aws", "login", "cache")
 	entries, err := os.ReadDir(dir)
@@ -1217,6 +1223,7 @@ func scanAWSLoginCache(cfg Config) ([]Finding, error) {
 		}
 		return nil, err
 	}
+	sealable := awsLoginSessionFiles(filepath.Join(cfg.HomeDir, ".aws", "config"))
 	var findings []Finding
 	for _, e := range entries {
 		if !e.Type().IsRegular() || filepath.Ext(e.Name()) != ".json" {
@@ -1238,7 +1245,7 @@ func scanAWSLoginCache(cfg Config) ([]Finding, error) {
 		if tok.DPoPKey != "" {
 			evidence += ", beside the private key that binds it to this Mac, so a copy works anywhere"
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      "refreshToken",
@@ -1246,9 +1253,44 @@ func scanAWSLoginCache(cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     evidence,
-		}))
+		})
+		if sealable[e.Name()] {
+			f.Remedy = RemedyMigrate
+			f.FixCommand = "jit migrate ~/.aws/config"
+			f.Evidence += "; `jit migrate ~/.aws/config` seals it"
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// awsLoginSessionFiles returns the cache file names of the `aws login`
+// sessions the profiles in an AWS config use: botocore names each
+// hex(sha256(login_session)).json (generate_login_cache_key), the rule
+// migrate.AWSLoginCacheFile follows.
+func awsLoginSessionFiles(path string) map[string]bool {
+	data, err := readCappedFile(path)
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	section := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+			section = strings.TrimSpace(t[1 : len(t)-1])
+			continue
+		}
+		key, value, ok := strings.Cut(t, "=")
+		if !ok || strings.ToLower(strings.TrimSpace(key)) != "login_session" {
+			continue
+		}
+		if value = strings.TrimSpace(value); value != "" && (section == "default" || strings.HasPrefix(section, "profile ")) {
+			sum := sha256.Sum256([]byte(value))
+			out[hex.EncodeToString(sum[:])+".json"] = true
+		}
+	}
+	return out
 }
 
 // kubeloginCacheName matches kubelogin's cache files: a lowercase hex

@@ -311,10 +311,10 @@ func restoreCurrentAWSSSOLogin(out io.Writer, v *vault.Vault, home string, recs 
 		return
 	}
 	if _, err := migrate.UnsealAWSSSOCache(v, home, true); err != nil {
-		fmt.Fprintf(out, "  warning: the AWS SSO login came back as of sealing, not the current one: %v\n", err)
+		fmt.Fprintf(out, "  warning: the AWS login came back as of sealing, not the current one: %v\n", err)
 		return
 	}
-	fmt.Fprintln(out, "  the AWS SSO login written back is the current one from the vault")
+	fmt.Fprintln(out, "  the AWS login written back is the current one from the vault")
 }
 
 // nudgeLooseRemainders prints, for each just-restored file that still has a

@@ -54,16 +54,18 @@ nothing:
   access token is very likely dead before you read the report.
 
   The same class covers the CLI logins jit cannot seal yet, each with its
-  own advice: `aws login` sessions in `~/.aws/login/cache` (a refresh token
-  next to the key that binds it, so a copy works anywhere: `aws logout`);
+  own advice: `aws login` sessions in `~/.aws/login/cache` that no profile
+  in `~/.aws/config` uses (a refresh token next to the key that binds it, so
+  a copy works anywhere; a password change ends it). A session a profile
+  does use counts, and `jit migrate ~/.aws/config` seals it;
   kubelogin's OIDC tokens in `~/.kube/cache/oidc-login` (when
   `~/.kube/config` uses them, `jit migrate ~/.kube/config` moves kubelogin
   to the keychain, and the finding counts as one jit can fix); the Azure
   CLI's `~/.azure/msal_token_cache.json`, in plaintext on macOS (revoke the
   sessions in Entra ID; `az logout` only deletes the file); and the GKE auth
-  plugin's hour-long `~/.kube/gke_gcloud_auth_plugin_cache`. The gcloud and
-  AWS SSO logins are no longer in this class: `jit wrap gcloud` and
-  `jit migrate ~/.aws/config` seal them.
+  plugin's hour-long `~/.kube/gke_gcloud_auth_plugin_cache`. The gcloud,
+  AWS SSO and profile-backed `aws login` logins are no longer in this
+  class: `jit wrap gcloud` and `jit migrate ~/.aws/config` seal them.
 - **Azure service principal secrets** (`~/.azure/service_principal_entries.json`)
   and the pre-2.30 `~/.azure/accessTokens.json` newer Azure CLIs leave
   behind. The secrets are yours, so they count; the CLI rewrites the first

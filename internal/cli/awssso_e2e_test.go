@@ -125,7 +125,7 @@ func TestAWSSSOE2E(t *testing.T) {
 	fetch := func() string {
 		t.Helper()
 		var errOut bytes.Buffer
-		out, err := awsSSOWithLogin(&errOut, v, home, root, awsBin, "dev", []string{"configure", "export-credentials", "--profile", "dev", "--format", "process"})
+		out, err := awsSSOWithLogin(&errOut, v, home, root, awsBin, awsSSOInvocation{profile: "dev", args: []string{"configure", "export-credentials", "--profile", "dev", "--format", "process"}})
 		if err != nil {
 			t.Fatalf("fetch: %v\n%s", err, errOut.String())
 		}
@@ -205,13 +205,13 @@ func TestAWSSSOE2E(t *testing.T) {
 
 	// 6. Sign-out: server-side Logout, no login left in the vault.
 	var errOut bytes.Buffer
-	if _, err := awsSSOWithLogin(&errOut, v, home, root, awsBin, "", []string{"sso", "logout"}); err != nil {
+	if _, err := awsSSOWithLogin(&errOut, v, home, root, awsBin, awsSSOInvocation{signOut: true}); err != nil {
 		t.Fatalf("logout: %v\n%s", err, errOut.String())
 	}
 	if ops, _ := idc.take(); !strings.Contains(strings.Join(ops, " "), "Logout") {
 		t.Fatalf("logout ops %q", ops)
 	}
-	if _, err := awsSSOWithLogin(&errOut, v, home, root, awsBin, "dev", []string{"configure", "export-credentials", "--profile", "dev", "--format", "process"}); err == nil || !strings.Contains(err.Error(), "aws sso login --profile dev") {
+	if _, err := awsSSOWithLogin(&errOut, v, home, root, awsBin, awsSSOInvocation{profile: "dev", args: []string{"configure", "export-credentials", "--profile", "dev", "--format", "process"}}); err == nil || !strings.Contains(err.Error(), "jit aws-sso login --profile dev") {
 		t.Fatalf("fetch after logout: %v", err)
 	}
 	if entries, _ := os.ReadDir(awsSSORunBase(root)); len(entries) != 0 {
@@ -231,9 +231,9 @@ func sealedLoginDoc(t *testing.T, v *vault.Vault) (map[string]any, string, strin
 	if err := migrate.AWSSSOLayout.Unpack(blob, stage); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(stage, "cache"))
+	entries, _ := os.ReadDir(filepath.Join(stage, "sso", "cache"))
 	for _, e := range entries {
-		p := filepath.Join(stage, "cache", e.Name())
+		p := filepath.Join(stage, "sso", "cache", e.Name())
 		b, _ := os.ReadFile(p) // #nosec G304 -- test stage
 		var doc map[string]any
 		if json.Unmarshal(b, &doc) == nil && doc["accessToken"] != nil {

@@ -68,7 +68,8 @@ region = us-east-1
   own `aws configure export-credentials`, which does the refresh, then seals
   it again. jit sends nothing to AWS itself.
 - `aws sso login --profile dev` keeps working; jit seals the new login on
-  the next fetch.
+  the next fetch. `jit aws-sso login --profile dev` signs in without the
+  login ever touching `~/.aws/sso/cache`.
 - `jit aws-sso logout` signs out. Plain `aws sso logout` finds nothing to
   sign out of once the login is sealed.
 - Nothing is left in `~/.aws/sso/cache` or `~/.aws/cli/cache`.
@@ -82,6 +83,38 @@ A cached answer asks the same consent question a fresh one would.
 [`jit migrate undo`](./undo-and-remove.md) puts the original profiles back,
 with the current login rather than the one from the day it was sealed (the
 refresh token changes each time it is used).
+
+## AWS console logins (`aws login`)
+
+`aws login` (AWS CLI 2.32 and later) signs the CLI in with your console
+credentials and leaves the session in `~/.aws/login/cache` in plaintext: a
+refresh token next to the private key meant to bind it to this Mac. The key
+travels with a copy of the file, so the copy works anywhere.
+
+`jit migrate ~/.aws/config` seals these the same way as SSO logins:
+
+```ini
+[profile dev]
+# jit: this login is sealed in the vault; log in again with `jit aws-sso login --profile dev`
+credential_process = jit aws-sso --profile dev
+region = us-east-1
+```
+
+- The profile's session moves into the vault. A session that a profile jit
+  did not seal still uses stays where it is.
+- Each fetch runs AWS's own CLI on the unsealed session, as for SSO. The
+  refresh is signed with the sealed key, and the new refresh token is
+  sealed in its place.
+- **Signing in again is `jit aws-sso login --profile dev`.** Plain
+  `aws login` refuses a profile with a `credential_process` line. jit runs
+  AWS's own `aws login` against the sealed login, so the new session goes
+  straight into the vault. Over SSH, add `--remote`.
+- `jit aws-sso logout` deletes the sealed sessions, as `aws logout --all`
+  would. Like `aws logout`, that is local only. If a session was exposed,
+  change the console password: that is what ends its refresh token.
+
+The session's credentials last 15 minutes, so each fetch after that runs
+AWS's CLI inside jit (about a quarter of a second).
 
 ## What jit does not cover
 

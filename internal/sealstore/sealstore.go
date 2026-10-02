@@ -84,6 +84,27 @@ func (l Layout) Pack(dir string) ([]byte, error) {
 // other packed entry is kept. For folding a login the tool just wrote into
 // a store sealed earlier, without unpacking the store anywhere.
 func (l Layout) Merge(blob []byte, dir string) ([]byte, error) {
+	return l.merge(blob, dir, nil)
+}
+
+// MergeFiles is Merge limited to the named files of dir (slash-separated,
+// relative to dir) and the directories holding them: for a store taking in
+// one login among others the tool keeps in the same directory, which stay
+// where they are. A name that is not there is skipped; no names, nothing
+// merged.
+func (l Layout) MergeFiles(blob []byte, dir string, files []string) ([]byte, error) {
+	keep := map[string]bool{}
+	for _, f := range files {
+		for p := path.Clean(f); p != "." && p != "/"; p = path.Dir(p) {
+			keep[p] = true
+		}
+	}
+	return l.merge(blob, dir, keep)
+}
+
+// merge lays dir's secret entries over blob; with keep non-nil, only the
+// entries it names.
+func (l Layout) merge(blob []byte, dir string, keep map[string]bool) ([]byte, error) {
 	entries := map[string]entry{}
 	tr := tar.NewReader(bytes.NewReader(blob))
 	for {
@@ -111,8 +132,14 @@ func (l Layout) Merge(blob []byte, dir string) ([]byte, error) {
 			return nil, fmt.Errorf("sealed store entry %q: unsupported type %q", hdr.Name, hdr.Typeflag)
 		}
 	}
-	if err := l.collect(dir, entries); err != nil {
+	fresh := map[string]entry{}
+	if err := l.collect(dir, fresh); err != nil {
 		return nil, err
+	}
+	for rel, e := range fresh {
+		if keep == nil || keep[rel] {
+			entries[rel] = e
+		}
 	}
 	return emit(entries)
 }

@@ -375,10 +375,10 @@ func writeAWSSSOSetup(t *testing.T, home, refresh string) {
 func rotateSealedAWSLogin(t *testing.T, v *vault.Vault, home, refresh string) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "sso", "cache"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "cache", "tok.json"), []byte(`{"accessToken":"b","refreshToken":"`+refresh+`"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "sso", "cache", "tok.json"), []byte(`{"accessToken":"b","refreshToken":"`+refresh+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	blob, err := migrate.AWSSSOLayout.Pack(dir)

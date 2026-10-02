@@ -4,6 +4,8 @@
 package audit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -1311,5 +1313,34 @@ func TestKubeloginCacheIsFixableWhenTheKubeconfigUsesIt(t *testing.T) {
 	annotateRemedies(findings, home, nil, nil)
 	if findings[0].Remedy != RemedyManual || !toolMintedLogin(findings[0]) {
 		t.Fatalf("a keyring kubeconfig left the leftover fixable: %+v", findings[0])
+	}
+}
+
+// An `aws login` session a profile in ~/.aws/config uses is one jit seals:
+// counted, with the command. A session no profile names stays the tool's.
+func TestAWSLoginCacheIsFixableWhenAProfileUsesIt(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".aws", "login", "cache")
+	mkdirAll(t, dir)
+	const session = "arn:aws:iam::111122223333:user/dev"
+	sum := sha256.Sum256([]byte(session))
+	mine := hex.EncodeToString(sum[:]) + ".json"
+	body := `{"refreshToken":"` + tokenBody(60) + `","dpopKey":"-----BEGIN EC PRIVATE KEY-----"}`
+	writeFile(t, filepath.Join(dir, mine), body)
+	writeFile(t, filepath.Join(dir, strings.Repeat("0", 64)+".json"), `{"refreshToken":"`+tokenBody(60)+`"}`)
+	writeFile(t, filepath.Join(home, ".aws", "config"), "[profile dev]\nlogin_session = "+session+"\nregion = us-east-1\n")
+	findings, err := scanAWSLoginCache(Config{HomeDir: home})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("findings %v, %v", findings, err)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	for _, f := range findings {
+		usedByDev := filepath.Base(f.FilePath) == mine
+		if fixable := f.Remedy == RemedyMigrate && f.FixCommand == "jit migrate ~/.aws/config"; fixable != usedByDev {
+			t.Errorf("%s: remedy %q fix %q, want fixable %v", filepath.Base(f.FilePath), f.Remedy, f.FixCommand, usedByDev)
+		}
+		if toolMintedLogin(f) == usedByDev || CountedAsSecret(f) != usedByDev {
+			t.Errorf("%s: toolMinted %v counted %v", filepath.Base(f.FilePath), toolMintedLogin(f), CountedAsSecret(f))
+		}
 	}
 }

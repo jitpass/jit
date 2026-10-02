@@ -5,8 +5,10 @@ Scope: IAM Identity Center logins the AWS CLI caches in
 `~/.aws/sso/cache`, the role credentials it caches in `~/.aws/cli/cache`,
 and the `~/.aws/config` profiles that use them.
 Non-goals: minting in jit (no SSO, OIDC or SigV4 code, `minting-broker.md`
-Part C stays rejected); `aws login` console credentials
-(`~/.aws/login/cache`, a separate store).
+Part C stays rejected).
+
+Extended 2026-10-02 to `aws login` console sessions (`~/.aws/login/cache`),
+D11 below; evidence `spike/aws-login-process/FINDINGS.md`.
 
 Evidence: `spike/aws-sso-process/FINDINGS.md` (E1–E12, AWS CLI 2.37.7,
 boto3). Companion: `design/gcloud-sealed-store.md`, whose run-dir and
@@ -118,6 +120,33 @@ of the token cache are taken at sealing only (a backup per hourly reseal
 would pile up); restoring from them would hand back a refresh token
 Identity Center has since rotated away. So both undo and `uninstall
 --restore` write the cache back from the vault's current copy.
+
+**D11. `aws login` sessions share the store, not the login path.** The
+vault value holds `~/.aws`'s `sso/` and `login/` (one tar, the layout
+relative to `~/.aws`), so one unseal and one prompt serve both kinds. An
+`aws login` profile is claimed by botocore's login provider iff it has
+`login_session`, so sealing removes that key (the sealed config keeps it)
+and adds the same `credential_process`. Three differences from SSO:
+
+- **Per-profile sessions.** A session's file is `sha256(login_session)`,
+  so sealing takes exactly the sealed profiles' sessions
+  (`sealstore.MergeFiles`). Another profile's session stays on disk,
+  where that profile reads it.
+- **No capture.** `aws login` refuses a profile with `credential_process`
+  (spike Result 2), so a session that appears in `~/.aws/login/cache` is
+  an unsealed profile's and is left alone.
+- **Re-login is `jit aws-sso login`.** It runs AWS's own `aws login` (or
+  `aws sso login` for an SSO profile) against the sealed config, with the
+  run dir as HOME, under the run lock, then reseals. The browser flow is
+  AWS's; the new session never touches `~/.aws`. The rewritten profile
+  carries a comment that says so, because the CLI's refusal tells the user
+  to delete the `credential_process` line.
+
+`jit aws-sso logout` also runs `aws logout --all` when the sealed store
+holds a session. That is local only, as it is in the AWS CLI; a password
+change is what ends a session (botocore `LoginRefreshPasswordChanged`).
+`AWS_LOGIN_CACHE_DIRECTORY` is dropped from the inner environment, so the
+cache resolves into the run dir.
 
 ## Limits
 
