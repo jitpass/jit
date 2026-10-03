@@ -305,3 +305,47 @@ func TestSealedLoginsKeepNoHistory(t *testing.T) {
 		}
 	}
 }
+
+// A sign-out takes the login's seal-day backups with it: an undo must not
+// write a signed-out login back (release QA brought an `aws login` session
+// back to life that way). Backups of other files stay.
+func TestSignOutDropsTheLoginsBackups(t *testing.T) {
+	home := awsSSOHome(t, "rt-seal-day")
+	v := newTestVault(t)
+	t.Cleanup(SetJitExecutableForTesting("/usr/local/bin/jit"))
+	profiles, _ := DiscoverAWSSSOProfiles(home)
+	if _, err := ApplyAWSSSO(v, home, profiles, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := AzureConfigDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "msal_token_cache.json"), msal(t, map[string]string{"dev": "rt-az"}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AzureStore.Seal(v, home); err != nil {
+		t.Fatal(err)
+	}
+	empty := store(t, map[string][]byte{})
+	if err := StoreAWSSSOCache(v, home, empty); err != nil {
+		t.Fatal(err)
+	}
+	if err := AzureStore.store(v, home, empty); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptConfig := false
+	for _, r := range recs {
+		if IsAWSSSOCacheFile(home, r.OriginalPath) || AzureStore.IsStoreFile(home, r.OriginalPath) {
+			t.Errorf("a signed-out login's backup survived: %s", r.OriginalPath)
+		}
+		keptConfig = keptConfig || r.OriginalPath == AWSConfigPath(home)
+	}
+	if !keptConfig {
+		t.Error("the ~/.aws/config backup went too; only the login's files should")
+	}
+}

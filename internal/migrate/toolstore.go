@@ -391,7 +391,38 @@ func (s ToolStore) store(v *vault.Vault, home string, blob []byte) error {
 	// away or signed out of: kept, a `jit vault restore` would hand a
 	// signed-out refresh token back. Undo works from backups and the
 	// current copy, never from history.
-	return v.ForgetHistory(s.VaultPath)
+	if err := v.ForgetHistory(s.VaultPath); err != nil {
+		return err
+	}
+	if sealstore.Empty(blob) {
+		// Signed out: the seal-day backups hold the login too, and an undo
+		// would write it back to disk (release QA: a signed-out `aws login`
+		// came back live). They go with the sign-out.
+		return dropLoginBackups(v, func(p string) bool { return s.IsStoreFile(home, p) })
+	}
+	return nil
+}
+
+// dropLoginBackups deletes every recorded backup of a file a sealed login is
+// made of, from the vault and the undo index: what a sign-out must take
+// with it so no undo can resurrect the login.
+func dropLoginBackups(v *vault.Vault, isLoginFile func(string) bool) error {
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		return err
+	}
+	var drop []BackupRecord
+	for _, r := range recs {
+		if r.VaultPath != "" && isLoginFile(r.OriginalPath) {
+			drop = append(drop, r)
+		}
+	}
+	for _, r := range drop {
+		if err := v.Remove(r.VaultPath); err != nil && !errors.Is(err, vault.ErrNotFound) {
+			return err
+		}
+	}
+	return DropBackupRecords(v.Root, drop)
 }
 
 // files lists the regular files of dir's secret set, sorted.

@@ -255,6 +255,14 @@ func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
 	if err := v.ForgetHistory(AWSSSOStorePath); err != nil {
 		return err
 	}
+	if !blobHasAWSSSOToken(blob) {
+		// Signed out: the seal-day cache backups go too, or `jit migrate
+		// undo` would write the signed-out login back (ToolStore.store's
+		// reasoning).
+		if err := dropLoginBackups(v, func(p string) bool { return IsAWSSSOCacheFile(home, p) }); err != nil {
+			return err
+		}
+	}
 	return writeAWSSSOState(v.Root, blob)
 }
 

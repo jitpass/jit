@@ -1544,9 +1544,11 @@ func expandRmGroups(out io.Writer, args []string) (expanded []string, stored map
 	if err != nil {
 		return args, nil
 	}
-	secrets, _ := splitBackupPaths(paths)
-	stored = make(map[string]bool, len(secrets))
-	for _, p := range secrets {
+	// Backups too: `jit vault rm` removes a named `_backups/` path, so its
+	// dry run must not call one missing (release QA).
+	secrets, _ := splitBackupPaths(paths) // groups expand over secrets only
+	stored = make(map[string]bool, len(paths))
+	for _, p := range paths {
 		stored[p] = true
 	}
 	expanded = make([]string, 0, len(args))
