@@ -1144,3 +1144,145 @@ func TestScanAWSSSOCache(t *testing.T) {
 		t.Errorf("unreferenced login: %+v", got)
 	}
 }
+
+// `aws login` keeps a refresh token beside the DPoP key that binds it, in
+// one file: a copy works anywhere. Tool-minted, so reported with the
+// sign-out advice and kept out of the ledger.
+func TestScanAWSLoginCache(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".aws", "login", "cache")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, "0a1b2c.json"), `{"accessToken":{"accessKeyId":"ASIAEXAMPLE","secretAccessKey":"x","sessionToken":"y","accountId":"111122223333","expiresAt":"2000-01-01T00:00:00Z"},"refreshToken":"rt-`+tokenBody(60)+`","dpopKey":"-----BEGIN EC PRIVATE KEY-----\nMHc\n-----END EC PRIVATE KEY-----\n","clientId":"arn:aws:signin:::devtools/same-device"}`)
+	writeFile(t, filepath.Join(dir, "notes.txt"), "not a cache file")
+	findings, err := scanAWSLoginCache(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want the one session", len(findings))
+	}
+	f := findings[0]
+	if *f.KeyName != "refreshToken" || !strings.Contains(f.Evidence, "binds it to this Mac") {
+		t.Errorf("finding %+v", f)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	if findings[0].Remedy != RemedyManual || !toolMintedLogin(findings[0]) || CountedAsSecret(findings[0]) {
+		t.Errorf("remedy %q toolMinted %v counted %v; want a manual, tool-minted, uncounted login",
+			findings[0].Remedy, toolMintedLogin(findings[0]), CountedAsSecret(findings[0]))
+	}
+	if c, ok := toolMintedLoginFor(f.FilePath); !ok || !strings.Contains(c.action, "aws logout") {
+		t.Errorf("class %+v", c)
+	}
+}
+
+// The GKE auth plugin's access-token cache matches the Google token format,
+// so the sweep finds it; it must read as the tool's own short-lived cache,
+// never as a file to mount (the plugin rewrites it).
+func TestGKEPluginCacheIsToolMinted(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".kube", "gke_gcloud_auth_plugin_cache")
+	f := Finding{FindingType: FindingTypeExposedSecret, FilePath: path, Severity: SeverityHigh}
+	fs := []Finding{f}
+	annotateRemedies(fs, home, nil, nil)
+	if fs[0].Remedy != RemedyManual || !toolMintedLogin(fs[0]) || CountedAsSecret(fs[0]) {
+		t.Fatalf("remedy %q toolMinted %v counted %v", fs[0].Remedy, toolMintedLogin(fs[0]), CountedAsSecret(fs[0]))
+	}
+	if strings.Contains(fs[0].FixCommand, "--mount") {
+		t.Fatal("offered to mount a file the plugin rewrites")
+	}
+}
+
+// A secret the tool rewrites but the user owns (a service principal's
+// password) is rotated, not signed out of: its own header.
+func TestUserSecretInAToolFileSaysRotate(t *testing.T) {
+	home := t.TempDir()
+	f := Finding{FindingType: FindingTypeCredentialFile, FilePath: filepath.Join(home, ".azure", "service_principal_entries.json")}
+	kind, action := manualAction(f, manualContext{secrets: 1, copies: 1}, home)
+	if kind != kindRotateSecret || !strings.Contains(action, "rotate the secret in Entra ID") {
+		t.Errorf("kind %q action %q", kind, action)
+	}
+}
+
+// kubelogin keeps an OIDC refresh token per login in a hash-named file; the
+// lock file beside it and an ID-token-only cache are not credentials worth
+// reporting. Tool-minted, with kubelogin's own keychain option as the fix.
+func TestScanKubeloginCache(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".kube", "cache", "oidc-login")
+	mkdirAll(t, dir)
+	name := strings.Repeat("ab", 32)
+	writeFile(t, filepath.Join(dir, name), `{"id_token":"eyJ.x.y","refresh_token":"rt-`+tokenBody(50)+`"}`)
+	writeFile(t, filepath.Join(dir, name+".lock"), "")
+	writeFile(t, filepath.Join(dir, strings.Repeat("cd", 32)), `{"id_token":"eyJ.only.this"}`)
+	findings, err := scanKubeloginCache(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || *findings[0].KeyName != "refresh_token" {
+		t.Fatalf("findings %+v", findings)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	c, ok := toolMintedLoginFor(findings[0].FilePath)
+	if !ok || !strings.Contains(c.action, "--token-cache-storage=keyring") || CountedAsSecret(findings[0]) {
+		t.Errorf("class %+v counted %v", c, CountedAsSecret(findings[0]))
+	}
+}
+
+// The Azure CLI keeps all of it in plaintext on macOS: the MSAL refresh
+// tokens (tool-minted), service principal passwords (the user's, counted),
+// and the pre-2.30 accessTokens.json nothing reads or deletes any more.
+func TestScanAzureCLI(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".azure")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, "msal_token_cache.json"), `{
+    "AccessToken": {"k1": {"credential_type": "AccessToken", "secret": "eyJ0eXAi.at.x", "expires_on": "4102444800"}},
+    "RefreshToken": {
+        "uid.utid-login.microsoftonline.com-refreshtoken-04b07795-8ddb-461a-bbee-02f9e1bf7b46--": {"credential_type": "RefreshToken", "secret": "1.AXEA`+tokenBody(80)+`", "client_id": "04b07795"},
+        "uid2.utid-login.microsoftonline.com-refreshtoken-04b07795-8ddb-461a-bbee-02f9e1bf7b46--": {"credential_type": "RefreshToken", "secret": "1.AXEB`+tokenBody(80)+`", "client_id": "04b07795"}
+    },
+    "Account": {"a": {"username": "u@example.com"}}
+}`)
+	writeFile(t, filepath.Join(dir, "service_principal_entries.json"), `[
+    {"client_id": "11111111-2222-3333-4444-555555555555", "tenant": "t1", "client_secret": "Q~`+tokenBody(36)+`"},
+    {"client_id": "66666666-7777-8888-9999-000000000000", "tenant": "t1", "certificate": "/Users/u/sp.pem"}
+]`)
+	writeFile(t, filepath.Join(dir, "accessTokens.json"), `[
+    {"tokenType": "Bearer", "accessToken": "eyJ.old", "refreshToken": "0.AXEA`+tokenBody(60)+`", "userId": "u@example.com", "_clientId": "04b07795"},
+    {"servicePrincipalId": "abcd", "servicePrincipalTenant": "t1", "accessToken": "sp-secret-`+tokenBody(20)+`"}
+]`)
+	findings, err := scanAzureCLI(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]Finding{}
+	for _, f := range findings {
+		byKey[filepath.Base(f.FilePath)+":"+*f.KeyName] = f
+	}
+	if len(findings) != 4 {
+		t.Fatalf("got %d findings: %v", len(findings), byKey)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	for _, f := range findings {
+		switch filepath.Base(f.FilePath) {
+		case "msal_token_cache.json":
+			if !toolMintedLogin(f) || !strings.Contains(f.Evidence, "2 sign-ins") {
+				t.Errorf("MSAL cache: tool-minted %v evidence %q", toolMintedLogin(f), f.Evidence)
+			}
+		case "service_principal_entries.json":
+			if *f.KeyName != "11111111-2222-3333-4444-555555555555/client_secret" || !CountedAsSecret(f) || f.Remedy != RemedyManual {
+				t.Errorf("service principal: %+v", f)
+			}
+		case "accessTokens.json":
+			if !CountedAsSecret(f) || f.Remedy != RemedyManual {
+				t.Errorf("legacy cache: counted %v remedy %q", CountedAsSecret(f), f.Remedy)
+			}
+		}
+	}
+	if _, ok := byKey["accessTokens.json:abcd/client_secret"]; !ok {
+		t.Errorf("the legacy service principal secret was missed: %v", byKey)
+	}
+	if got, _ := scanAzureCLI(Config{HomeDir: t.TempDir()}); len(got) != 0 {
+		t.Errorf("no ~/.azure: %v", got)
+	}
+}

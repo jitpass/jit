@@ -52,6 +52,22 @@ nothing:
   re-authenticate; for `~/.mcp-auth` that is `rm -rf ~/.mcp-auth`,
   mcp-remote's own documented reset. Only the refresh token is reported: an
   access token is very likely dead before you read the report.
+
+  The same class covers the CLI logins jit cannot seal yet, each with its
+  own advice: `aws login` sessions in `~/.aws/login/cache` (a refresh token
+  next to the key that binds it, so a copy works anywhere: `aws logout`);
+  kubelogin's OIDC tokens in `~/.kube/cache/oidc-login` (kubelogin can keep
+  them in the keychain instead: `--token-cache-storage=keyring`); the Azure
+  CLI's `~/.azure/msal_token_cache.json`, in plaintext on macOS (revoke the
+  sessions in Entra ID; `az logout` only deletes the file); and the GKE auth
+  plugin's hour-long `~/.kube/gke_gcloud_auth_plugin_cache`. The gcloud and
+  AWS SSO logins are no longer in this class: `jit wrap gcloud` and
+  `jit migrate ~/.aws/config` seal them.
+- **Azure service principal secrets** (`~/.azure/service_principal_entries.json`)
+  and the pre-2.30 `~/.azure/accessTokens.json` newer Azure CLIs leave
+  behind. The secrets are yours, so they count; the CLI rewrites the first
+  file, so no mount is offered. Rotate the secret in Entra ID; a certificate
+  or federated credential keeps nothing on disk.
 - **Credentials a remote MCP server sends itself.** A `type: http`/`sse`
   server entry with an `Authorization` header, or a token in its `url`, is
   reported but not migratable: the MCP *host* makes that HTTP request, so

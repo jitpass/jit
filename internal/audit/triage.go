@@ -2143,6 +2143,7 @@ const (
 	kindArchived       = "name the file — the sweep skips archived folders"
 	kindPassphrase     = "add a passphrase"
 	kindSelfRotating   = "sign out and back in"
+	kindRotateSecret   = "rotate it where it was issued"
 	kindTerraformState = "get secrets out of Terraform state"
 	kindSeal           = "seal it"
 	kindAgentCopies    = "rotate — an agent kept its own copies"
@@ -2218,6 +2219,12 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		return kindPassphrase, "add a passphrase (ssh-keygen -p) or move the key somewhere safer"
 	case selfRotating(f):
 		c, _ := selfRotatingCacheFor(f.FilePath)
+		if !c.toolMinted {
+			// The tool rewrites the file, but the secret in it is the user's
+			// (a service principal's password, clisso's client-secret): the
+			// fix is a new secret, not a new login.
+			return kindRotateSecret, c.action
+		}
 		return kindSelfRotating, c.action
 	case isTerraformState(f.FilePath):
 		return kindTerraformState, "rotate " + them + " now; move state to an encrypted remote backend, and keep secrets out of it with ephemeral values (Terraform 1.10+)"
