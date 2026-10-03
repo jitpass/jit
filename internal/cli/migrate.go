@@ -79,8 +79,12 @@ type discovered struct {
 	// awsSSOProfiles are ~/.aws/config SSO profiles whose login sealing
 	// moves into the vault (design/aws-sso-sealed.md). Part of the "aws"
 	// category, not a token of its own: --only aws covers both AWS files.
-	awsSSOProfiles   []string
-	k8sUsers         []string
+	awsSSOProfiles []string
+	k8sUsers       []string
+	// kubeloginUsers are ~/.kube/config users whose kubelogin keeps its
+	// tokens on disk; the switch moves them to the keychain. Part of the
+	// "kube" category, like awsSSOProfiles is of "aws".
+	kubeloginUsers   []string
 	terraformHosts   []string
 	dockerRegistries []string
 	gitHosts         []string
@@ -600,6 +604,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	mcpConfigs := d.mcpConfigs
 	awsProfiles := d.awsProfiles
 	awsSSOProfiles := d.awsSSOProfiles
+	kubeloginUsers := d.kubeloginUsers
 	k8sUsers := d.k8sUsers
 	terraformHosts := d.terraformHosts
 	dockerRegistries := d.dockerRegistries
@@ -682,6 +687,9 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		if !selected["aws"] {
 			awsSSOProfiles = nil // the aws category's other file, scoped with it
 		}
+		if !selected["kube"] {
+			kubeloginUsers = nil // the kube category's other change, scoped with it
+		}
 		if !selected["tfvars"] {
 			tfvarsComplexOnly = nil // note-only companion of the tfvars category, scoped with it
 		}
@@ -705,7 +713,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		}
 	}
 
-	total := len(jitPaths) + len(awsSSOProfiles)
+	total := len(jitPaths) + len(awsSSOProfiles) + len(kubeloginUsers)
 	for _, items := range categorySlices {
 		total += len(*items)
 	}
@@ -776,6 +784,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		mcpConfigs:       mcpConfigs,
 		awsProfiles:      awsProfiles,
 		awsSSOProfiles:   awsSSOProfiles,
+		kubeloginUsers:   kubeloginUsers,
 		k8sUsers:         k8sUsers,
 		terraformHosts:   terraformHosts,
 		dockerRegistries: dockerRegistries,
@@ -1251,6 +1260,23 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				countWord(len(result.CacheFiles), "file", "files"), result.ConfigBackup)))
 		}
 		fmt.Fprintln(out, hlCmds("  `aws sso login` keeps working; `jit aws-sso logout` signs out"))
+		fmt.Fprintln(out)
+	}
+
+	if len(kubeloginUsers) > 0 {
+		printMigrateResultCategory(out, pluralWord(len(kubeloginUsers), "kubelogin user", "kubelogin users")+" moved to the keychain", len(kubeloginUsers))
+		result, err := migrate.ApplyKubeloginKeyring(v, home, kubeloginUsers, backups)
+		if err != nil {
+			return false, fmt.Errorf("jit migrate: %w", err)
+		}
+		for _, u := range result.Users {
+			fmt.Fprintf(out, "  "+glyphBullet+" %q -> kubelogin keeps its tokens in the keychain\n", u)
+		}
+		if len(result.CacheFiles) > 0 {
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  %s removed from ~/.kube/cache/oidc-login; backup: `jit vault get %s`\n",
+				countWord(len(result.CacheFiles), "cached login", "cached logins"), result.Backup)))
+		}
+		fmt.Fprintln(out, "  the next kubectl call signs in once more, then keeps its token in the keychain")
 		fmt.Fprintln(out)
 	}
 
@@ -2207,6 +2233,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 		d.awsSSOProfiles = append(d.awsSSOProfiles, profiles...)
 		return nil
 	}
+	// A kubelogin token file the scan named: the kubeconfig's kubelogin
+	// users, switched to the keychain.
+	if migrate.IsKubeloginCacheFile(home, path) {
+		users, err := migrate.DiscoverKubeloginUsers(home)
+		if err != nil {
+			return err
+		}
+		d.kubeloginUsers = append(d.kubeloginUsers, users...)
+		return nil
+	}
 	switch path {
 	case migrate.AWSCredentialsPath(home):
 		profiles, err := migrate.DiscoverAWSProfiles(home)
@@ -2221,6 +2257,11 @@ func discoverFileTarget(d *discovered, home, path string) error {
 			return err
 		}
 		d.k8sUsers = append(d.k8sUsers, users...)
+		kl, err := migrate.DiscoverKubeloginUsers(home)
+		if err != nil {
+			return err
+		}
+		d.kubeloginUsers = append(d.kubeloginUsers, kl...)
 		return nil
 	case migrate.TerraformCredentialsPath(home):
 		hosts, err := migrate.DiscoverTerraformHosts(home)
@@ -2413,7 +2454,7 @@ func (d *discovered) dedupe() {
 	for _, s := range []*[]string{
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly,
 		&d.k8sManifests, &d.k8sManifestsComplexOnly, &d.shellConfigs,
-		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.awsSSOProfiles, &d.k8sUsers, &d.terraformHosts,
+		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.awsSSOProfiles, &d.k8sUsers, &d.kubeloginUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.cargoRegistries, &d.streamlitFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
 		&d.historyKeyOnly, &d.wrapOwnedSkipped, &d.jitPathRefused,
@@ -2439,7 +2480,7 @@ func (d *discovered) total() int {
 	n := 0
 	for _, s := range [][]string{
 		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.awsSSOProfiles,
-		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
+		d.k8sUsers, d.kubeloginUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
 		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
 		d.cargoRegistries, d.streamlitFiles, d.looseSecretFiles,
 	} {

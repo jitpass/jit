@@ -56,8 +56,9 @@ nothing:
   The same class covers the CLI logins jit cannot seal yet, each with its
   own advice: `aws login` sessions in `~/.aws/login/cache` (a refresh token
   next to the key that binds it, so a copy works anywhere: `aws logout`);
-  kubelogin's OIDC tokens in `~/.kube/cache/oidc-login` (kubelogin can keep
-  them in the keychain instead: `--token-cache-storage=keyring`); the Azure
+  kubelogin's OIDC tokens in `~/.kube/cache/oidc-login` (when
+  `~/.kube/config` uses them, `jit migrate ~/.kube/config` moves kubelogin
+  to the keychain, and the finding counts as one jit can fix); the Azure
   CLI's `~/.azure/msal_token_cache.json`, in plaintext on macOS (revoke the
   sessions in Entra ID; `az logout` only deletes the file); and the GKE auth
   plugin's hour-long `~/.kube/gke_gcloud_auth_plugin_cache`. The gcloud and

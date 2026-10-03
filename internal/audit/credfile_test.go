@@ -1286,3 +1286,30 @@ func TestScanAzureCLI(t *testing.T) {
 		t.Errorf("no ~/.azure: %v", got)
 	}
 }
+
+// When ~/.kube/config runs kubelogin with its on-disk cache, the login is
+// one jit can fix: a counted finding `jit migrate ~/.kube/config` clears,
+// not a tool-minted one left to the tool.
+func TestKubeloginCacheIsFixableWhenTheKubeconfigUsesIt(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".kube", "cache", "oidc-login")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, strings.Repeat("ab", 32)), `{"refresh_token":"rt-`+tokenBody(50)+`"}`)
+	writeFile(t, filepath.Join(home, ".kube", "config"), "users:\n- name: dev\n  user:\n    exec:\n      command: kubectl\n      args: [oidc-login, get-token, --oidc-issuer-url=https://i.example.com]\n")
+	findings, err := scanKubeloginCache(Config{HomeDir: home})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings %v, %v", findings, err)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	f := findings[0]
+	if f.Remedy != RemedyMigrate || f.FixCommand != "jit migrate ~/.kube/config" || toolMintedLogin(f) || !CountedAsSecret(f) {
+		t.Fatalf("remedy %q fix %q toolMinted %v counted %v", f.Remedy, f.FixCommand, toolMintedLogin(f), CountedAsSecret(f))
+	}
+	// Already on the keychain: a leftover file is the tool's again.
+	writeFile(t, filepath.Join(home, ".kube", "config"), "users:\n- name: dev\n  user:\n    exec:\n      command: kubectl\n      args: [oidc-login, get-token, --token-cache-storage=keyring]\n")
+	findings, _ = scanKubeloginCache(Config{HomeDir: home})
+	annotateRemedies(findings, home, nil, nil)
+	if findings[0].Remedy != RemedyManual || !toolMintedLogin(findings[0]) {
+		t.Fatalf("a keyring kubeconfig left the leftover fixable: %+v", findings[0])
+	}
+}
