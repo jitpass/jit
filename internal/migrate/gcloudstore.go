@@ -29,6 +29,8 @@ func StoreVaultPath(store string) (string, bool) {
 	switch store {
 	case "gcloud":
 		return GcloudStorePath, true
+	case "aws-sso":
+		return AWSSSOStorePath, true
 	}
 	return "", false
 }

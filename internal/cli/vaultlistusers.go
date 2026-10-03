@@ -22,6 +22,8 @@ type vaultSecretUser struct {
 	Profile     string `json:"profile,omitempty"`
 	Project     string `json:"project,omitempty"`
 	PointerFile string `json:"pointer_file,omitempty"`
+	// Store is set for a sealed login's user: "gcloud" or "aws-sso".
+	Store string `json:"store,omitempty"`
 }
 
 // discoverSecretUsers is the discovery `jit vault orphans` makes
@@ -43,7 +45,7 @@ func discoverSecretUsers(root, cwd string) map[string][]vaultSecretUser {
 	out := map[string][]vaultSecretUser{}
 	for vaultPath, uses := range vaultUsageFromMap(m).byPath {
 		for _, u := range uses {
-			user := vaultSecretUser{Profile: u.ProfileName, PointerFile: u.PointerFile}
+			user := vaultSecretUser{Profile: u.ProfileName, PointerFile: u.PointerFile, Store: u.Store}
 			if u.Scope == profile.ScopeProject {
 				user.Project = u.Project
 			}

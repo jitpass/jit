@@ -65,8 +65,14 @@ type wrapToolJSON struct {
 	// StorePath is a store row's sealed store, by vault path: what each run
 	// of every family member reads (one `use` event per run, labelled with
 	// it), since a store row has no injects to count reads by.
-	StorePath  string `json:"store_path,omitempty"`
-	VerifyHint string `json:"verify_hint,omitempty"`
+	StorePath string `json:"store_path,omitempty"`
+	// SSOProfiles (the aws row only) are the AWS profiles fetching through
+	// `jit aws-sso`, and SSOSignedIn whether the vault holds an AWS SSO
+	// login, nil when none was ever sealed. Both prompt-free: what the app
+	// needs to offer `jit aws-sso logout` only to someone signed in.
+	SSOProfiles []string `json:"sso_profiles,omitempty"`
+	SSOSignedIn *bool    `json:"sso_signed_in,omitempty"`
+	VerifyHint  string   `json:"verify_hint,omitempty"`
 	// VerifyPrintsSecret says VerifyHint's output is itself a credential:
 	// run it for its exit status and never show, log or keep what it prints.
 	VerifyPrintsSecret bool `json:"verify_prints_secret,omitempty"`
@@ -199,6 +205,9 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 				row.Store = ce.Store
 				row.StorePath, _ = migrate.StoreVaultPath(ce.Store)
 			}
+			if tool == "aws" {
+				applyAWSSSOState(&row, home)
+			}
 			res.Tools = append(res.Tools, row)
 		}
 	}
@@ -302,4 +311,19 @@ func (l *wrapVaultLookup) classCount(class string) int {
 		}
 	}
 	return l.counts[class]
+}
+
+// applyAWSSSOState fills the aws row's SSO fields from ~/.aws/config's
+// `jit aws-sso` lines and the sealed login's state file. No vault read.
+func applyAWSSSOState(row *wrapToolJSON, home string) {
+	if launches, err := migrate.AWSSSOProfileLaunches(home); err == nil {
+		for _, l := range launches {
+			row.SSOProfiles = append(row.SSOProfiles, l.Profile)
+		}
+	}
+	if root, err := vaultRootDir(); err == nil {
+		if signedIn, known := migrate.AWSSSOSignedIn(root); known {
+			row.SSOSignedIn = &signedIn
+		}
+	}
 }

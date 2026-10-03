@@ -180,7 +180,7 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 		switch {
 		case mounted[path]:
 			// the registry entry above covers it
-		case migrate.IsGcloudStoreFile(home, path):
+		case migrate.IsGcloudStoreFile(home, path), migrate.IsAWSSSOCacheFile(home, path):
 			// Sealing deleted it on purpose, so it would read as Gone (and
 			// its gcp class as mount-born). The store item below brings the
 			// whole login back instead.
@@ -244,6 +244,13 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 		if present, err := sealstore.Gcloud.Plaintext(dir); err == nil && !containsString(present, "credentials.db") {
 			plan.Restore = append(plan.Restore, restoreItem{Path: filepath.Join(dir, "credentials.db"), Kind: restoreStore})
 		}
+	}
+
+	// The sealed AWS SSO login: its token files come back from the vault's
+	// current copy (D10), beside the restored ~/.aws/config. Files already in
+	// the cache (a login waiting to be sealed) are newer and are kept.
+	if sealed, err := migrate.AWSSSOSealed(rv); err == nil && sealed {
+		plan.Restore = append(plan.Restore, restoreItem{Path: migrate.AWSSSOCacheDir(home), Kind: restoreStore})
 	}
 
 	// A secret comes back if a restored file is where it was born, or if a
@@ -383,6 +390,10 @@ func restoreOneItem(v *vault.Vault, home string, item restoreItem, registryPath 
 		return "", migrate.RestoreFromBackup(v, item.rec)
 
 	case restoreStore:
+		if item.Path == migrate.AWSSSOCacheDir(home) {
+			_, err := migrate.UnsealAWSSSOCache(v, home, false)
+			return "", err
+		}
 		_, err := migrate.UnsealGcloudStore(v, home)
 		return "", err
 
@@ -509,7 +520,7 @@ func restoreKindPhrase(k restoreKind) string {
 	case restoreCreated:
 		return "created by jit, deleted"
 	case restoreStore:
-		return "gcloud login, its latest from the vault"
+		return "sealed login, its latest from the vault"
 	default:
 		return "its content from before jit"
 	}

@@ -1092,3 +1092,55 @@ func TestGcloudLogTokenSaysRevokeThenDelete(t *testing.T) {
 		t.Error("a project's own log was taken for gcloud's")
 	}
 }
+
+const awsSSOTestConfig = "[profile dev]\nsso_session = corp\nsso_account_id = 111122223333\nsso_role_name = Developer\n\n[sso-session corp]\nsso_start_url = https://corp.awsapps.com/start\nsso_region = us-east-1\n"
+
+// An IAM Identity Center login with a refresh token mints role credentials
+// for every assigned account: a counted finding `jit migrate ~/.aws/config`
+// fixes. The client registration beside it, and an expired access token
+// with no refresh token, are not credentials anyone can use.
+func TestScanAWSSSOCache(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".aws", "sso", "cache")
+	mkdirAll(t, cache)
+	writeFile(t, filepath.Join(home, ".aws", "config"), awsSSOTestConfig)
+	writeFile(t, filepath.Join(cache, "ee0bfd2552.json"), `{"startUrl":"https://corp.awsapps.com/start","accessToken":"aoa`+tokenBody(40)+`","refreshToken":"aor`+tokenBody(60)+`","expiresAt":"2000-01-01T00:00:00Z"}`)
+	writeFile(t, filepath.Join(cache, "1b56c55d6e.json"), `{"clientId":"c","clientSecret":"s","scopes":["sso:account:access"]}`)
+	writeFile(t, filepath.Join(cache, "deadbeef00.json"), `{"accessToken":"aoa`+tokenBody(40)+`","expiresAt":"2000-01-01T00:00:00Z"}`)
+
+	findings, err := scanAWSSSOCache(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want the one login with a refresh token: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if *f.KeyName != "refreshToken" || f.Remedy != RemedyMigrate || f.FixCommand != "jit migrate ~/.aws/config" ||
+		!strings.Contains(f.Evidence, "corp.awsapps.com") || !CountedAsSecret(f) {
+		t.Errorf("finding %+v", f)
+	}
+
+	// Sealed profiles: a token here is a login waiting for its next fetch,
+	// the advisory's, not a finding.
+	writeFile(t, filepath.Join(home, ".aws", "config"), "[profile dev]\nsso_session = corp\ncredential_process = /usr/local/bin/jit aws-sso --profile dev\n")
+	if got, _ := scanAWSSSOCache(Config{HomeDir: home}); len(got) != 0 {
+		t.Errorf("a pending capture was charged as exposed: %+v", got)
+	}
+	adv := ScanDerivedCredentials(Config{HomeDir: home})
+	found := false
+	for _, d := range adv {
+		if strings.Contains(d.What, "aws sso login") && strings.Contains(d.Advice, "jit aws-sso logout") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no pending-capture advisory: %+v", adv)
+	}
+
+	// No profile uses it: nothing for jit to rewrite, so manual.
+	writeFile(t, filepath.Join(home, ".aws", "config"), "[profile static]\nregion = us-east-1\n")
+	if got, _ := scanAWSSSOCache(Config{HomeDir: home}); len(got) != 1 || got[0].Remedy != RemedyManual {
+		t.Errorf("unreferenced login: %+v", got)
+	}
+}

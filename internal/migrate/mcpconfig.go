@@ -1628,6 +1628,16 @@ func sanitizeProfileName(name string) string {
 // always runs the real one. selfpath's own tests cover the refusal.
 var resolveJitExecutable = selfpath.Durable
 
+// SetJitExecutableForTesting makes every recorder write path as jit's own,
+// for another package's tests (a go test binary lives in a temporary
+// folder, which selfpath.Durable rightly refuses to record). Returns the
+// restore. Like keystore.OpenTesting: never called outside a _test.go.
+func SetJitExecutableForTesting(path string) (restore func()) {
+	prev := resolveJitExecutable
+	resolveJitExecutable = func() (string, error) { return path, nil }
+	return func() { resolveJitExecutable = prev }
+}
+
 // mcpEnvFile is one --env-file target read before anything was rewritten:
 // its parsed values, and its variable names in source-file order.
 type mcpEnvFile struct {

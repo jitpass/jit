@@ -75,6 +75,38 @@ func AWSConfigProfileLaunches(home string) ([]ProfileLaunch, error) {
 	return out, nil
 }
 
+// AWSSSOProfileLaunches reads every credential_process line in
+// ~/.aws/config that runs `jit aws-sso --profile <name>`: the SSO profiles
+// whose login is sealed (design/aws-sso-sealed.md). The --profile here
+// names an AWS profile, not a jit one, which is why this is its own reader
+// and AWSConfigProfileLaunches does not see these lines.
+func AWSSSOProfileLaunches(home string) ([]ProfileLaunch, error) {
+	path := AWSConfigPath(home)
+	lines, err := readLaunchSource(path)
+	if err != nil || lines == nil {
+		return nil, err
+	}
+	var out []ProfileLaunch
+	section := ""
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "credential_process") {
+			continue
+		}
+		name := jitSubcommandProfile(splitCommandLine(strings.TrimSpace(value)), "aws-sso")
+		if name == "" {
+			continue
+		}
+		out = append(out, ProfileLaunch{File: path, Profile: name, Detail: "[" + section + "]", Line: i + 1})
+	}
+	return out, nil
+}
+
 // KubeconfigProfileLaunches reads every user in ~/.kube/config whose exec
 // plugin runs `jit k8s-exec-credential --profile <name>`.
 func KubeconfigProfileLaunches(home string) ([]ProfileLaunch, error) {

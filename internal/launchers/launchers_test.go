@@ -417,3 +417,26 @@ func TestDiscoverStoreWrap(t *testing.T) {
 		}
 	}
 }
+
+// Sealed AWS SSO profiles use the sealed login with no profile between:
+// one StoreWraps entry, read from ~/.aws/config, and never a by-name
+// launcher (the --profile names an AWS profile, not a jit one).
+func TestDiscoverAWSSSOStore(t *testing.T) {
+	f := newFixture(t)
+	write(t, migrate.AWSConfigPath(f.home), "[profile dev]\nsso_session = corp\ncredential_process = /opt/homebrew/bin/jit aws-sso --profile dev\n[profile prod]\ncredential_process = /opt/homebrew/bin/jit aws-sso --profile prod\n")
+	m := f.discover(t, Options{})
+	var got []Launcher
+	for _, sw := range m.StoreWraps {
+		if sw.VaultPath == migrate.AWSSSOStorePath {
+			got = append(got, sw)
+		}
+	}
+	if len(got) != 1 || got[0].File != migrate.AWSConfigPath(f.home) {
+		t.Fatalf("aws-sso store wraps %+v, want one from ~/.aws/config", got)
+	}
+	for _, b := range m.Broken {
+		if b.Profile == "dev" || b.Profile == "prod" {
+			t.Errorf("an aws-sso line was read as a by-name jit profile launcher: %+v", b)
+		}
+	}
+}

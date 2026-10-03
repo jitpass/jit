@@ -76,18 +76,22 @@ type discovered struct {
 	historyFiles            []string
 	mcpConfigs              []string
 	awsProfiles             []string
-	k8sUsers                []string
-	terraformHosts          []string
-	dockerRegistries        []string
-	gitHosts                []string
-	gcpADCFiles             []string
-	sopsAgeFiles            []string
-	npmrcFiles              []string
-	netrcFiles              []string
-	pypircFiles             []string
-	cargoRegistries         []string
-	streamlitFiles          []string
-	looseSecretFiles        []string
+	// awsSSOProfiles are ~/.aws/config SSO profiles whose login sealing
+	// moves into the vault (design/aws-sso-sealed.md). Part of the "aws"
+	// category, not a token of its own: --only aws covers both AWS files.
+	awsSSOProfiles   []string
+	k8sUsers         []string
+	terraformHosts   []string
+	dockerRegistries []string
+	gitHosts         []string
+	gcpADCFiles      []string
+	sopsAgeFiles     []string
+	npmrcFiles       []string
+	netrcFiles       []string
+	pypircFiles      []string
+	cargoRegistries  []string
+	streamlitFiles   []string
+	looseSecretFiles []string
 	// looseEmbeddedSkipped is note-only (like tfvarsComplexOnly): files that
 	// mix a secret with other content, which neutralize can't move whole.
 	// Populated only without --mount; with --mount they migrate as templates
@@ -595,6 +599,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	historyFiles := d.historyFiles
 	mcpConfigs := d.mcpConfigs
 	awsProfiles := d.awsProfiles
+	awsSSOProfiles := d.awsSSOProfiles
 	k8sUsers := d.k8sUsers
 	terraformHosts := d.terraformHosts
 	dockerRegistries := d.dockerRegistries
@@ -674,6 +679,9 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				*items = nil
 			}
 		}
+		if !selected["aws"] {
+			awsSSOProfiles = nil // the aws category's other file, scoped with it
+		}
 		if !selected["tfvars"] {
 			tfvarsComplexOnly = nil // note-only companion of the tfvars category, scoped with it
 		}
@@ -697,7 +705,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		}
 	}
 
-	total := len(jitPaths)
+	total := len(jitPaths) + len(awsSSOProfiles)
 	for _, items := range categorySlices {
 		total += len(*items)
 	}
@@ -767,6 +775,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		historyFiles:     historyFiles,
 		mcpConfigs:       mcpConfigs,
 		awsProfiles:      awsProfiles,
+		awsSSOProfiles:   awsSSOProfiles,
 		k8sUsers:         k8sUsers,
 		terraformHosts:   terraformHosts,
 		dockerRegistries: dockerRegistries,
@@ -1222,6 +1231,26 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			fmt.Fprintf(out, "  "+glyphBullet+" %q -> vault profile %q (%s); backups: %s\n",
 				awsProfile, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), backups)
 		}
+		fmt.Fprintln(out)
+	}
+
+	if len(awsSSOProfiles) > 0 {
+		printMigrateResultCategory(out, pluralWord(len(awsSSOProfiles), "AWS SSO profile", "AWS SSO profiles")+" sealed", len(awsSSOProfiles))
+		result, err := migrate.ApplyAWSSSO(v, home, awsSSOProfiles, backups)
+		if err != nil {
+			return false, fmt.Errorf("jit migrate: %w", err)
+		}
+		for _, p := range result.Profiles {
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %q -> fetches through `jit aws-sso`\n", p)))
+		}
+		switch {
+		case result.LoggedOut:
+			fmt.Fprintln(out, hlCmds("  no SSO login cached yet; `aws sso login` works as before, and jit seals it on first use"))
+		default:
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  the SSO login (%s) moved to the vault; backup: `jit vault get %s`\n",
+				countWord(len(result.CacheFiles), "file", "files"), result.ConfigBackup)))
+		}
+		fmt.Fprintln(out, hlCmds("  `aws sso login` keeps working; `jit aws-sso logout` signs out"))
 		fmt.Fprintln(out)
 	}
 
@@ -2168,6 +2197,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	// categories (aws/kube/terraform/docker/git) migrate every profile/user/
 	// host/registry the one file holds, so there's nothing to narrow; the
 	// path-keyed ones (gcp/netrc/Claude Desktop MCP) get filterToTarget.
+	// ~/.aws/config, or a token file in the SSO cache the scan named: the
+	// SSO profiles whose login sealing takes (design/aws-sso-sealed.md).
+	if path == migrate.AWSConfigPath(home) || migrate.IsAWSSSOCacheFile(home, path) {
+		profiles, err := migrate.DiscoverAWSSSOProfiles(home)
+		if err != nil {
+			return err
+		}
+		d.awsSSOProfiles = append(d.awsSSOProfiles, profiles...)
+		return nil
+	}
 	switch path {
 	case migrate.AWSCredentialsPath(home):
 		profiles, err := migrate.DiscoverAWSProfiles(home)
@@ -2374,7 +2413,7 @@ func (d *discovered) dedupe() {
 	for _, s := range []*[]string{
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly,
 		&d.k8sManifests, &d.k8sManifestsComplexOnly, &d.shellConfigs,
-		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
+		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.awsSSOProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.cargoRegistries, &d.streamlitFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
 		&d.historyKeyOnly, &d.wrapOwnedSkipped, &d.jitPathRefused,
@@ -2399,7 +2438,7 @@ func (d *discovered) dedupe() {
 func (d *discovered) total() int {
 	n := 0
 	for _, s := range [][]string{
-		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles,
+		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.awsSSOProfiles,
 		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
 		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
 		d.cargoRegistries, d.streamlitFiles, d.looseSecretFiles,

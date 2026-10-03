@@ -25,8 +25,8 @@ short prefix.
 `jit migrate` wires these into the vault so the tool fetches its secret on its
 own. You run them exactly as before:
 
-- **AWS**: the CLI and every SDK (boto3, aws-sdk-go, Terraform's AWS provider).
-  [aws](./migrate/aws.md)
+- **AWS**: the CLI and every SDK (boto3, aws-sdk-go, Terraform's AWS provider),
+  static keys and `aws sso login` logins alike. [aws](./migrate/aws.md)
 - **Terraform**: `terraform login` / `logout` and provider auth.
   [terraform](./migrate/terraform.md)
 - **git**: `git push` / `fetch` over HTTPS, submodules, LFS. [git](./migrate/git.md)

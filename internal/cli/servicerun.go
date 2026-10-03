@@ -221,13 +221,17 @@ var agentRunCmd = &cobra.Command{
 		// the unsealed login inside (design/gcloud-sealed-store.md D1).
 		// Every gcloud run sweeps these; this catches the case where no
 		// gcloud runs again for a while.
-		if removed, err := sealstore.Sweep(gcloudRunBase(root), gcloudRunOwnerAlive); len(removed) > 0 || err != nil {
-			if len(removed) > 0 {
-				fmt.Fprintf(stdout, "jit service: removed %s an interrupted gcloud run left behind\n", countWord(len(removed), "unsealed login folder", "unsealed login folders"))
-			}
-			if err != nil {
-				fmt.Fprintf(stderr, "jit service: gcloud run cleanup: %v\n", err)
-			}
+		var removed []string
+		var sweepErr error
+		for _, base := range []string{gcloudRunBase(root), awsSSORunBase(root)} {
+			r, e := sealstore.Sweep(base, gcloudRunOwnerAlive)
+			removed, sweepErr = append(removed, r...), errors.Join(sweepErr, e)
+		}
+		if len(removed) > 0 {
+			fmt.Fprintf(stdout, "jit service: removed %s an interrupted run left behind\n", countWord(len(removed), "unsealed login folder", "unsealed login folders"))
+		}
+		if sweepErr != nil {
+			fmt.Fprintf(stderr, "jit service: sealed-login run cleanup: %v\n", sweepErr)
 		}
 		// Best-effort "how were you asked" for the audit trail: probe once per
 		// fresh challenge whether Touch ID is currently usable, so a denial or

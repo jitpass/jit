@@ -183,17 +183,26 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 //   - A plaintext store back in ~/.config/gcloud: something logged in
 //     without the shim. gcloud-run passes through to it (D7).
 func storeWrapFindings(home, root string) []checkFinding {
-	m, err := wrap.LoadManifest(home)
-	if err != nil {
-		return nil
-	}
 	wrapped := false
-	for _, e := range m.Tools {
-		if e.Store == "gcloud" {
-			wrapped = true
+	if m, err := wrap.LoadManifest(home); err == nil {
+		for _, e := range m.Tools {
+			if e.Store == "gcloud" {
+				wrapped = true
+			}
 		}
 	}
 	var out []checkFinding
+	// A killed `jit aws-sso` leaves the same kind of folder (design/
+	// aws-sso-sealed.md); no wrap is involved, so it is checked first.
+	if left := staleGcloudRuns(awsSSORunBase(root)); len(left) > 0 {
+		out = append(out, checkFinding{
+			Kind: kindWrapStore,
+			Path: awsSSORunBase(root),
+			Detail: fmt.Sprintf("aws-sso: %s an interrupted run left the AWS SSO login unsealed in %s",
+				countWord(len(left), "folder where", "folders where"), displayPath(home, awsSSORunBase(root))),
+			Action: "`jit service restart` removes it now; the next AWS call would too",
+		})
+	}
 	if left := staleGcloudRuns(gcloudRunBase(root)); len(left) > 0 {
 		out = append(out, checkFinding{
 			Kind: kindWrapStore,
