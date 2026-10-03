@@ -605,3 +605,44 @@ func shortTempDir(t *testing.T) string {
 	t.Cleanup(func() { _ = os.RemoveAll(d) })
 	return d
 }
+
+// A machine whose only AWS credential is a sealed sign-in still lists aws
+// as protected: the aws row's vault_secrets counts the aws_signin class
+// too (JitPass decides "protected" from it).
+func TestWrapListCountsASealedAWSSignIn(t *testing.T) {
+	home := withFixtureHome(t)
+	withTestKeystore(t)
+	v, err := openVault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := sealstore.PackFiles(map[string][]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.StoreAWSSSOCache(v, home, blob); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execWrap(t, "list", "--all", "--format", "json")
+	if err != nil {
+		t.Fatalf("wrap list: %v\n%s", err, out)
+	}
+	var doc struct {
+		Tools []struct {
+			Tool         string `json:"tool"`
+			VaultSecrets int    `json:"vault_secrets"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, row := range doc.Tools {
+		if row.Tool == "aws" {
+			if row.VaultSecrets != 1 {
+				t.Fatalf("aws row vault_secrets = %d, want 1 (the sealed sign-in)", row.VaultSecrets)
+			}
+			return
+		}
+	}
+	t.Fatalf("no aws row:\n%s", out)
+}
