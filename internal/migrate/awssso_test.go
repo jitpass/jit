@@ -294,10 +294,10 @@ func TestAWSSSOSignedInState(t *testing.T) {
 		t.Fatalf("after sealing a login: signedIn %v known %v", in, known)
 	}
 	regOnly := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(regOnly, "cache"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(regOnly, "sso", "cache"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(regOnly, "cache", "reg.json"), []byte(`{"clientId":"c","clientSecret":"s"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(regOnly, "sso", "cache", "reg.json"), []byte(`{"clientId":"c","clientSecret":"s"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := StoreAWSSSOCache(v, home, mustPack(t, regOnly)); err != nil {

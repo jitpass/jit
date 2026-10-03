@@ -6,6 +6,8 @@ package migrate
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,25 +23,30 @@ import (
 	"github.com/jitpass/jit/internal/vault"
 )
 
-// AWS SSO logins, sealed (design/aws-sso-sealed.md). The token cache
-// `aws sso login` writes to ~/.aws/sso/cache moves into the vault as one
-// value; each SSO profile in ~/.aws/config is rewritten to fetch through
-// `jit aws-sso --profile <name>`, which unseals the cache for one run of
-// AWS's own `aws configure export-credentials`; the profiles' original
+// AWS sign-in logins, sealed (design/aws-sso-sealed.md). Two caches, one
+// mechanism: the IAM Identity Center tokens `aws sso login` writes to
+// ~/.aws/sso/cache, and the console sessions `aws login` writes to
+// ~/.aws/login/cache (spike/aws-login-process). Both move into the vault as
+// one value; each profile that uses them is rewritten to fetch through
+// `jit aws-sso --profile <name>`, which unseals them for one run of AWS's
+// own `aws configure export-credentials`; the profiles' original
 // definitions live in a config file jit owns, the one the inner run reads.
 
 // AWSSSOStorePath is the sealed token cache's vault path (class aws).
 const AWSSSOStorePath = "aws-sso/cache"
 
-// AWSSSOLayout is the token cache relative to ~/.aws/sso: the whole cache
-// directory is the secret.
-var AWSSSOLayout = sealstore.Layout{Secrets: []string{"cache"}}
+// AWSSSOLayout is the sealed store relative to ~/.aws: both sign-in caches,
+// whole (sso/cache and login/cache are all those directories hold).
+var AWSSSOLayout = sealstore.Layout{Secrets: []string{"sso", "login"}}
 
-// AWSSSODir returns ~/.aws/sso, the directory AWSSSOLayout is relative to.
-func AWSSSODir(home string) string { return filepath.Join(home, ".aws", "sso") }
+// AWSSSODir returns ~/.aws, the directory AWSSSOLayout is relative to.
+func AWSSSODir(home string) string { return filepath.Join(home, ".aws") }
 
-// AWSSSOCacheDir returns ~/.aws/sso/cache.
-func AWSSSOCacheDir(home string) string { return filepath.Join(AWSSSODir(home), "cache") }
+// AWSSSOCacheDir returns ~/.aws/sso/cache, `aws sso login`'s token cache.
+func AWSSSOCacheDir(home string) string { return filepath.Join(AWSSSODir(home), "sso", "cache") }
+
+// AWSLoginCacheDir returns ~/.aws/login/cache, `aws login`'s session cache.
+func AWSLoginCacheDir(home string) string { return filepath.Join(AWSSSODir(home), "login", "cache") }
 
 // AWSSSOSealedConfigPath is the config file holding the original SSO
 // profile definitions (D2): not secret, but the only copy once the user's
@@ -54,10 +61,21 @@ func AWSSSOSealedConfigPath(root string) string {
 // `aws sso login --profile` keeps working.
 var awsSSORoleKeys = []string{"sso_account_id", "sso_role_name"}
 
-// DiscoverAWSSSOProfiles lists the SSO profiles in ~/.aws/config that use
-// the token cache directly: a profile with an SSO role (account or role
-// name) and an SSO login (sso_session or sso_start_url). A profile already
-// rewritten has no role keys, so it is not found again. Sorted.
+// awsLoginKeys are what make botocore's login provider claim a profile
+// (LoginProvider.load: `login_session` present). Unlike SSO, `aws login`
+// then refuses the rewritten profile, so re-login goes through
+// `jit aws-sso login` (spike/aws-login-process Result 2).
+var awsLoginKeys = []string{"login_session"}
+
+// isAWSLoginProfile reports whether a profile's keys make it an `aws login`
+// profile rather than an SSO one.
+func isAWSLoginProfile(kv map[string]string) bool { return kv["login_session"] != "" }
+
+// DiscoverAWSSSOProfiles lists the profiles in ~/.aws/config that use a
+// sign-in cache directly: an SSO profile (an SSO role, sso_account_id or
+// sso_role_name, and an SSO login, sso_session or sso_start_url), or an
+// `aws login` profile (login_session). A rewritten profile has none of
+// those keys, so it is not found again. Sorted.
 func DiscoverAWSSSOProfiles(home string) ([]string, error) {
 	_, sections, err := parseINILines(AWSConfigPath(home))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -74,7 +92,7 @@ func DiscoverAWSSSOProfiles(home string) ([]string, error) {
 		}
 		hasRole := kv["sso_account_id"] != "" || kv["sso_role_name"] != ""
 		hasLogin := kv["sso_session"] != "" || kv["sso_start_url"] != ""
-		if hasRole && hasLogin {
+		if hasRole && hasLogin || isAWSLoginProfile(kv) {
 			out = append(out, name)
 		}
 	}
@@ -96,13 +114,16 @@ func awsProfileFromSection(section string) (string, bool) {
 
 // AWSSSOMigration says what ApplyAWSSSO did.
 type AWSSSOMigration struct {
-	Profiles     []string // the profiles rewritten to credential_process
-	ConfigPath   string
-	ConfigBackup string   // vault path of ~/.aws/config's backup
-	CacheFiles   []string // token cache files moved into the vault
-	LoggedOut    bool     // no login was cached; the next `aws sso login` is captured
-	SealedConfig string   // the jit-owned copy of the original definitions
-	RoleCaches   int      // SSO role-credential files removed from ~/.aws/cli/cache
+	Profiles []string // the profiles rewritten to credential_process
+	// LoginProfiles are the `aws login` ones among them: `aws login`
+	// refuses them now, and `jit aws-sso login` signs them in.
+	LoginProfiles []string
+	ConfigPath    string
+	ConfigBackup  string   // vault path of ~/.aws/config's backup
+	CacheFiles    []string // token cache files moved into the vault
+	LoggedOut     bool     // no login was cached; the next `aws sso login` is captured
+	SealedConfig  string   // the jit-owned copy of the original definitions
+	RoleCaches    int      // SSO role-credential files removed from ~/.aws/cli/cache
 }
 
 // ApplyAWSSSO seals the given SSO profiles (DiscoverAWSSSOProfiles). In
@@ -129,22 +150,33 @@ func ApplyAWSSSO(v *vault.Vault, home string, profiles []string, tracker *Backup
 	}
 	for _, p := range profiles {
 		kv := sections[awsConfigSectionName(p)]
-		if kv == nil || (kv["sso_account_id"] == "" && kv["sso_role_name"] == "") {
-			return res, fmt.Errorf("profile %q in %s is not an SSO profile jit can seal", p, configPath)
+		if kv == nil || (kv["sso_account_id"] == "" && kv["sso_role_name"] == "" && !isAWSLoginProfile(kv)) {
+			return res, fmt.Errorf("profile %q in %s is not an SSO or `aws login` profile jit can seal", p, configPath)
 		}
 	}
 
-	// 1. The token cache, into the vault.
+	// 1. The logins, into the vault: the whole SSO token cache (its
+	// files are named for sessions and start URLs, all the profiles' to
+	// share), and the `aws login` session of each profile sealed here.
+	// Another profile's `aws login` session stays: that profile still
+	// reads it from disk.
 	cacheFiles, err := awsSSOCacheFiles(home)
 	if err != nil {
 		return res, err
 	}
-	blob, err := mergeAWSSSOCache(v, home)
+	var sessions []string
+	for _, p := range profiles {
+		if s := sections[awsConfigSectionName(p)]["login_session"]; s != "" {
+			sessions = append(sessions, s)
+		}
+	}
+	cacheFiles = append(cacheFiles, awsLoginCacheFiles(home, sessions)...)
+	blob, err := mergeAWSStore(v, home, cacheFiles)
 	if err != nil {
 		return res, err
 	}
 	for _, f := range cacheFiles {
-		data, err := os.ReadFile(f) // #nosec G304 -- f is a regular file under ~/.aws/sso/cache, listed by awsSSOCacheFiles
+		data, err := os.ReadFile(f) // #nosec G304 -- f is a regular file in one of the sign-in caches, listed above
 		if err != nil {
 			return res, err
 		}
@@ -172,7 +204,16 @@ func ApplyAWSSSO(v *vault.Vault, home string, profiles []string, tracker *Backup
 	}
 	for _, p := range profiles {
 		section := awsConfigSectionName(p)
-		lines = removeINIKeys(lines, section, awsSSORoleKeys)
+		if isAWSLoginProfile(sections[section]) {
+			res.LoginProfiles = append(res.LoginProfiles, p)
+			lines = removeINIKeys(lines, section, awsLoginKeys)
+			// `aws login` refuses a profile with credential_process and its
+			// error says to remove it, which would unseal the session. Say
+			// what to run instead, where the user will look.
+			lines = insertINIComment(lines, section, fmt.Sprintf("# jit: this login is sealed in the vault; log in again with `jit aws-sso login --profile %s`", p))
+		} else {
+			lines = removeINIKeys(lines, section, awsSSORoleKeys)
+		}
 		command := fmt.Sprintf("%s aws-sso --profile %s", quoteIfNeeded(jitPath), quoteIfNeeded(p))
 		lines = upsertINIValue(lines, section, "credential_process", command)
 	}
@@ -202,7 +243,7 @@ func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
 		return err
 	}
 	if err := v.SetWithMeta(AWSSSOStorePath, blob, meta); err != nil {
-		return fmt.Errorf("storing the AWS SSO login in the vault: %w", err)
+		return fmt.Errorf("storing the AWS sign-in in the vault: %w", err)
 	}
 	return writeAWSSSOState(v.Root, blob)
 }
@@ -245,7 +286,9 @@ func AWSSSOSignedIn(root string) (signedIn, known bool) {
 }
 
 // blobHasAWSSSOToken reports whether a sealed cache holds a token file (an
-// access or refresh token), as opposed to only a client registration.
+// access or refresh token), as opposed to only a client registration. An
+// SSO token's accessToken is a string; an `aws login` session's is an
+// object of credentials beside its refreshToken.
 func blobHasAWSSSOToken(blob []byte) bool {
 	tr := tar.NewReader(bytes.NewReader(blob))
 	for {
@@ -261,10 +304,13 @@ func blobHasAWSSSOToken(blob []byte) bool {
 			return false
 		}
 		var tok struct {
-			AccessToken  string `json:"accessToken"`
-			RefreshToken string `json:"refreshToken"`
+			AccessToken  json.RawMessage `json:"accessToken"`
+			RefreshToken string          `json:"refreshToken"`
 		}
-		if json.Unmarshal(data, &tok) == nil && (tok.AccessToken != "" || tok.RefreshToken != "") {
+		if json.Unmarshal(data, &tok) != nil {
+			continue
+		}
+		if a := strings.TrimSpace(string(tok.AccessToken)); tok.RefreshToken != "" || a != "" && a != "null" && a != `""` {
 			return true
 		}
 	}
@@ -275,32 +321,44 @@ func AWSSSOSealed(v *vault.Vault) (bool, error) {
 	return v.Exists(AWSSSOStorePath)
 }
 
-// mergeAWSSSOCache returns the vault's sealed cache with whatever the real
-// cache holds laid over it (an empty store when nothing is sealed yet).
-func mergeAWSSSOCache(v *vault.Vault, home string) ([]byte, error) {
+// mergeAWSStore returns the vault's sealed store (an empty one when nothing
+// is sealed yet) with files, each in a sign-in cache under ~/.aws, laid
+// over it. Nothing else in those caches is taken in.
+func mergeAWSStore(v *vault.Vault, home string, files []string) ([]byte, error) {
+	var blob []byte
 	sealed, err := AWSSSOSealed(v)
 	if err != nil {
 		return nil, err
 	}
-	if !sealed {
-		return AWSSSOLayout.Pack(AWSSSODir(home))
+	if sealed {
+		if blob, err = v.Get(AWSSSOStorePath); err != nil {
+			return nil, err
+		}
 	}
-	blob, err := v.Get(AWSSSOStorePath)
-	if err != nil {
-		return nil, err
+	rels := make([]string, 0, len(files))
+	for _, f := range files {
+		rel, err := filepath.Rel(AWSSSODir(home), f)
+		if err != nil {
+			return nil, err
+		}
+		rels = append(rels, filepath.ToSlash(rel))
 	}
-	return AWSSSOLayout.Merge(blob, AWSSSODir(home))
+	return AWSSSOLayout.MergeFiles(blob, AWSSSODir(home), rels)
 }
 
 // CaptureAWSSSOLogin moves a login `aws sso login` left in the real cache
 // into the vault (D5): merged over the sealed copy, then removed from disk.
 // Reports whether there was one. The caller holds the run lock.
+//
+// SSO only. `aws login` cannot sign in a sealed profile (it refuses one
+// with credential_process), so a session in ~/.aws/login/cache belongs to
+// a profile that is not sealed, and reads it from there.
 func CaptureAWSSSOLogin(v *vault.Vault, home string) (bool, error) {
 	files, err := awsSSOCacheFiles(home)
 	if err != nil || len(files) == 0 {
 		return false, err
 	}
-	blob, err := mergeAWSSSOCache(v, home)
+	blob, err := mergeAWSStore(v, home, files)
 	if err != nil {
 		return false, err
 	}
@@ -333,42 +391,45 @@ func UnsealAWSSSOCache(v *vault.Vault, home string, overwrite bool) ([]string, e
 	if err := AWSSSOLayout.Unpack(blob, stage); err != nil {
 		return nil, err
 	}
-	dst := AWSSSOCacheDir(home)
-	if err := os.MkdirAll(dst, 0o700); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(filepath.Join(stage, "cache"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	var written []string
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
+	for _, cache := range []string{filepath.Join("sso", "cache"), filepath.Join("login", "cache")} {
+		entries, err := os.ReadDir(filepath.Join(stage, cache))
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		target := filepath.Join(dst, e.Name())
-		if _, err := os.Lstat(target); err == nil && !overwrite {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(stage, "cache", e.Name())) // #nosec G304 -- under the stage dir just unpacked
 		if err != nil {
 			return written, err
 		}
-		if err := atomicfile.WriteFileMode(target, data, 0o600); err != nil {
+		dst := filepath.Join(AWSSSODir(home), cache)
+		if err := os.MkdirAll(dst, 0o700); err != nil {
 			return written, err
 		}
-		written = append(written, target)
+		for _, e := range entries {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			target := filepath.Join(dst, e.Name())
+			if _, err := os.Lstat(target); err == nil && !overwrite {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(stage, cache, e.Name())) // #nosec G304 -- under the stage dir just unpacked
+			if err != nil {
+				return written, err
+			}
+			if err := atomicfile.WriteFileMode(target, data, 0o600); err != nil {
+				return written, err
+			}
+			written = append(written, target)
+		}
 	}
 	return written, nil
 }
 
-// IsAWSSSOCacheFile reports whether path is a token-cache file sealing
-// moves into the vault.
+// IsAWSSSOCacheFile reports whether path is a sign-in cache file sealing
+// moves into the vault (either cache).
 func IsAWSSSOCacheFile(home, path string) bool {
-	return filepath.Dir(path) == AWSSSOCacheDir(home) && strings.HasSuffix(path, ".json")
+	d := filepath.Dir(path)
+	return (d == AWSSSOCacheDir(home) || d == AWSLoginCacheDir(home)) && strings.HasSuffix(path, ".json")
 }
 
 // awsSSOCacheFiles lists the regular *.json files in ~/.aws/sso/cache.
@@ -389,6 +450,77 @@ func awsSSOCacheFiles(home string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// AWSLoginCacheFile is where `aws login` keeps session's tokens: the
+// file is named for the SHA-256 of the session (botocore
+// generate_login_cache_key), so each profile's file is known exactly.
+func AWSLoginCacheFile(home, session string) string {
+	sum := sha256.Sum256([]byte(session))
+	return filepath.Join(AWSLoginCacheDir(home), hex.EncodeToString(sum[:])+".json")
+}
+
+// awsLoginCacheFiles lists the sessions' cache files that are there:
+// regular files only, a link or anything else is no login of theirs.
+func awsLoginCacheFiles(home string, sessions []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range sessions {
+		p := AWSLoginCacheFile(home, s)
+		if info, err := os.Lstat(p); err == nil && info.Mode().IsRegular() && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AWSSealedLoginArgs returns the AWS CLI command that signs a sealed
+// profile in again, to run against the sealed config: `aws login` for a
+// console-credentials profile, `aws sso login` for an SSO one. remote is
+// the flow for a machine whose browser is elsewhere (over SSH).
+func AWSSealedLoginArgs(root, profile string, remote bool) ([]string, error) {
+	_, sections, err := parseINILines(AWSSSOSealedConfigPath(root))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	kv := sections[awsConfigSectionName(profile)]
+	switch {
+	case kv == nil:
+		return nil, fmt.Errorf("profile %q is not sealed by jit; sign in with the AWS CLI, then run `jit migrate ~/.aws/config`", profile)
+	case isAWSLoginProfile(kv):
+		args := []string{"login", "--profile", profile}
+		if remote {
+			args = append(args, "--remote")
+		}
+		return args, nil
+	default:
+		args := []string{"sso", "login", "--profile", profile}
+		if remote {
+			args = append(args, "--use-device-code")
+		}
+		return args, nil
+	}
+}
+
+// insertINIComment puts comment on the line after section's header, once:
+// a second migration of the same profile finds it there and adds nothing.
+func insertINIComment(lines []string, section, comment string) []string {
+	for _, l := range lines {
+		if strings.TrimSpace(l) == comment {
+			return lines
+		}
+	}
+	out := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		out = append(out, line)
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") && strings.TrimSpace(t[1:len(t)-1]) == section {
+			out = append(out, comment)
+		}
+	}
+	return out
 }
 
 // removeSSORoleCaches deletes the role credentials the CLI cached for SSO

@@ -475,3 +475,56 @@ func TestReadRegularNoFollow(t *testing.T) {
 		t.Fatal("reading a FIFO blocked")
 	}
 }
+
+// MergeFiles takes in only the files it is named (and their directories):
+// a login the tool keeps beside them stays out of the store.
+func TestMergeFiles(t *testing.T) {
+	l := Layout{Secrets: []string{"sso", "login"}}
+	dir := t.TempDir()
+	for p, body := range map[string]string{"sso/cache/a.json": "a", "login/cache/mine.json": "m", "login/cache/other.json": "o"} {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sealed := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sealed, "sso", "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sealed, "sso", "cache", "old.json"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := l.Pack(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := l.MergeFiles(blob, dir, []string{"login/cache/mine.json", "login/cache/gone.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	if err := l.Unpack(merged, out); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]bool{"sso/cache/old.json": true, "login/cache/mine.json": true, "login/cache/other.json": false, "sso/cache/a.json": false} {
+		if _, err := os.Stat(filepath.Join(out, filepath.FromSlash(p))); (err == nil) != want {
+			t.Errorf("%s present = %v, want %v", p, err == nil, want)
+		}
+	}
+	// Nothing named: the store comes back as it was.
+	same, err := l.MergeFiles(blob, dir, nil)
+	if err != nil || !bytes.Equal(same, blob) {
+		t.Fatalf("an empty selection changed the store: %v", err)
+	}
+	// And from nothing sealed at all.
+	fresh, err := l.MergeFiles(nil, dir, []string{"sso/cache/a.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Empty(fresh) {
+		t.Fatal("merging into no store took nothing in")
+	}
+}

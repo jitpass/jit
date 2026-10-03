@@ -72,11 +72,11 @@ func newAWSSSOFixture(t *testing.T) awsSSOFixture {
 func (f awsSSOFixture) seal(t *testing.T, rt string) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "sso", "cache"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{"tok.json": `{"accessToken":"a","refreshToken":"` + rt + `"}`, "reg.json": `{"clientId":"c"}`} {
-		if err := os.WriteFile(filepath.Join(dir, "cache", name), []byte(body), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "sso", "cache", name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -92,8 +92,7 @@ func (f awsSSOFixture) seal(t *testing.T, rt string) {
 func (f awsSSOFixture) fetch(t *testing.T) ([]byte, string, error) {
 	t.Helper()
 	var errOut bytes.Buffer
-	out, err := awsSSOWithLogin(&errOut, f.v, f.home, f.root, f.aws, "dev",
-		[]string{"configure", "export-credentials", "--profile", "dev", "--format", "process"})
+	out, err := awsSSOWithLogin(&errOut, f.v, f.home, f.root, f.aws, awsSSOInvocation{profile: "dev", args: []string{"configure", "export-credentials", "--profile", "dev", "--format", "process"}})
 	return out, errOut.String(), err
 }
 
@@ -187,7 +186,7 @@ func TestAWSSSOCapturesANativeLogin(t *testing.T) {
 func TestAWSSSONoLoginSaysWhatToRun(t *testing.T) {
 	f := newAWSSSOFixture(t)
 	_, _, err := f.fetch(t)
-	if err == nil || !strings.Contains(err.Error(), "aws sso login --profile dev") {
+	if err == nil || !strings.Contains(err.Error(), "jit aws-sso login --profile dev") {
 		t.Fatalf("error %v, want the login command", err)
 	}
 }
@@ -196,7 +195,7 @@ func TestAWSSSOLogout(t *testing.T) {
 	f := newAWSSSOFixture(t)
 	f.seal(t, "1//LIVE")
 	var errOut bytes.Buffer
-	if _, err := awsSSOWithLogin(&errOut, f.v, f.home, f.root, f.aws, "", []string{"sso", "logout"}); err != nil {
+	if _, err := awsSSOWithLogin(&errOut, f.v, f.home, f.root, f.aws, awsSSOInvocation{signOut: true}); err != nil {
 		t.Fatal(err)
 	}
 	blob := f.sealedBlob(t)
@@ -251,7 +250,7 @@ func TestAWSSSORunsOneAtATime(t *testing.T) {
 }
 
 func TestAWSSSOEnv(t *testing.T) {
-	got := awsSSOEnv([]string{"PATH=/bin", "HOME=/Users/u", "AWS_PROFILE=x", "_AWS_CLI_PROFILE_CHAIN=dev", "AWS_ACCESS_KEY_ID=k", "AWS_REGION=eu-west-1"}, "/run", "/sealed")
+	got := awsSSOEnv([]string{"PATH=/bin", "HOME=/Users/u", "AWS_PROFILE=x", "_AWS_CLI_PROFILE_CHAIN=dev", "AWS_ACCESS_KEY_ID=k", "AWS_LOGIN_CACHE_DIRECTORY=/Users/u/.aws/login/cache", "AWS_REGION=eu-west-1"}, "/run", "/sealed")
 	want := "PATH=/bin|AWS_REGION=eu-west-1|HOME=/run|AWS_CONFIG_FILE=/sealed|AWS_SHARED_CREDENTIALS_FILE=/dev/null"
 	if strings.Join(got, "|") != want {
 		t.Fatalf("env %q", got)
@@ -360,14 +359,14 @@ func TestMigrateSealsAWSSSOProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry run: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "AWS SSO profile") || !strings.Contains(dryRunPlanOnly(out), "dev") {
+	if !strings.Contains(out, "AWS sign-in profile") || !strings.Contains(dryRunPlanOnly(out), "dev") {
 		t.Fatalf("the plan for the scan's token file lacks the SSO profile:\n%s", out)
 	}
 	out, err = execMigrate(t, "--dry-run", "--only", "env", cfg)
 	if err != nil {
 		t.Fatalf("dry run --only env: %v\n%s", err, out)
 	}
-	if strings.Contains(dryRunPlanOnly(out), "AWS SSO profile") {
+	if strings.Contains(dryRunPlanOnly(out), "AWS sign-in profile") {
 		t.Fatalf("--only env still planned the SSO profiles:\n%s", out)
 	}
 

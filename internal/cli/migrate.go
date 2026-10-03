@@ -1244,7 +1244,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	}
 
 	if len(awsSSOProfiles) > 0 {
-		printMigrateResultCategory(out, pluralWord(len(awsSSOProfiles), "AWS SSO profile", "AWS SSO profiles")+" sealed", len(awsSSOProfiles))
+		printMigrateResultCategory(out, pluralWord(len(awsSSOProfiles), "AWS sign-in profile", "AWS sign-in profiles")+" sealed", len(awsSSOProfiles))
 		result, err := migrate.ApplyAWSSSO(v, home, awsSSOProfiles, backups)
 		if err != nil {
 			return false, fmt.Errorf("jit migrate: %w", err)
@@ -1252,14 +1252,21 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		for _, p := range result.Profiles {
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %q -> fetches through `jit aws-sso`\n", p)))
 		}
+		sso := len(result.Profiles) > len(result.LoginProfiles)
 		switch {
 		case result.LoggedOut:
-			fmt.Fprintln(out, hlCmds("  no SSO login cached yet; `aws sso login` works as before, and jit seals it on first use"))
+			fmt.Fprintln(out, "  no login cached yet; jit seals the first one")
 		default:
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  the SSO login (%s) moved to the vault; backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  the login (%s) moved to the vault; backup: `jit vault get %s`\n",
 				countWord(len(result.CacheFiles), "file", "files"), result.ConfigBackup)))
 		}
-		fmt.Fprintln(out, hlCmds("  `aws sso login` keeps working; `jit aws-sso logout` signs out"))
+		if sso {
+			fmt.Fprintln(out, hlCmds("  `aws sso login` keeps working; jit seals the new login on first use"))
+		}
+		for _, p := range result.LoginProfiles {
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  `aws login` refuses %q now; sign in with `jit aws-sso login --profile %s`\n", p, p)))
+		}
+		fmt.Fprintln(out, hlCmds("  `jit aws-sso logout` signs out"))
 		fmt.Fprintln(out)
 	}
 

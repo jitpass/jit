@@ -198,7 +198,7 @@ func storeWrapFindings(home, root string) []checkFinding {
 		out = append(out, checkFinding{
 			Kind: kindWrapStore,
 			Path: awsSSORunBase(root),
-			Detail: fmt.Sprintf("aws-sso: %s an interrupted run left the AWS SSO login unsealed in %s",
+			Detail: fmt.Sprintf("aws-sso: %s an interrupted run left the AWS login unsealed in %s",
 				countWord(len(left), "folder where", "folders where"), displayPath(home, awsSSORunBase(root))),
 			Action: "`jit service restart` removes it now; the next AWS call would too",
 		})

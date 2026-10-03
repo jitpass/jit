@@ -301,7 +301,7 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 			pluralWord(len(d.awsProfiles), "AWS profile", "AWS profiles")+" in ~/.aws/credentials "+glyphAction+" secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
 			d.awsProfiles)
 		printMigratePlanCategory(w,
-			pluralWord(len(d.awsSSOProfiles), "AWS SSO profile", "AWS SSO profiles")+" in ~/.aws/config "+glyphAction+" the SSO login moves to the vault; each profile fetches through jit, and AWS's own CLI still refreshes it",
+			pluralWord(len(d.awsSSOProfiles), "AWS sign-in profile", "AWS sign-in profiles")+" in ~/.aws/config "+glyphAction+" the SSO or console login moves to the vault; each profile fetches through jit, and AWS's own CLI still refreshes it",
 			d.awsSSOProfiles)
 		printMigratePlanCategory(w,
 			pluralWord(len(d.k8sUsers), "kubeconfig user", "kubeconfig users")+" in ~/.kube/config "+glyphAction+" secrets move to the vault; fetched automatically whenever kubectl runs",
