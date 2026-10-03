@@ -8,7 +8,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -451,5 +453,53 @@ func TestCombinedApprovalSticksInTheSessionItOpened(t *testing.T) {
 	}
 	if n := len(log.since(before)); n != 0 {
 		t.Errorf("the combined approval did not stick in the session it opened: %d prompt(s)", n)
+	}
+}
+
+// A challenge that timed out is unanswered, not refused.
+func TestPromptUnanswered(t *testing.T) {
+	if !promptUnanswered(errors.New("local authentication failed: the prompt was not answered within 2 minutes; run the command again")) {
+		t.Error("a timed-out prompt read as refused")
+	}
+	if promptUnanswered(errors.New("local authentication failed: User canceled.")) || promptUnanswered(nil) {
+		t.Error("a refusal read as unanswered")
+	}
+}
+
+type cancelableFetcher struct{ canceled chan struct{} }
+
+func (f cancelableFetcher) FetchMEK(string) ([]byte, error) { return nil, nil }
+func (f cancelableFetcher) CancelChallenge()                { close(f.canceled) }
+
+// A prompt whose caller exited is closed, not left up for 2 minutes in front
+// of everyone else's (release QA). A live caller's prompt is left alone.
+func TestCancelWhenCallerGone(t *testing.T) {
+	prev := callerWatchInterval
+	callerWatchInterval = 10 * time.Millisecond
+	t.Cleanup(func() { callerWatchInterval = prev })
+
+	child := exec.Command("/bin/sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	f := cancelableFetcher{canceled: make(chan struct{})}
+	stop := cancelWhenCallerGone(f, &caller{pid: int32(child.Process.Pid)}) // #nosec G115 -- a test child's pid
+	select {
+	case <-f.canceled:
+		t.Fatal("canceled a live caller's prompt")
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = child.Process.Kill()
+	_ = child.Wait()
+	select {
+	case <-f.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the dead caller's prompt was never canceled")
+	}
+	if !stop() {
+		t.Fatal("stop did not report the cancellation")
+	}
+	if !promptUnanswered(errCallerGone) {
+		t.Fatal("a closed prompt reads as refused")
 	}
 }

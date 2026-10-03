@@ -361,7 +361,7 @@ func awsSSOCachedCredentials(profile string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, nil
 	}
-	if entries, _ := os.ReadDir(migrate.AWSSSOCacheDir(home)); len(entries) > 0 {
+	if root, err := vaultRootDir(); err != nil || migrate.AWSSSOLoginWaiting(root, home) {
 		return nil, false, nil
 	}
 	c := awsSSOCache()

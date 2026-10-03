@@ -737,7 +737,18 @@ var wrapUndoCmd = &cobra.Command{
 		}
 
 		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "Unwrapped %s (shim removed: %v, profile removed: %v).\n", tool, res.RemovedShim, res.RemovedProfile)
+		var removed []string
+		if res.RemovedShim {
+			removed = append(removed, "its shim")
+		}
+		if res.RemovedProfile {
+			removed = append(removed, "its wrap profile")
+		}
+		if len(removed) == 0 {
+			fmt.Fprintf(out, "Unwrapped %s; nothing was left to remove.\n", tool)
+		} else {
+			fmt.Fprintf(out, "Unwrapped %s: removed %s.\n", tool, strings.Join(removed, " and "))
+		}
 		res.VaultPaths = wrapSecretsKept(tool, res.VaultPaths)
 		if len(res.VaultPaths) > 0 {
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("Vault secrets were kept: %s, `jit vault rm <path>` removes one for good.\n", strings.Join(res.VaultPaths, ", "))))

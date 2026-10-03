@@ -60,9 +60,14 @@ func TestGcloudChildEnv(t *testing.T) {
 		"HOME=/Users/u",
 	}
 	got := storeChildEnv(migrate.GcloudStore, in, "gcloud", "/run/dir")
-	want := []string{"PATH=/bin", "JIT_SHIM_GUARD_BQ=1", "HOME=/Users/u", "CLOUDSDK_CONFIG=/run/dir"}
+	want := []string{"PATH=/bin", "JIT_SHIM_GUARD_BQ=1", "HOME=/Users/u", "CLOUDSDK_CONFIG=/run/dir", "CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("env %q, want %q", got, want)
+	}
+	// The caller's own logging choice stands.
+	mine := storeChildEnv(migrate.GcloudStore, append(in, "CLOUDSDK_CORE_DISABLE_FILE_LOGGING=false"), "gcloud", "/run/dir")
+	if strings.Count(strings.Join(mine, "|"), "CLOUDSDK_CORE_DISABLE_FILE_LOGGING") != 1 || !strings.Contains(strings.Join(mine, "|"), "LOGGING=false") {
+		t.Fatalf("overrode the caller's setting: %q", mine)
 	}
 	if got := storeChildEnv(migrate.GcloudStore, in, "gcloud", ""); strings.Contains(strings.Join(got, "|"), "CLOUDSDK_CONFIG") {
 		t.Fatalf("an empty run dir still set CLOUDSDK_CONFIG: %q", got)

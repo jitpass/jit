@@ -170,8 +170,7 @@ asks one consent question. Fills, refused fills and clears are audited
 - Between `aws sso login` and the first fetch, the login is in plaintext.
 - A program that reads `~/.aws/sso/cache` itself rather than going through
   the profile's credential_process (a hand-rolled SSO client) sees no login.
-- A native `aws sso login` is captured whole: the next `jit aws-sso` run
-  moves every file in `~/.aws/sso/cache` into the vault, so an SSO profile
-  jit has not sealed (added after the migration) loses its login until
-  `jit migrate ~/.aws/config` seals it too, which the scan and the inner
-  CLI's error both point at.
+- A native `aws sso login` is captured only for a start URL the sealed
+  profiles sign in to (2.4.1); a profile sharing that start URL but not
+  sealed still loses its token to the vault, until
+  `jit migrate ~/.aws/config` seals it too.

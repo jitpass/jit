@@ -1083,9 +1083,9 @@ var vaultSetCmd = &cobra.Command{
 		"as a bare argument works but lands in shell history, prefer the prompt or --stdin.\n\n" +
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, so writing a secret always takes a live human gesture.\n\n" +
-		"Overwriting an existing secret asks first; -y/--yes skips that question,\n" +
-		"as it does on every other jit command. `-f`/`--force` is still accepted as\n" +
-		"a synonym for it.",
+		"Overwriting an existing secret asks first; -y/--yes skips that question\n" +
+		"(with --stdin there is no one to ask, so an existing secret needs -y).\n" +
+		"`-f`/`--force` is still accepted as a synonym for it.",
 	// The Use line cannot show that omitting [value] prompts, or that --stdin
 	// is the scripted form; three shapes in three lines can.
 	Example: "  jit vault set stripe/dev-key                  # prompts, nothing echoed\n" +
@@ -1123,6 +1123,12 @@ var vaultSetCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("jit vault set: %w", err)
 			}
+			if exists && vaultSetStdin {
+				// stdin is the value, so nobody can answer the question: a
+				// script must learn nothing was written, not read "Aborted."
+				// and exit 0.
+				return fmt.Errorf("jit vault set: %s already exists; pass -y to overwrite it", path)
+			}
 			if exists && !confirmOverwrite(cmd, path) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
 				return nil
@@ -1150,7 +1156,7 @@ var vaultGetCmd = &cobra.Command{
 		"On a terminal, one metadata line follows on stderr: when the\n" +
 		"secret was last updated, which profiles reference it, and the config\n" +
 		"file its migration recorded as the source. Piped or redirected output\n" +
-		"receives the value only, never the footer.\n\n" +
+		"receives exactly the value: no footer, no trailing newline.\n\n" +
 		"--json prints an object with the value and the envelope's provenance\n" +
 		"(class, group, origin) and timestamps instead of the bare value.\n\n" +
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
@@ -1236,7 +1242,14 @@ var vaultGetCmd = &cobra.Command{
 			printVaultGetFooter(cmd, v, args[0])
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), string(value))
+		// Piped or redirected, stdout gets exactly the stored bytes: a
+		// trailing newline would land in `> file` and `| pbcopy` as part of
+		// the secret. A terminal gets one, so the prompt starts on its line.
+		if f, ok := cmd.OutOrStdout().(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+			fmt.Fprintln(cmd.OutOrStdout(), string(value))
+		} else if _, err := cmd.OutOrStdout().Write(value); err != nil {
+			return fmt.Errorf("jit vault get: %w", err)
+		}
 		printVaultGetFooter(cmd, v, args[0])
 		return nil
 	},
@@ -2093,6 +2106,11 @@ func readSecretValue(cmd *cobra.Command, args []string) ([]byte, error) {
 	default:
 		data, err := readHidden(cmd, fmt.Sprintf("Enter value for %s: ", args[0]))
 		if err != nil {
+			// The common cause is a piped value: the hidden prompt needs a
+			// terminal, and "inappropriate ioctl for device" names none of it.
+			if f, ok := cmd.InOrStdin().(*os.File); !ok || !term.IsTerminal(int(f.Fd())) {
+				return nil, errors.New("no terminal to prompt on; pass the value on stdin with --stdin")
+			}
 			return nil, fmt.Errorf("reading value: %w", err)
 		}
 		return data, nil

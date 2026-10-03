@@ -372,9 +372,24 @@ func mergeAWSStore(v *vault.Vault, home string, files []string) ([]byte, error) 
 // with credential_process), so a session in ~/.aws/login/cache belongs to
 // a profile that is not sealed, and reads it from there.
 func CaptureAWSSSOLogin(v *vault.Vault, home string) (bool, error) {
-	files, err := awsSSOCacheFiles(home)
-	if err != nil || len(files) == 0 {
+	all, err := awsSSOCacheFiles(home)
+	if err != nil || len(all) == 0 {
 		return false, err
+	}
+	// Only logins a sealed profile uses: a token file names its start URL,
+	// and one for a start URL no sealed profile signs in to belongs to a
+	// profile jit has not sealed, which reads it from here (release QA's
+	// 2.4.1 list). Client registrations carry no start URL and are taken;
+	// botocore registers again if a profile needs one.
+	urls := sealedSSOStartURLs(v.Root)
+	var files []string
+	for _, f := range all {
+		if u := cachedStartURL(f); u == "" || urls[u] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return false, nil
 	}
 	blob, err := mergeAWSStore(v, home, files)
 	if err != nil {
@@ -661,4 +676,69 @@ func removeINISection(lines []string, section string) []string {
 		out = out[:len(out)-1]
 	}
 	return out
+}
+
+// AWSSSOLoginWaiting reports whether ~/.aws/sso/cache holds a login the next
+// `jit aws-sso` run would capture: a token for a sealed start URL. A login an
+// unsealed profile keeps there is not one.
+func AWSSSOLoginWaiting(root, home string) bool {
+	files, err := awsSSOCacheFiles(home)
+	if err != nil {
+		return false
+	}
+	urls := sealedSSOStartURLs(root)
+	for _, f := range files {
+		u := cachedStartURL(f)
+		// Capture's own rule: a sealed start URL, or a token that names none.
+		if u != "" && urls[u] || u == "" && fileHasSSOToken(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// fileHasSSOToken reports whether a cache file holds a token rather than
+// only a client registration.
+func fileHasSSOToken(path string) bool {
+	data, err := os.ReadFile(path) // #nosec G304 -- a file in ~/.aws/sso/cache
+	if err != nil {
+		return false
+	}
+	var tok struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	return json.Unmarshal(data, &tok) == nil && (tok.AccessToken != "" || tok.RefreshToken != "")
+}
+
+// sealedSSOStartURLs is every SSO start URL the sealed config signs in to:
+// its sso-session blocks' and its legacy profiles'.
+func sealedSSOStartURLs(root string) map[string]bool {
+	_, sections, err := parseINILines(AWSSSOSealedConfigPath(root))
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, kv := range sections {
+		if u := kv["sso_start_url"]; u != "" {
+			out[u] = true
+		}
+	}
+	return out
+}
+
+// cachedStartURL is the start URL an SSO cache file's token was issued
+// for, "" for a file that names none (a client registration).
+func cachedStartURL(path string) string {
+	data, err := os.ReadFile(path) // #nosec G304 -- a file in ~/.aws/sso/cache, listed by awsSSOCacheFiles
+	if err != nil {
+		return ""
+	}
+	var tok struct {
+		StartURL string `json:"startUrl"`
+	}
+	if json.Unmarshal(data, &tok) != nil {
+		return ""
+	}
+	return tok.StartURL
 }

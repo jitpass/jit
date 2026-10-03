@@ -302,6 +302,12 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 		if s.class == vault.ClassOnePassword || referenced[s.path] || (s.origin != "" && returned[s.origin]) {
 			continue
 		}
+		// A sealed login whose tool already has its login back on disk (it
+		// was unwrapped) loses nothing with the vault: the copy there is
+		// the duplicate.
+		if sealedLoginOnDisk(home, s.path) {
+			continue
+		}
 		plan.VaultOnly = append(plan.VaultOnly, vaultOnlySecret{Path: s.path, Class: s.class})
 	}
 
@@ -558,6 +564,26 @@ func isToolStoreFile(home, path string) bool {
 func containsAnyString(list, want []string) bool {
 	for _, w := range want {
 		if containsString(list, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// sealedLoginOnDisk reports whether path is a sealed login store whose tool
+// keeps a login on disk again: a tool store's secret files in its config
+// dir, or a token in the AWS sign-in caches.
+func sealedLoginOnDisk(home, path string) bool {
+	name, ok := migrate.SealedStoreName(path)
+	if !ok {
+		return false
+	}
+	if s, ok := migrate.ToolStoreNamed(name); ok {
+		found, err := s.Layout.Plaintext(s.ConfigDir(home))
+		return err == nil && containsAnyString(found, s.Layout.Secrets)
+	}
+	for _, dir := range []string{migrate.AWSSSOCacheDir(home), migrate.AWSLoginCacheDir(home)} {
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 			return true
 		}
 	}

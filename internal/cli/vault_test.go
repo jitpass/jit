@@ -1640,3 +1640,30 @@ func TestVaultSealedLoginsAreMarkedAndNotSettable(t *testing.T) {
 		t.Fatalf("vault set on a sealed login: %v", err)
 	}
 }
+
+// `vault get` piped gives exactly the stored bytes; `vault set --stdin`
+// over an existing secret fails instead of printing "Aborted." and exiting 0.
+func TestVaultGetPipedIsExactAndSetStdinRefusesOverwrite(t *testing.T) {
+	withFixtureHome(t)
+	withTestKeystore(t)
+	t.Cleanup(func() { vaultSetStdin, vaultSetYes = false, false })
+	run := func(in string, args ...string) (string, error) {
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&bytes.Buffer{})
+		rootCmd.SetIn(strings.NewReader(in))
+		rootCmd.SetArgs(args)
+		err := rootCmd.Execute()
+		return out.String(), err
+	}
+	if _, err := run("hunter2", "vault", "set", "jit-e2e/pipe", "--stdin"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err := run("", "vault", "get", "jit-e2e/pipe")
+	if err != nil || got != "hunter2" {
+		t.Fatalf("piped get = %q, %v; want exactly the value", got, err)
+	}
+	if _, err := run("other", "vault", "set", "jit-e2e/pipe", "--stdin"); err == nil || !strings.Contains(err.Error(), "pass -y to overwrite") {
+		t.Fatalf("set --stdin over an existing secret: %v", err)
+	}
+}

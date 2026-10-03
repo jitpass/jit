@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -148,6 +149,7 @@ func ApplyKubeloginKeyring(v *vault.Vault, home string, userNames []string, trac
 	if err != nil {
 		return res, fmt.Errorf("%s: %w", path, err)
 	}
+	newArgs := map[string][]interface{}{}
 	for _, name := range userNames {
 		u, ok := findKubeconfigUser(users, name)
 		if !ok {
@@ -158,7 +160,7 @@ func ApplyKubeloginKeyring(v *vault.Vault, home string, userNames []string, trac
 		if !ok {
 			return res, fmt.Errorf("user %q in %s does not run kubelogin", name, path)
 		}
-		userMap["exec"].(map[string]interface{})["args"] = withKeyringStorage(args)
+		newArgs[name] = withKeyringStorage(args)
 	}
 
 	cacheFiles, err := kubeloginCacheFiles(home)
@@ -178,7 +180,7 @@ func ApplyKubeloginKeyring(v *vault.Vault, home string, userNames []string, trac
 	if err != nil {
 		return res, fmt.Errorf("backing up %s: %w", path, err)
 	}
-	out, err := yaml.Marshal(doc)
+	out, err := setKubeconfigExecArgs(path, newArgs)
 	if err != nil {
 		return res, err
 	}
@@ -239,4 +241,74 @@ func kubeloginCacheFiles(home string) ([]string, error) {
 // files in its default cache.
 func IsKubeloginCacheFile(home, path string) bool {
 	return filepath.Dir(path) == KubeloginCacheDir(home) && kubeloginCacheFile.MatchString(filepath.Base(path))
+}
+
+// setKubeconfigExecArgs rewrites the exec args of the named users in the
+// kubeconfig at path, through the YAML node tree rather than a map, so every
+// other key keeps its order and every comment stays (release QA: the map
+// round-trip reordered the whole file and dropped comments). The encoder
+// does re-indent, at kubectl's two spaces.
+func setKubeconfigExecArgs(path string, args map[string][]interface{}) ([]byte, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- the fixed ~/.kube/config path
+	if err != nil {
+		return nil, err
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if len(root.Content) == 0 {
+		return nil, fmt.Errorf("%s is empty", path)
+	}
+	users := mappingValue(root.Content[0], "users")
+	if users == nil || users.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s has no users list", path)
+	}
+	done := map[string]bool{}
+	for _, item := range users.Content {
+		name := mappingValue(item, "name")
+		if name == nil || args[name.Value] == nil {
+			continue
+		}
+		seq := mappingValue(mappingValue(mappingValue(item, "user"), "exec"), "args")
+		if seq == nil || seq.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("user %q in %s has no exec args", name.Value, path)
+		}
+		content := make([]*yaml.Node, 0, len(args[name.Value]))
+		for _, a := range args[name.Value] {
+			s, _ := a.(string)
+			content = append(content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s})
+		}
+		seq.Content = content
+		done[name.Value] = true
+	}
+	for name := range args {
+		if !done[name] {
+			return nil, fmt.Errorf("user %q not found in %s", name, path)
+		}
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&root); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// mappingValue returns the value node of key in a mapping node, nil when
+// node is not a mapping or has no such key.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }

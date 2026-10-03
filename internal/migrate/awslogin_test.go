@@ -148,3 +148,49 @@ func TestAWSSealedLoginArgs(t *testing.T) {
 		t.Fatal("an unknown profile got a sign-in")
 	}
 }
+
+// Capture takes only logins a sealed profile signs in to: a token for
+// another start URL is an unsealed profile's, and stays on disk.
+func TestCaptureTakesOnlySealedStartURLs(t *testing.T) {
+	home := t.TempDir()
+	v := newTestVault(t)
+	if err := os.MkdirAll(filepath.Dir(AWSSSOSealedConfigPath(v.Root)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(AWSSSOSealedConfigPath(v.Root), []byte("[profile dev]\nsso_session = corp\n\n[sso-session corp]\nsso_start_url = https://corp.awsapps.com/start\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := AWSSSOCacheDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"mine.json":  `{"accessToken":"a","refreshToken":"r","startUrl":"https://corp.awsapps.com/start"}`,
+		"other.json": `{"accessToken":"b","refreshToken":"s","startUrl":"https://other.awsapps.com/start"}`,
+		"reg.json":   `{"clientId":"c","clientSecret":"x"}`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if captured, err := CaptureAWSSSOLogin(v, home); err != nil || !captured {
+		t.Fatalf("captured %v, %v", captured, err)
+	}
+	for name, want := range map[string]bool{"mine.json": false, "reg.json": false, "other.json": true} {
+		if _, err := os.Stat(filepath.Join(dir, name)); (err == nil) != want {
+			t.Errorf("%s on disk = %v, want %v", name, err == nil, want)
+		}
+	}
+}
+
+// A key added to a section lands inside it, before the blank line that
+// closes it, not against the next header.
+func TestUpsertINIValueKeepsTheSectionBreak(t *testing.T) {
+	in := []string{"[profile a]", "region = x", "", "[sso-session s]", "sso_region = y"}
+	got := strings.Join(upsertINIValue(in, "profile a", "credential_process", "jit"), "\n")
+	want := "[profile a]\nregion = x\ncredential_process = jit\n\n[sso-session s]\nsso_region = y"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

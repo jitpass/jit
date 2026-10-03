@@ -15,6 +15,11 @@ typedef struct {
 // ACL, is the enforcement point in this interim implementation.
 KWResult kw_challenge(const char *reason);
 
+// kw_cancel_challenge closes the prompt kw_challenge has up, if any, from any
+// thread: the service calls it when the process that asked has gone, so its
+// prompt does not stay on screen for no one, blocking the next.
+void kw_cancel_challenge(void);
+
 // kw_ensure_mek generates a random keySize-byte key on first call and
 // stores it as a PLAIN (no SecAccessControl) keychain generic-password
 // item under service/account if one doesn't already exist. Idempotent.

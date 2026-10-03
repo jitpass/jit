@@ -171,3 +171,31 @@ func TestApplyKubeloginKeyringWritesThroughALink(t *testing.T) {
 		t.Fatalf("the repo file was not rewritten:\n%s", b)
 	}
 }
+
+// The switch edits only the args: comments stay and keys keep their order
+// (release QA: the map round-trip reordered the file and dropped comments).
+func TestApplyKubeloginKeyringKeepsTheRestOfTheFile(t *testing.T) {
+	home := t.TempDir()
+	cfg := KubeconfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "# my clusters\napiVersion: v1\nkind: Config\ncurrent-context: dev\nusers:\n- name: dev # the OIDC one\n  user:\n    exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: kubectl\n      args: [oidc-login, get-token, --oidc-issuer-url=https://x]\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyKubeloginKeyring(newTestVault(t), home, []string{"dev"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg) // #nosec G304 -- test path
+	out := string(b)
+	for _, want := range []string{"# my clusters", "# the OIDC one", "--token-cache-storage=keyring", "--oidc-issuer-url=https://x"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "apiVersion: v1") > strings.Index(out, "kind: Config") || strings.Index(out, "kind: Config") > strings.Index(out, "current-context") ||
+		strings.Index(out, "command: kubectl") > strings.Index(out, "args:") {
+		t.Errorf("keys reordered:\n%s", out)
+	}
+}

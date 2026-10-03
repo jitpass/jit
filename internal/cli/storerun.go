@@ -311,6 +311,12 @@ func storeChildEnv(s migrate.ToolStore, environ []string, tool, runDir string) [
 	}
 	if runDir != "" {
 		out = append(out, s.ConfigEnv+"="+runDir)
+		for _, kv := range s.RunEnv {
+			name, _, _ := strings.Cut(kv, "=")
+			if !slices.ContainsFunc(environ, func(e string) bool { return strings.HasPrefix(e, name+"=") }) {
+				out = append(out, kv)
+			}
+		}
 	}
 	return out
 }

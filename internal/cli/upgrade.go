@@ -681,8 +681,10 @@ func copyFile(src, dst string, mode os.FileMode) error {
 }
 
 // versionNewer reports whether latest is a strictly higher release than
-// current, comparing dotted numeric components (leading "v" and any
-// pre-release/build suffix ignored). A non-numeric or unparseable current
+// current, comparing dotted numeric components (leading "v" and any build
+// suffix ignored). A pre-release ("2.4.0-rc6") is older than its release
+// ("2.4.0"), as semver orders them: a release candidate's user is offered
+// the final version, which 2.4.0-rc6 was not. A non-numeric or unparseable current
 // (e.g. "dev", a `go build` "+dirty" tree) is treated as older than any real
 // tag, so upgrade still offers the update rather than dead-ending.
 func versionNewer(latest, current string) bool {
@@ -707,7 +709,66 @@ func compareVersions(a, b string) int {
 			return -1
 		}
 	}
-	return 0
+	// Same numbers: a pre-release sorts before the release, and two
+	// pre-releases compare by their tag, digit runs as numbers (rc10 > rc9).
+	pa, pb := preRelease(a), preRelease(b)
+	switch {
+	case pa == pb:
+		return 0
+	case pa == "":
+		return 1
+	case pb == "":
+		return -1
+	}
+	return naturalCompare(pa, pb)
+}
+
+// preRelease is a version's "-rc6" part, without the dash; "" for a release.
+// A "+build" suffix is not one: it says nothing about order.
+func preRelease(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.Index(v, "+"); i >= 0 {
+		v = v[:i]
+	}
+	if i := strings.Index(v, "-"); i >= 0 {
+		return v[i+1:]
+	}
+	return ""
+}
+
+// naturalCompare orders strings with digit runs compared as numbers.
+func naturalCompare(a, b string) int {
+	for a != "" && b != "" {
+		da, db := leadingDigits(a), leadingDigits(b)
+		if da != "" && db != "" {
+			x, _ := strconv.Atoi(da)
+			y, _ := strconv.Atoi(db)
+			if x != y {
+				if x > y {
+					return 1
+				}
+				return -1
+			}
+			a, b = a[len(da):], b[len(db):]
+			continue
+		}
+		if a[0] != b[0] {
+			if a[0] > b[0] {
+				return 1
+			}
+			return -1
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) - len(b)
+}
+
+func leadingDigits(s string) string {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	return s[:i]
 }
 
 // versionParts turns "v0.41.0", "0.41.0", "0.41.0+dirty" into [0 41 0].

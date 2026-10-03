@@ -207,6 +207,12 @@ func announceTouchIDWait() {
 	if touchIDNotice.shown {
 		return
 	}
+	// For a person watching a terminal. Captured instead (jit as AWS's
+	// credential_process, whose stderr becomes the aws error text), the
+	// line only lands in someone else's message.
+	if f, ok := touchIDNotice.out.(*os.File); ok && !term.IsTerminal(int(f.Fd())) {
+		return
+	}
 	touchIDNotice.shown = true
 	// "Touch ID or password": a Mac without Touch ID shows a password
 	// sheet, and the line must not send its user looking for a fingerprint
