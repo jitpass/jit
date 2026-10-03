@@ -5,7 +5,6 @@ package agent
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
+	"github.com/jitpass/jit/internal/rekeymap"
 )
 
 // This file is the process-grant store (design/process-grants.md): the one
@@ -176,10 +176,11 @@ func newGrantID() (string, error) {
 }
 
 // wrappedDigest keys a grant's DEK cache: a digest of the wrapped bytes, so
-// the map never holds the wrapped form and the plaintext side by side.
+// the map never holds the wrapped form and the plaintext side by side. It is
+// also every job's and standing grant's pin, so it is rekeymap.Digest: a key
+// rotation's digest map re-pins by that hash, and the two must never differ.
 func wrappedDigest(wrapped []byte) string {
-	sum := sha256.Sum256(wrapped)
-	return hex.EncodeToString(sum[:])
+	return rekeymap.Digest(wrapped)
 }
 
 // createGrant validates, prompts (one disclosed challenge), unwraps and
