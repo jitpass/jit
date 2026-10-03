@@ -115,7 +115,7 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	}
 	// The clause after "locked" answers the question the amber ink raises:
 	// nothing to do, the next use unlocks it.
-	if !strings.Contains(unwrap(out), "service  ○ running · locked — unlocks with Touch ID on first use") {
+	if !strings.Contains(unwrap(out), "service  ○ running · locked — unlocks on first use") {
 		t.Errorf("expected a locked agent summary saying what unlocks it, got:\n%s", out)
 	}
 	// No "(service locked)" tail: the service row above already states the

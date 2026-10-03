@@ -601,3 +601,17 @@ func TestWriteTriageReportCleanMachine(t *testing.T) {
 		}
 	}
 }
+
+// A sealed login's row is the file its fix rewrites, not its cache file:
+// two AWS sign-in caches are one ~/.aws/config row.
+func TestTriageGroupsLoginsUnderTheFixedFile(t *testing.T) {
+	key := "refreshToken"
+	mk := func(path string) Finding {
+		return Finding{FindingType: FindingTypeCredentialFile, FilePath: path, KeyName: &key, Severity: SeverityHigh,
+			Remedy: RemedyMigrate, FixCommand: "jit migrate ~/.aws/config"}
+	}
+	rows := triageGroupMigratable([]Finding{mk("/h/.aws/sso/cache/a.json"), mk("/h/.aws/login/cache/b.json")})
+	if len(rows) != 1 || rows[0].file != "~/.aws/config" || rows[0].label != "2 logins in its caches" {
+		t.Fatalf("rows %+v", rows)
+	}
+}

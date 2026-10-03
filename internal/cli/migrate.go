@@ -530,6 +530,10 @@ var migrateCmd = &cobra.Command{
 		if _, err := loadMigrateSplit(); err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
+		// A misspelt --only is refused before any banner or plan, too.
+		if _, err := filterMigrateOnly(migrateOnly); err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
 		if len(args) == 0 {
 			if migrateFormat == "json" {
 				return errors.New("jit migrate: --format json is for `jit migrate <path>`; the bare run's plan is interactive")

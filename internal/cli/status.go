@@ -817,7 +817,11 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		statusLabel(w, "vault")
-		printStatusValue(w, "%s", hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
+		if r.Vault.Initialized == "yes" {
+			printStatusValue(w, "%s", hlCmds("empty — `jit migrate .` or `jit vault set <path>` fills it"))
+		} else {
+			printStatusValue(w, "%s", hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
+		}
 		// A move can be interrupted on an empty vault too, and it still
 		// refuses every change.
 		printStatusKeyRows(w, r.Vault)
@@ -910,7 +914,7 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 		// "running · locked" left the reader hunting for an unlock command
 		// that they don't need to run: the next jit use unlocks it.
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		printStatusGlyphValue(w, "running · locked — unlocks with Touch ID on first use")
+		printStatusGlyphValue(w, "running · locked — unlocks on first use")
 	}
 	if _, _, mismatched := agentBuildMismatch(r.Agent.Build); mismatched {
 		// Says what jit is (two programs, which is news to most readers),
