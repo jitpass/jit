@@ -73,9 +73,11 @@ region = us-east-1
   sign out of once the login is sealed.
 - Nothing is left in `~/.aws/sso/cache` or `~/.aws/cli/cache`.
 
-Each process that fetches credentials takes about a quarter of a second
-longer: AWS's CLI runs once more inside it. SDKs fetch once an hour; a
-one-off `aws` command pays it every time.
+The first fetch after an unlock runs AWS's CLI once more inside jit, about
+a quarter of a second. The role credentials it returns are kept in the
+[service](../service/index.md)'s memory (never on disk, gone when the vault
+locks), so later fetches for the profile skip that until they near expiry.
+A cached answer asks the same consent question a fresh one would.
 
 [`jit migrate undo`](./undo-and-remove.md) puts the original profiles back,
 with the current login rather than the one from the day it was sealed (the

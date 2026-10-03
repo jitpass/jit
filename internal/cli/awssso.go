@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/lineage"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/sealstore"
@@ -59,6 +61,15 @@ var awsSSOCmd = &cobra.Command{
 		if awsSSOProfile == "" {
 			return fmt.Errorf("jit aws-sso: --profile is required")
 		}
+		// The service's cache first (D7): role credentials it holds in memory
+		// from an earlier fetch, served after the same consent an unseal
+		// would ask, without running the AWS CLI at all.
+		if out, ok, err := awsSSOCachedCredentials(awsSSOProfile); err != nil {
+			return err
+		} else if ok {
+			_, err = cmd.OutOrStdout().Write(out)
+			return err
+		}
 		out, err := runAWSSSO(cmd.ErrOrStderr(), awsSSOProfile, []string{"configure", "export-credentials", "--profile", awsSSOProfile, "--format", "process"})
 		if err != nil {
 			return err
@@ -80,6 +91,7 @@ var awsSSOLogoutCmd = &cobra.Command{
 		if _, err := runAWSSSO(cmd.ErrOrStderr(), "", []string{"sso", "logout"}); err != nil {
 			return err
 		}
+		clearAWSSSOCache()
 		fmt.Fprintln(cmd.OutOrStdout(), "Signed out of AWS SSO; the vault holds no AWS SSO login now.")
 		return nil
 	},
@@ -132,8 +144,12 @@ func awsSSOWithLogin(stderr io.Writer, v *vault.Vault, home, root, awsBin, profi
 	}
 	defer unlock()
 
-	if _, err := migrate.CaptureAWSSSOLogin(v, home); err != nil {
+	if captured, err := migrate.CaptureAWSSSOLogin(v, home); err != nil {
 		return nil, fmt.Errorf("jit aws-sso: sealing the login aws sso login just wrote: %w", err)
+	} else if captured {
+		// A new login may be another identity: nothing cached from the old
+		// one may answer for it.
+		clearAWSSSOCache()
 	}
 	var blob []byte
 	sealed, err := migrate.AWSSSOSealed(v)
@@ -187,7 +203,87 @@ func awsSSOWithLogin(stderr io.Writer, v *vault.Vault, home, root, awsBin, profi
 	if runErr != nil {
 		return nil, awsSSOError(profile, errOut.String(), runErr)
 	}
+	if profile != "" && len(args) > 1 && args[0] == "configure" && args[1] == "export-credentials" {
+		cacheAWSSSOCredentials(profile, stdout.Bytes())
+	}
 	return stdout.Bytes(), nil
+}
+
+// awsCredCache is the service's AWS cache as `jit aws-sso` uses it
+// (agent.Client), so a test can stand in for the service.
+type awsCredCache interface {
+	AWSCacheGet(profile string) ([]byte, bool, error)
+	AWSCachePut(profile string, data []byte, expires time.Time) error
+	AWSCacheClear() error
+}
+
+// awsSSOCache returns the running service's cache, or nil when no service
+// answers. No retry and no kickstart: a missing cache is only a slower
+// fetch, never a reason to start anything.
+var awsSSOCache = func() awsCredCache {
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil
+	}
+	c := agent.NewClient(agent.SocketPath(root))
+	if !c.Reachable() {
+		return nil
+	}
+	return c
+}
+
+// awsSSOCachedCredentials asks the service for profile's cached
+// credentials. Skipped while `aws sso login` has a login waiting in the
+// real cache: that login must be sealed by a real fetch, not left in
+// plaintext for as long as the cache could answer. A consent refusal is
+// returned (the user said no; a fallback unseal would only ask again);
+// anything else, an older service included, is a miss.
+func awsSSOCachedCredentials(profile string) ([]byte, bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, false, nil
+	}
+	if entries, _ := os.ReadDir(migrate.AWSSSOCacheDir(home)); len(entries) > 0 {
+		return nil, false, nil
+	}
+	c := awsSSOCache()
+	if c == nil {
+		return nil, false, nil
+	}
+	data, ok, err := c.AWSCacheGet(profile)
+	if err != nil {
+		if strings.Contains(err.Error(), "consent") {
+			return nil, false, fmt.Errorf("jit aws-sso: %w", err)
+		}
+		return nil, false, nil
+	}
+	return data, ok, nil
+}
+
+// cacheAWSSSOCredentials offers credentials just fetched to the service,
+// best effort: it accepts them only from the process that just read the
+// sealed login, which this one is.
+func cacheAWSSSOCredentials(profile string, out []byte) {
+	var doc struct {
+		Expiration string `json:"Expiration"`
+	}
+	if json.Unmarshal(out, &doc) != nil {
+		return
+	}
+	exp, err := time.Parse(time.RFC3339, doc.Expiration)
+	if err != nil {
+		return
+	}
+	if c := awsSSOCache(); c != nil {
+		_ = c.AWSCachePut(profile, out, exp)
+	}
+}
+
+// clearAWSSSOCache empties the service's AWS cache, best effort.
+func clearAWSSSOCache() {
+	if c := awsSSOCache(); c != nil {
+		_ = c.AWSCacheClear()
+	}
 }
 
 // awsSSOEnv is the inner CLI's environment: the caller's, minus anything
