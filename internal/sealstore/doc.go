@@ -3,9 +3,10 @@
 
 // Package sealstore is the pure half of a sealed tool store: a CLI's own
 // login state, kept in the vault and materialized into a private directory
-// only while the tool runs (design/gcloud-sealed-store.md).
+// only while the tool runs (design/gcloud-sealed-store.md, and
+// design/azure-sealed-store.md for the Azure CLI, whose Layout is Azure).
 //
-// The case it exists for is gcloud. Its config dir (~/.config/gcloud, or
+// The case it was built for is gcloud. Its config dir (~/.config/gcloud, or
 // whatever CLOUDSDK_CONFIG names) mixes two kinds of entry:
 //
 //   - secrets the tool writes for itself: credentials.db (a refresh token
@@ -22,7 +23,8 @@
 //
 // This package does the file half of that and nothing else. It never
 // decrypts, never reaches the vault and never runs a process; internal/cli
-// (gcloud-run) owns those. A Layout names which top-level entries of a
+// (storerun.go: gcloud-run, az-run) owns those, from the stores
+// migrate.ToolStores lists. A Layout names which top-level entries of a
 // config dir are secret (Secrets: packed and vaulted) and which are a
 // throwaway cache (Ephemeral: access_tokens.db, never vaulted, never
 // carried back). Everything else is a setting.

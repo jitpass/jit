@@ -20,7 +20,6 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
-	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -78,6 +77,7 @@ type restoreItem struct {
 	rec   migrate.BackupRecord
 	entry mount.Entry
 	mcp   map[string]string
+	store string // restoreStore: the tool store's name ("" for AWS SSO)
 }
 
 type vaultOnlySecret struct {
@@ -180,7 +180,7 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 		switch {
 		case mounted[path]:
 			// the registry entry above covers it
-		case migrate.IsGcloudStoreFile(home, path), migrate.IsAWSSSOCacheFile(home, path):
+		case isToolStoreFile(home, path), migrate.IsAWSSSOCacheFile(home, path):
 			// Sealing deleted it on purpose, so it would read as Gone (and
 			// its gcp class as mount-born). The store item below brings the
 			// whole login back instead.
@@ -236,13 +236,17 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 		}
 	}
 
-	// The sealed gcloud login: one item for the whole store, unless the
-	// login is already back in plaintext (then gcloud has it, and writing
-	// the vaulted copy over it would replace a newer login with an older).
-	if sealed, err := migrate.GcloudStoreSealed(rv); err == nil && sealed {
-		dir := migrate.GcloudConfigDir(home)
-		if present, err := sealstore.Gcloud.Plaintext(dir); err == nil && !containsString(present, "credentials.db") {
-			plan.Restore = append(plan.Restore, restoreItem{Path: filepath.Join(dir, "credentials.db"), Kind: restoreStore})
+	// A sealed tool login (gcloud's, the Azure CLI's): one item for the
+	// whole store, unless the login is already back in plaintext (then the
+	// tool has it, and writing the vaulted copy over it would replace a
+	// newer login with an older).
+	for _, s := range migrate.ToolStores() {
+		if sealed, err := s.Sealed(rv); err != nil || !sealed {
+			continue
+		}
+		dir := s.ConfigDir(home)
+		if present, err := s.Layout.Plaintext(dir); err == nil && !containsAnyString(present, s.Layout.Secrets) {
+			plan.Restore = append(plan.Restore, restoreItem{Path: filepath.Join(dir, s.Provenance), Kind: restoreStore, store: s.Name})
 		}
 	}
 
@@ -390,11 +394,12 @@ func restoreOneItem(v *vault.Vault, home string, item restoreItem, registryPath 
 		return "", migrate.RestoreFromBackup(v, item.rec)
 
 	case restoreStore:
-		if item.Path == migrate.AWSSSOCacheDir(home) {
+		s, ok := migrate.ToolStoreNamed(item.store)
+		if !ok {
 			_, err := migrate.UnsealAWSSSOCache(v, home, false)
 			return "", err
 		}
-		_, err := migrate.UnsealGcloudStore(v, home)
+		_, err := s.Unseal(v, home)
 		return "", err
 
 	default:
@@ -541,4 +546,20 @@ func classCounts(secrets []vaultOnlySecret) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
+}
+
+// isToolStoreFile reports whether path is a file of a sealed tool store,
+// which comes back whole (restoreStore) rather than from its backup.
+func isToolStoreFile(home, path string) bool {
+	_, ok := migrate.ToolStoreForFile(home, path)
+	return ok
+}
+
+func containsAnyString(list, want []string) bool {
+	for _, w := range want {
+		if containsString(list, w) {
+			return true
+		}
+	}
+	return false
 }

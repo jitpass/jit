@@ -137,7 +137,7 @@ func gcloudRunFixture(t *testing.T) (home, tool string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := migrate.SealGcloudStore(v, home); err != nil {
+	if _, err := migrate.GcloudStore.Seal(v, home); err != nil {
 		t.Fatal(err)
 	}
 	tool = filepath.Join(t.TempDir(), "gcloud")
@@ -152,7 +152,7 @@ func runGcloudRunForTest(t *testing.T, tool string, args ...string) (int, string
 	var errOut bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetErr(&errOut)
-	code, err := runGcloudRun(cmd, tool, args)
+	code, err := runStoreRun(cmd, migrate.GcloudStore, tool, args)
 	if err != nil {
 		t.Fatalf("gcloud-run %v: %v\n%s", args, err, errOut.String())
 	}
@@ -178,7 +178,7 @@ func TestGcloudRunUnsealsForTheRunAndLeavesNothing(t *testing.T) {
 		t.Fatalf("the run dir %s is still there", runDir)
 	}
 	root, _ := vaultRootDir()
-	if entries, _ := os.ReadDir(gcloudRunBase(root)); len(entries) != 0 {
+	if entries, _ := os.ReadDir(storeRunBase(root, migrate.GcloudStore)); len(entries) != 0 {
 		t.Fatalf("run dirs left behind: %v", entries)
 	}
 	if left, _ := sealstore.Gcloud.Plaintext(migrate.GcloudConfigDir(home)); len(left) != 0 {
@@ -224,7 +224,7 @@ func TestGcloudRunKeepsSettingsAndStatus(t *testing.T) {
 func TestGcloudRunWithPlaintextBackIsDetected(t *testing.T) {
 	home, _ := gcloudRunFixture(t)
 	plantGcloudLogin(t, home, "1//OUTSIDE")
-	secrets, ephemeral, err := splitPlaintext(migrate.GcloudConfigDir(home))
+	secrets, ephemeral, err := splitPlaintext(migrate.GcloudStore, migrate.GcloudConfigDir(home))
 	if err != nil || len(secrets) != 2 || len(ephemeral) != 1 {
 		t.Fatalf("secrets %q ephemeral %q, %v", secrets, ephemeral, err)
 	}
@@ -306,14 +306,14 @@ func TestStoreWrapDoctorFindings(t *testing.T) {
 
 	// A folder a killed run left: its owner pid cannot be alive with that
 	// fork time. Our own process's folder is a live run and must not count.
-	if _, err := sealstore.NewRunDir(gcloudRunBase(root), 999999, 1); err != nil {
+	if _, err := sealstore.NewRunDir(storeRunBase(root, migrate.GcloudStore), 999999, 1); err != nil {
 		t.Fatal(err)
 	}
-	if got := staleGcloudRuns(gcloudRunBase(root)); len(got) != 1 {
+	if got := staleRuns(storeRunBase(root, migrate.GcloudStore)); len(got) != 1 {
 		t.Fatalf("stale runs %q, want the dead owner's one", got)
 	}
 	start, _ := lineage.ProcessStartTime(int32(os.Getpid()))
-	if _, err := sealstore.NewRunDir(gcloudRunBase(root), os.Getpid(), start); err != nil {
+	if _, err := sealstore.NewRunDir(storeRunBase(root, migrate.GcloudStore), os.Getpid(), start); err != nil {
 		t.Fatal(err)
 	}
 	got := storeWrapFindings(home, root)

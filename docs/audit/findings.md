@@ -60,17 +60,19 @@ nothing:
   does use counts, and `jit migrate ~/.aws/config` seals it;
   kubelogin's OIDC tokens in `~/.kube/cache/oidc-login` (when
   `~/.kube/config` uses them, `jit migrate ~/.kube/config` moves kubelogin
-  to the keychain, and the finding counts as one jit can fix); the Azure
-  CLI's `~/.azure/msal_token_cache.json`, in plaintext on macOS (revoke the
-  sessions in Entra ID; `az logout` only deletes the file); and the GKE auth
-  plugin's hour-long `~/.kube/gke_gcloud_auth_plugin_cache`. The gcloud,
-  AWS SSO and profile-backed `aws login` logins are no longer in this
-  class: `jit wrap gcloud` and `jit migrate ~/.aws/config` seal them.
-- **Azure service principal secrets** (`~/.azure/service_principal_entries.json`)
-  and the pre-2.30 `~/.azure/accessTokens.json` newer Azure CLIs leave
-  behind. The secrets are yours, so they count; the CLI rewrites the first
-  file, so no mount is offered. Rotate the secret in Entra ID; a certificate
-  or federated credential keeps nothing on disk.
+  to the keychain, and the finding counts as one jit can fix); and the GKE
+  auth plugin's hour-long `~/.kube/gke_gcloud_auth_plugin_cache`. The
+  gcloud, Azure CLI, AWS SSO and profile-backed `aws login` logins are no
+  longer in this class: `jit wrap gcloud`, `jit wrap az` and
+  `jit migrate ~/.aws/config` seal them.
+- **The Azure CLI's login** (`~/.azure/msal_token_cache.json`, refresh
+  tokens renewed on every use) and **service principal secrets**
+  (`~/.azure/service_principal_entries.json`): both count, and
+  `jit wrap az` seals them. If one was exposed, revoke the sign-in
+  sessions in Entra ID or rotate the secret first; `az logout` only deletes
+  the file. The pre-2.30 `~/.azure/accessTokens.json` newer Azure CLIs leave
+  behind counts too, with no fix but deleting it: a certificate or
+  federated credential keeps nothing on disk.
 - **Credentials a remote MCP server sends itself.** A `type: http`/`sse`
   server entry with an `Authorization` header, or a token in its `url`, is
   reported but not migratable: the MCP *host* makes that HTTP request, so

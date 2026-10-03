@@ -300,7 +300,7 @@ func TestUninstallRestoreBringsBackTheSealedGcloudLogin(t *testing.T) {
 	home, root, v := restoreFixture(t)
 	dir := migrate.GcloudConfigDir(home)
 	plantGcloudLogin(t, home, "1//WRAP-DAY")
-	if _, err := migrate.SealGcloudStore(v, home); err != nil {
+	if _, err := migrate.GcloudStore.Seal(v, home); err != nil {
 		t.Fatal(err)
 	}
 	// A later login through the wrap, resealed.
@@ -311,7 +311,7 @@ func TestUninstallRestoreBringsBackTheSealedGcloudLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate.ResealGcloudStore(v, home, runStore, blob); err != nil {
+	if _, err := migrate.GcloudStore.Reseal(v, home, runStore, nil, nil, blob); err != nil {
 		t.Fatal(err)
 	}
 
@@ -324,7 +324,7 @@ func TestUninstallRestoreBringsBackTheSealedGcloudLogin(t *testing.T) {
 		t.Fatalf("kinds = %v, want the gcloud store item", kindsByPath(plan))
 	}
 	for _, g := range plan.Gone {
-		if migrate.IsGcloudStoreFile(home, g) {
+		if migrate.GcloudStore.IsStoreFile(home, g) {
 			t.Errorf("a sealed store file was planned as Gone: %s", g)
 		}
 	}

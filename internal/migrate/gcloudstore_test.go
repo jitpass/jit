@@ -44,7 +44,7 @@ func TestSealGcloudStore(t *testing.T) {
 	writeGcloudLogin(t, dir, "1//FIRST")
 	v := newTestVault(t)
 
-	res, err := SealGcloudStore(v, home)
+	res, err := GcloudStore.Seal(v, home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestSealGcloudStore(t *testing.T) {
 	}
 
 	// A second seal finds nothing to move.
-	again, err := SealGcloudStore(v, home)
+	again, err := GcloudStore.Seal(v, home)
 	if err != nil || !again.AlreadySealed {
 		t.Fatalf("second seal: %+v, %v", again, err)
 	}
@@ -93,14 +93,14 @@ func TestSealGcloudStore(t *testing.T) {
 func TestSealGcloudStoreLoggedOut(t *testing.T) {
 	home := t.TempDir()
 	v := newTestVault(t)
-	res, err := SealGcloudStore(v, home)
+	res, err := GcloudStore.Seal(v, home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.LoggedOut {
 		t.Fatalf("result %+v, want LoggedOut", res)
 	}
-	if sealed, _ := GcloudStoreSealed(v); !sealed {
+	if sealed, _ := GcloudStore.Sealed(v); !sealed {
 		t.Fatal("a logged-out seal left no store to capture the next login into (D5)")
 	}
 }
@@ -112,7 +112,7 @@ func TestResealRecordsTheLatestLogin(t *testing.T) {
 	dir := GcloudConfigDir(home)
 	writeGcloudLogin(t, dir, "1//FIRST")
 	v := newTestVault(t)
-	if _, err := SealGcloudStore(v, home); err != nil {
+	if _, err := GcloudStore.Seal(v, home); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,7 +122,7 @@ func TestResealRecordsTheLatestLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ResealGcloudStore(v, home, run, blob); err != nil {
+	if _, err := GcloudStore.Reseal(v, home, run, nil, nil, blob); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := v.Get(GcloudStorePath)
@@ -157,10 +157,10 @@ func TestUnsealGcloudStore(t *testing.T) {
 	dir := GcloudConfigDir(home)
 	writeGcloudLogin(t, dir, "1//FIRST")
 	v := newTestVault(t)
-	if _, err := SealGcloudStore(v, home); err != nil {
+	if _, err := GcloudStore.Seal(v, home); err != nil {
 		t.Fatal(err)
 	}
-	files, err := UnsealGcloudStore(v, home)
+	files, err := GcloudStore.Unseal(v, home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,10 +171,10 @@ func TestUnsealGcloudStore(t *testing.T) {
 	if !strings.Contains(string(b), "1//FIRST") {
 		t.Fatal("unseal did not put the login back")
 	}
-	if sealed, _ := GcloudStoreSealed(v); !sealed {
+	if sealed, _ := GcloudStore.Sealed(v); !sealed {
 		t.Fatal("unseal dropped the vault copy")
 	}
-	if _, err := UnsealGcloudStore(v, home); err == nil {
+	if _, err := GcloudStore.Unseal(v, home); err == nil {
 		t.Fatal("unseal wrote over a plaintext store already there")
 	}
 }

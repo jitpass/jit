@@ -94,7 +94,7 @@ func TestGcloudRunE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := migrate.SealGcloudStore(v, home)
+	res, err := migrate.GcloudStore.Seal(v, home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestGcloudRunE2E(t *testing.T) {
 		var errOut bytes.Buffer
 		cmd := &cobra.Command{}
 		cmd.SetErr(&errOut)
-		code, err := runGcloudRun(cmd, tool, args)
+		code, err := runStoreRun(cmd, migrate.GcloudStore, tool, args)
 		if err != nil {
 			t.Fatalf("%s %v: %v\n%s", filepath.Base(tool), args, err, errOut.String())
 		}
@@ -176,7 +176,7 @@ func TestGcloudRunE2E(t *testing.T) {
 			var errOut bytes.Buffer
 			cmd := &cobra.Command{}
 			cmd.SetErr(&errOut)
-			codes[i], _ = runGcloudRun(cmd, gcloud, []string{"auth", "print-access-token"})
+			codes[i], _ = runStoreRun(cmd, migrate.GcloudStore, gcloud, []string{"auth", "print-access-token"})
 		}(i)
 	}
 	wg.Wait()
@@ -188,7 +188,7 @@ func TestGcloudRunE2E(t *testing.T) {
 
 	assertNoPlaintext(t, dir)
 	root, _ := vaultRootDir()
-	if entries, _ := os.ReadDir(gcloudRunBase(root)); len(entries) != 0 {
+	if entries, _ := os.ReadDir(storeRunBase(root, migrate.GcloudStore)); len(entries) != 0 {
 		t.Fatalf("run dirs left behind: %v", entries)
 	}
 }

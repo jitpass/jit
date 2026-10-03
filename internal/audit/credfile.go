@@ -1393,6 +1393,17 @@ func kubeloginOnDisk(path string) bool {
 	return false
 }
 
+// azureStoreFinding marks a finding in the Azure CLI's login store as one
+// `jit wrap az` seals (design/azure-sealed-store.md). Set here rather than
+// left to annotateRemedies, which would call the file manual for being
+// tool-rewritten (selfRotatingCaches), as for gcloud's store.
+func azureStoreFinding(f Finding) Finding {
+	f.Remedy = RemedyWrap
+	f.FixCommand = "jit wrap az"
+	f.Evidence += "; `jit wrap az` seals the store in the vault and unseals it per az run"
+	return f
+}
+
 // scanAzureCLI reports what the Azure CLI keeps in ~/.azure in plaintext,
 // which on macOS is everything (azure-cli encrypts only on Windows by
 // default; core.encrypt_token_cache moves it to the keychain, leaving a .bin
@@ -1437,7 +1448,7 @@ func scanAzureCLI(cfg Config) ([]Finding, error) {
 				if n > 1 {
 					evidence = fmt.Sprintf("Azure CLI refresh tokens for %d sign-ins, in plaintext: 90 days, renewed on every use", n)
 				}
-				findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+				findings = append(findings, azureStoreFinding(cfg.ValueFinding(ValueFindingParams{
 					FindingType:  FindingTypeCredentialFile,
 					FilePath:     filepath.Join(dir, "msal_token_cache.json"),
 					KeyName:      "RefreshToken",
@@ -1445,7 +1456,7 @@ func scanAzureCLI(cfg Config) ([]Finding, error) {
 					BaseSeverity: SeverityHigh,
 					Confidence:   ConfidenceHigh,
 					Evidence:     evidence,
-				}))
+				})))
 			}
 		}
 	}
@@ -1461,7 +1472,7 @@ func scanAzureCLI(cfg Config) ([]Finding, error) {
 				if e.ClientSecret == "" {
 					continue // a certificate path or a short-lived assertion: no password here
 				}
-				findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+				findings = append(findings, azureStoreFinding(cfg.ValueFinding(ValueFindingParams{
 					FindingType:  FindingTypeCredentialFile,
 					FilePath:     filepath.Join(dir, "service_principal_entries.json"),
 					KeyName:      e.ClientID + "/client_secret",
@@ -1469,7 +1480,7 @@ func scanAzureCLI(cfg Config) ([]Finding, error) {
 					BaseSeverity: SeverityHigh,
 					Confidence:   ConfidenceHigh,
 					Evidence:     fmt.Sprintf("the client secret of service principal %s (tenant %s), in plaintext: it signs in as that principal until rotated", e.ClientID, e.Tenant),
-				}))
+				})))
 			}
 		}
 	}

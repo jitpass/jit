@@ -17,14 +17,16 @@ import (
 	"github.com/jitpass/jit/internal/wrap"
 )
 
-// runStoreWrap is `jit wrap gcloud` (or any tool of a store family): shim
-// every installed member of the family, then seal the store
-// (design/gcloud-sealed-store.md). Shims first: if the seal then fails,
-// the plaintext store is still where gcloud looks, and gcloud-run passes
-// straight through to it with a note — never a gcloud that lost its login.
+// runStoreWrap is `jit wrap gcloud`, `jit wrap az` (or any tool of a
+// store family): shim every installed member of the family, then seal the
+// store (design/gcloud-sealed-store.md). Shims first: if the seal then
+// fails, the plaintext store is still where the tool looks, and the run
+// passes straight through to it with a note — never a tool that lost its
+// login.
 func runStoreWrap(cmd *cobra.Command, home string, entry wrap.CatalogEntry, openV vaultOpener, rep *wrapReport) error {
 	out := cmd.OutOrStdout()
-	if entry.Store != "gcloud" {
+	store, ok := migrate.ToolStoreNamed(entry.Store)
+	if !ok {
 		// The kind is general; the sealing is per store. A catalog entry
 		// naming a store this flow cannot seal is a build mistake, caught
 		// here rather than by shimming tools at a store nobody fills.
@@ -62,7 +64,7 @@ func runStoreWrap(cmd *cobra.Command, home string, entry wrap.CatalogEntry, open
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
-	sealed, err := migrate.SealGcloudStore(v, home)
+	sealed, err := store.Seal(v, home)
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
@@ -70,11 +72,11 @@ func runStoreWrap(cmd *cobra.Command, home string, entry wrap.CatalogEntry, open
 		rep.Store = entry.Store
 		rep.StoreLoggedOut = sealed.LoggedOut
 		if len(sealed.Files) > 0 {
-			rep.Vaulted = append(rep.Vaulted, migrate.GcloudStorePath)
+			rep.Vaulted = append(rep.Vaulted, store.VaultPath)
 		}
 	}
 
-	dir := displayPath(home, migrate.GcloudConfigDir(home))
+	dir := displayPath(home, store.ConfigDir(home))
 	fmt.Fprintf(out, "Wrapped %s (%s):\n", strings.Join(wrapped, ", "), entry.Doc)
 	switch {
 	case sealed.AlreadySealed:
@@ -116,7 +118,8 @@ func wrapVerifyHint(entry wrap.CatalogEntry) string {
 // other unwrap keeps its secrets.
 func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error {
 	out := cmd.OutOrStdout()
-	if store != "gcloud" {
+	s, ok := migrate.ToolStoreNamed(store)
+	if !ok {
 		return fmt.Errorf("jit wrap undo: no unsealing flow for the %q store", store)
 	}
 	var family []string
@@ -125,7 +128,7 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 			family = append(family, tool)
 		}
 	}
-	dir := displayPath(home, migrate.GcloudConfigDir(home))
+	dir := displayPath(home, s.ConfigDir(home))
 
 	if wrapDryRun {
 		printDryRunBanner(out)
@@ -140,7 +143,7 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 	if err != nil {
 		return fmt.Errorf("jit wrap undo: %w", err)
 	}
-	sealed, err := migrate.GcloudStoreSealed(ro)
+	sealed, err := s.Sealed(ro)
 	if err != nil {
 		return fmt.Errorf("jit wrap undo: %w", err)
 	}
@@ -150,10 +153,10 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 		if err != nil {
 			return fmt.Errorf("jit wrap undo: %w", err)
 		}
-		if err := requireFreshUserPresence(v, "write gcloud's login back to disk in plaintext"); err != nil {
+		if err := requireFreshUserPresence(v, "write "+s.Label+" back to disk in plaintext"); err != nil {
 			return fmt.Errorf("jit wrap undo: %w", err)
 		}
-		if restored, err = migrate.UnsealGcloudStore(v, home); err != nil {
+		if restored, err = s.Unseal(v, home); err != nil {
 			return fmt.Errorf("jit wrap undo: %w", err)
 		}
 	}
@@ -167,7 +170,7 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 	fmt.Fprintf(out, "Unwrapped %s.\n", strings.Join(family, ", "))
 	if len(restored) > 0 {
 		fmt.Fprintf(out, "  login  %s written back to %s\n", countWord(len(restored), "file", "files"), dir)
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("The vault copy was kept: `jit vault rm %s` removes it for good.\n", migrate.GcloudStorePath)))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("The vault copy was kept: `jit vault rm %s` removes it for good.\n", s.VaultPath)))
 	}
 	return finishUnwrapPath(out, home, last)
 }
@@ -177,24 +180,24 @@ func runStoreUndo(cmd *cobra.Command, home, store string, m wrap.Manifest) error
 // plaintext although the wrap is installed. Read-only, like every doctor
 // probe: it names the fix and changes nothing.
 //
-//   - Folders a gcloud-run left behind when it was killed before cleaning
-//     up, each holding the unsealed login. The next gcloud run removes them,
-//     and so does a service start (D1); until then they are on disk.
-//   - A plaintext store back in ~/.config/gcloud: something logged in
-//     without the shim. gcloud-run passes through to it (D7).
+//   - Folders a store run left behind when it was killed before cleaning
+//     up, each holding the unsealed login. The next run of the tool removes
+//     them, and so does a service start (D1); until then they are on disk.
+//   - A plaintext store back in the tool's config dir: something logged in
+//     without the shim. The run passes through to it (D7).
 func storeWrapFindings(home, root string) []checkFinding {
-	wrapped := false
+	wrapped := map[string]bool{}
 	if m, err := wrap.LoadManifest(home); err == nil {
 		for _, e := range m.Tools {
-			if e.Store == "gcloud" {
-				wrapped = true
+			if e.Store != "" {
+				wrapped[e.Store] = true
 			}
 		}
 	}
 	var out []checkFinding
 	// A killed `jit aws-sso` leaves the same kind of folder (design/
 	// aws-sso-sealed.md); no wrap is involved, so it is checked first.
-	if left := staleGcloudRuns(awsSSORunBase(root)); len(left) > 0 {
+	if left := staleRuns(awsSSORunBase(root)); len(left) > 0 {
 		out = append(out, checkFinding{
 			Kind: kindWrapStore,
 			Path: awsSSORunBase(root),
@@ -203,31 +206,35 @@ func storeWrapFindings(home, root string) []checkFinding {
 			Action: "`jit service restart` removes it now; the next AWS call would too",
 		})
 	}
-	if left := staleGcloudRuns(gcloudRunBase(root)); len(left) > 0 {
-		out = append(out, checkFinding{
-			Kind: kindWrapStore,
-			Path: gcloudRunBase(root),
-			Detail: fmt.Sprintf("gcloud: %s an interrupted run left the login unsealed in %s",
-				countWord(len(left), "folder where", "folders where"), displayPath(home, gcloudRunBase(root))),
-			Action: "`jit service restart` removes it now; the next gcloud run would too",
-		})
-	}
-	if wrapped {
-		if secrets, _, err := splitPlaintext(migrate.GcloudConfigDir(home)); err == nil && len(secrets) > 0 {
+	for _, s := range migrate.ToolStores() {
+		base := storeRunBase(root, s)
+		if left := staleRuns(base); len(left) > 0 {
+			out = append(out, checkFinding{
+				Kind: kindWrapStore,
+				Path: base,
+				Detail: fmt.Sprintf("%s: %s an interrupted run left the login unsealed in %s",
+					s.Name, countWord(len(left), "folder where", "folders where"), displayPath(home, base)),
+				Action: "`jit service restart` removes it now; the next " + s.Name + " run would too",
+			})
+		}
+		if !wrapped[s.Name] {
+			continue
+		}
+		if secrets, _, err := splitPlaintext(s, s.ConfigDir(home)); err == nil && len(secrets) > 0 {
 			out = append(out, checkFinding{
 				Kind:   kindWrapStore,
-				Path:   migrate.GcloudConfigDir(home),
-				Detail: fmt.Sprintf("gcloud: the login is back in plaintext in %s (something logged in without the shim)", displayPath(home, migrate.GcloudConfigDir(home))),
-				Action: "`jit wrap gcloud` seals it again",
+				Path:   s.ConfigDir(home),
+				Detail: fmt.Sprintf("%s: the login is back in plaintext in %s (something logged in without the shim)", s.Name, displayPath(home, s.ConfigDir(home))),
+				Action: "`jit wrap " + s.Name + "` seals it again",
 			})
 		}
 	}
 	return out
 }
 
-// staleGcloudRuns lists the run folders whose owner is gone: what Sweep
-// would remove, found without removing it.
-func staleGcloudRuns(base string) []string {
+// staleRuns lists the run folders whose owner is gone: what Sweep would
+// remove, found without removing it.
+func staleRuns(base string) []string {
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return nil
@@ -237,7 +244,7 @@ func staleGcloudRuns(base string) []string {
 		if !e.IsDir() {
 			continue
 		}
-		if pid, start, ok := sealstore.Owner(e.Name()); ok && !gcloudRunOwnerAlive(pid, start) {
+		if pid, start, ok := sealstore.Owner(e.Name()); ok && !runOwnerAlive(pid, start) {
 			out = append(out, filepath.Join(base, e.Name()))
 		}
 	}

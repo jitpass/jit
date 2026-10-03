@@ -24,6 +24,7 @@ import (
 	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/keystore"
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/screenlock"
 	"github.com/jitpass/jit/internal/sealstore"
@@ -217,14 +218,18 @@ var agentRunCmd = &cobra.Command{
 				fmt.Fprintf(stderr, "jit service: unused-key cleanup: %v\n", err)
 			}
 		}
-		// A gcloud-run killed before its cleanup leaves its private folder,
+		// A store run killed before its cleanup leaves its private folder,
 		// the unsealed login inside (design/gcloud-sealed-store.md D1).
-		// Every gcloud run sweeps these; this catches the case where no
-		// gcloud runs again for a while.
+		// Every run of the tool sweeps these; this catches the case where
+		// the tool does not run again for a while.
 		var removed []string
 		var sweepErr error
-		for _, base := range []string{gcloudRunBase(root), awsSSORunBase(root)} {
-			r, e := sealstore.Sweep(base, gcloudRunOwnerAlive)
+		bases := []string{awsSSORunBase(root)}
+		for _, s := range migrate.ToolStores() {
+			bases = append(bases, storeRunBase(root, s))
+		}
+		for _, base := range bases {
+			r, e := sealstore.Sweep(base, runOwnerAlive)
 			removed, sweepErr = append(removed, r...), errors.Join(sweepErr, e)
 		}
 		if len(removed) > 0 {
