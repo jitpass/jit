@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -220,6 +221,12 @@ func runVaultRm(cmd *cobra.Command, args []string) error {
 	}
 	invocationDeleted = removed
 	invocationBroke = rmBrokenUsers(uses, removed)
+	// A deleted backup leaves its undo-index row pointing at nothing: undo
+	// would promise to restore it and `jit vault prune` offer to delete it
+	// again. Best effort: the secret is already gone either way.
+	if err := dropRemovedBackupRecords(removed); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: the undo index still names a removed backup: %v\n", err)
+	}
 	if len(removed) > 0 {
 		settleLostKeyAfterRm(cmd, v.Root)
 	}
@@ -453,4 +460,33 @@ func rmBrokenUsers(uses map[string][]secretUse, removed []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// dropRemovedBackupRecords removes the undo-index rows of any removed
+// `_backups/` path.
+func dropRemovedBackupRecords(removed []string) error {
+	gone := map[string]bool{}
+	for _, p := range removed {
+		if vault.IsBackupPath(p) {
+			gone[p] = true
+		}
+	}
+	if len(gone) == 0 {
+		return nil
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return err
+	}
+	recs, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		return err
+	}
+	var drop []migrate.BackupRecord
+	for _, r := range recs {
+		if r.VaultPath != "" && gone[r.VaultPath] {
+			drop = append(drop, r)
+		}
+	}
+	return migrate.DropBackupRecords(root, drop)
 }

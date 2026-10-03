@@ -27,7 +27,7 @@ func TestTouchIDNoticePrintsOncePerProcess(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		announceTouchIDWait()
 	}
-	if n := strings.Count(buf.String(), "Touch ID required"); n != 1 {
+	if n := strings.Count(buf.String(), "approve the prompt on your Mac"); n != 1 {
 		t.Errorf("notice printed %d times across 4 slow RPCs, want 1:\n%s", n, buf.String())
 	}
 }

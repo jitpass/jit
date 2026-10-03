@@ -208,7 +208,10 @@ func announceTouchIDWait() {
 		return
 	}
 	touchIDNotice.shown = true
-	fmt.Fprintln(touchIDNotice.out, glyphLock+" Touch ID required: approve the prompt on your Mac to continue...")
+	// "Touch ID or password": a Mac without Touch ID shows a password
+	// sheet, and the line must not send its user looking for a fingerprint
+	// prompt that never comes.
+	fmt.Fprintln(touchIDNotice.out, glyphLock+" approve the prompt on your Mac (Touch ID or password) to continue...")
 }
 
 // touchIDNotice is announceTouchIDWait's once-per-process state; the

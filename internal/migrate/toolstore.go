@@ -87,6 +87,29 @@ func StoreVaultPath(store string) (string, bool) {
 	return "", false
 }
 
+// SealedStoreName is StoreVaultPath's inverse: the store a vault path holds
+// ("gcloud", "az", "aws-sso"), the same name a store's vault users carry.
+func SealedStoreName(path string) (string, bool) {
+	for _, s := range ToolStores() {
+		if s.VaultPath == path {
+			return s.Name, true
+		}
+	}
+	if path == AWSSSOStorePath {
+		return "aws-sso", true
+	}
+	return "", false
+}
+
+// SealedStoreOwner names the command that takes a sealed store out of the
+// vault, for a refusal to say what to run instead.
+func SealedStoreOwner(name string) string {
+	if name == "aws-sso" {
+		return "`jit aws-sso logout` signs out; `jit migrate undo ~/.aws/config` puts the login back"
+	}
+	return "`jit wrap undo " + name + "` puts the login back"
+}
+
 // StoreSealResult says what Seal did.
 type StoreSealResult struct {
 	// Files are the plaintext files moved into the vault (backed up first).
@@ -364,7 +387,42 @@ func (s ToolStore) store(v *vault.Vault, home string, blob []byte) error {
 	if err := v.SetWithMeta(s.VaultPath, blob, meta); err != nil {
 		return fmt.Errorf("storing %s in the vault: %w", s.Label, err)
 	}
+	// A login's previous versions are logins the tool has since refreshed
+	// away or signed out of: kept, a `jit vault restore` would hand a
+	// signed-out refresh token back. Undo works from backups and the
+	// current copy, never from history.
+	if err := v.ForgetHistory(s.VaultPath); err != nil {
+		return err
+	}
+	if sealstore.Empty(blob) {
+		// Signed out: the seal-day backups hold the login too, and an undo
+		// would write it back to disk (release QA: a signed-out `aws login`
+		// came back live). They go with the sign-out.
+		return dropLoginBackups(v, func(p string) bool { return s.IsStoreFile(home, p) })
+	}
 	return nil
+}
+
+// dropLoginBackups deletes every recorded backup of a file a sealed login is
+// made of, from the vault and the undo index: what a sign-out must take
+// with it so no undo can resurrect the login.
+func dropLoginBackups(v *vault.Vault, isLoginFile func(string) bool) error {
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		return err
+	}
+	var drop []BackupRecord
+	for _, r := range recs {
+		if r.VaultPath != "" && isLoginFile(r.OriginalPath) {
+			drop = append(drop, r)
+		}
+	}
+	for _, r := range drop {
+		if err := v.Remove(r.VaultPath); err != nil && !errors.Is(err, vault.ErrNotFound) {
+			return err
+		}
+	}
+	return DropBackupRecords(v.Root, drop)
 }
 
 // files lists the regular files of dir's secret set, sorted.

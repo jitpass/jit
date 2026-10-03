@@ -129,6 +129,10 @@ type vaultSecretJSON struct {
 	// class index beside the vault. Omitted when unknown: vaulted before the
 	// index existed (design/secrets-only-vault.md).
 	Scan string `json:"scan,omitempty"`
+	// Store marks a sealed CLI login ("gcloud", "az", "aws-sso"): a packed
+	// login store the tool unseals per run, not a value to reveal, copy or
+	// replace. The same name a store's vault users carry.
+	Store string `json:"store,omitempty"`
 }
 
 // vaultGetResult is `jit vault get --json`'s object: the decrypted value plus
@@ -1091,6 +1095,11 @@ var vaultSetCmd = &cobra.Command{
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
+		// A sealed CLI login is a packed store the tool reads per run:
+		// pasting a value over it only breaks the tool's sign-in.
+		if store, ok := migrate.SealedStoreName(path); ok {
+			return fmt.Errorf("jit vault set: %s is a sealed login (%s), not a value to set; %s", path, store, migrate.SealedStoreOwner(store))
+		}
 
 		value, err := readSecretValue(cmd, args)
 		if err != nil {
@@ -1441,6 +1450,7 @@ var vaultListCmd = &cobra.Command{
 					UpdatedUnix:     info.UpdatedUnix,
 					Storage:         info.Storage,
 					Scan:            classOf(classes, p),
+					Store:           sealedStoreName(p),
 				})
 			}
 			return writeJSON(cmd.OutOrStdout(), out)
@@ -1534,9 +1544,11 @@ func expandRmGroups(out io.Writer, args []string) (expanded []string, stored map
 	if err != nil {
 		return args, nil
 	}
-	secrets, _ := splitBackupPaths(paths)
-	stored = make(map[string]bool, len(secrets))
-	for _, p := range secrets {
+	// Backups too: `jit vault rm` removes a named `_backups/` path, so its
+	// dry run must not call one missing (release QA).
+	secrets, _ := splitBackupPaths(paths) // groups expand over secrets only
+	stored = make(map[string]bool, len(paths))
+	for _, p := range paths {
 		stored[p] = true
 	}
 	expanded = make([]string, 0, len(args))
@@ -3007,6 +3019,9 @@ func requireFreshUserPresence(v *vault.Vault, reason string) error {
 	if !ok {
 		return fmt.Errorf("internal error: fresh-auth vault has no explicit user-presence challenge")
 	}
+	// Said before blocking, as the service path says it: a command that
+	// printed its plan and then sat silent looked hung (release QA).
+	announceTouchIDWait()
 	if err := presence.RequireUserPresence(reason); err != nil {
 		return err
 	}
@@ -3138,4 +3153,11 @@ func classOf(c *settings.Classes, path string) string {
 		return ""
 	}
 	return c.Get(path)
+}
+
+// sealedStoreName is migrate.SealedStoreName for a listing row: "" for an
+// ordinary secret.
+func sealedStoreName(path string) string {
+	name, _ := migrate.SealedStoreName(path)
+	return name
 }

@@ -1587,3 +1587,56 @@ func TestSharedGroupNoteAgeNamesBirthWhenItDiffers(t *testing.T) {
 		t.Errorf("age = %q, want the bare age when nothing happened since", note.age)
 	}
 }
+
+// Removing a backup by hand drops its undo-index row: undo must not promise
+// to restore it, nor prune offer to delete it again (release QA).
+func TestVaultRmDropsARemovedBackupsIndexRow(t *testing.T) {
+	withFixtureHome(t)
+	prev := requireUserPresence
+	requireUserPresence = func(string) error { return nil }
+	t.Cleanup(func() { requireUserPresence = prev; vaultRmYes = false })
+
+	root := seedFixtureVault(t, "_backups/home/.aws/config/1")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.Set("_backups/home/.kube/config/2", []byte("k")); err != nil {
+		t.Fatal(err)
+	}
+	index := "backups:\n- original_path: /h/.aws/config\n  vault_path: _backups/home/.aws/config/1\n  unix_ts: 1\n- original_path: /h/.kube/config\n  vault_path: _backups/home/.kube/config/2\n  unix_ts: 2\n"
+	if err := os.WriteFile(migrate.BackupIndexPath(root), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "rm", "-y", "_backups/home/.aws/config/1"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("vault rm: %v\n%s", err, buf.String())
+	}
+	recs, err := migrate.LoadBackupRecords(root)
+	if err != nil || len(recs) != 1 || recs[0].VaultPath != "_backups/home/.kube/config/2" {
+		t.Fatalf("index after rm: %+v, %v", recs, err)
+	}
+}
+
+// A sealed login is marked in the listing and refused by `vault set`.
+func TestVaultSealedLoginsAreMarkedAndNotSettable(t *testing.T) {
+	withFixtureHome(t)
+	root := seedFixtureVault(t, "gcloud-cli/store")
+	_ = root
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "list", "--format", "json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("vault list: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), `"store": "gcloud"`) {
+		t.Fatalf("the sealed store is not marked:\n%s", buf.String())
+	}
+	buf.Reset()
+	rootCmd.SetIn(strings.NewReader("x"))
+	rootCmd.SetArgs([]string{"vault", "set", "aws-sso/cache", "--stdin"})
+	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "is a sealed login (aws-sso)") {
+		t.Fatalf("vault set on a sealed login: %v", err)
+	}
+}

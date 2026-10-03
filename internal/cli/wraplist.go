@@ -328,6 +328,11 @@ func applyAWSSSOState(row *wrapToolJSON, home string) {
 			row.SSOProfiles = append(row.SSOProfiles, l.Profile)
 		}
 	}
+	// No profile fetches through jit any more (an undo put the originals
+	// back): there is no sealed sign-in to be signed in or out of here.
+	if len(row.SSOProfiles) == 0 {
+		return
+	}
 	if root, err := vaultRootDir(); err == nil {
 		if signedIn, known := migrate.AWSSSOSignedIn(root); known {
 			row.SSOSignedIn = &signedIn

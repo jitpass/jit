@@ -110,7 +110,7 @@ name it: `jit scan --deep ~/scripts`.
 
 ```console
 $ jit scan --deep
-🔐 Touch ID required: approve the prompt on your Mac to continue...
+🔐 approve the prompt on your Mac (Touch ID or password) to continue...
 jit scan  ~/ · 11,884 files · 4.1s
   deep scan: 14 vault secrets checked for exact copies in the open
 ```

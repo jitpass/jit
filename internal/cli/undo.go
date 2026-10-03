@@ -311,8 +311,13 @@ func restoreCurrentAWSSSOLogin(out io.Writer, v *vault.Vault, home string, recs 
 	if sealed, err := migrate.AWSSSOSealed(v); err != nil || !sealed {
 		return
 	}
-	if _, err := migrate.UnsealAWSSSOCache(v, home, true); err != nil {
+	written, err := migrate.UnsealAWSSSOCache(v, home, true)
+	if err != nil {
 		fmt.Fprintf(out, "  warning: the AWS login came back as of sealing, not the current one: %v\n", err)
+		return
+	}
+	if signedIn, _ := migrate.AWSSSOSignedIn(v.Root); !signedIn || len(written) == 0 {
+		fmt.Fprintln(out, "  no AWS login was written back: the sealed one was signed out")
 		return
 	}
 	fmt.Fprintln(out, "  the AWS login written back is the current one from the vault")
@@ -334,8 +339,13 @@ func restoreCurrentToolStores(out io.Writer, v *vault.Vault, home string, recs [
 		if sealed, err := s.Sealed(v); !touched || err != nil || !sealed {
 			continue
 		}
-		if _, err := s.RestoreCurrent(v, home); err != nil {
+		written, err := s.RestoreCurrent(v, home)
+		if err != nil {
 			fmt.Fprintf(out, "  warning: %s came back as of sealing, not the current one: %v\n", s.Label, err)
+			continue
+		}
+		if len(written) == 0 {
+			fmt.Fprintf(out, "  no %s login was written back: the sealed one was signed out\n", s.Tool)
 			continue
 		}
 		fmt.Fprintf(out, "  %s written back is the current one from the vault\n", s.Label)

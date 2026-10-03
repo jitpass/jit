@@ -217,7 +217,11 @@ func ApplyAWSSSO(v *vault.Vault, home string, profiles []string, tracker *Backup
 		command := fmt.Sprintf("%s aws-sso --profile %s", quoteIfNeeded(jitPath), quoteIfNeeded(p))
 		lines = upsertINIValue(lines, section, "credential_process", command)
 	}
-	if err := writeThroughLink(configPath, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n" // config files end in one; parseINILines drops it
+	}
+	if err := writeThroughLink(configPath, []byte(out), 0o600); err != nil {
 		return res, fmt.Errorf("writing %s: %w", configPath, err)
 	}
 	res.Profiles = profiles
@@ -244,6 +248,20 @@ func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
 	}
 	if err := v.SetWithMeta(AWSSSOStorePath, blob, meta); err != nil {
 		return fmt.Errorf("storing the AWS sign-in in the vault: %w", err)
+	}
+	// No history: a signed-out session's refresh token (an `aws login`
+	// one has no server-side revoke) must not survive in it
+	// (ToolStore.store's reasoning).
+	if err := v.ForgetHistory(AWSSSOStorePath); err != nil {
+		return err
+	}
+	if !blobHasAWSSSOToken(blob) {
+		// Signed out: the seal-day cache backups go too, or `jit migrate
+		// undo` would write the signed-out login back (ToolStore.store's
+		// reasoning).
+		if err := dropLoginBackups(v, func(p string) bool { return IsAWSSSOCacheFile(home, p) }); err != nil {
+			return err
+		}
 	}
 	return writeAWSSSOState(v.Root, blob)
 }
