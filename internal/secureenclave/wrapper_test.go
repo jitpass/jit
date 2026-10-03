@@ -22,6 +22,27 @@ import (
 // would leak a MEK per unlock without failing anything else.
 var _ agent.ClosableFetcher = (*Wrapper)(nil)
 
+// The service closes an unlock prompt whose caller exited only through a
+// fetcher that can cancel (agent.cancelWhenCallerGone asserts this method):
+// a Wrapper without it would leave the enclave's dialog up for no one, as
+// the keychain's did before 2.4.1.
+func TestWrapperCancelsAnOpenInProgress(t *testing.T) {
+	orig := cancelEnclaveOpen
+	t.Cleanup(func() { cancelEnclaveOpen = orig })
+	called := false
+	cancelEnclaveOpen = func() { called = true }
+	var f agent.MEKFetcher = NewTesting(t.TempDir(), testTag)
+	canceler, ok := f.(interface{ CancelChallenge() })
+	if !ok {
+		t.Fatal("the enclave Wrapper cannot cancel a prompt")
+	}
+	canceler.CancelChallenge()
+	if !called {
+		t.Fatal("CancelChallenge did not reach the enclave open")
+	}
+	cancelOpen() // nothing in progress: a no-op, never a crash
+}
+
 const testTag = "com.jitpass.vault.kek.TEST-ONLY"
 
 func testMEK(t *testing.T) []byte {

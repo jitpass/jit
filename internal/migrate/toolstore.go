@@ -5,6 +5,7 @@ package migrate
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -61,7 +62,9 @@ type ToolStore struct {
 	// back to disk somewhere else.
 	RunEnv []string
 	// Accounts names the accounts a store is signed in to, sorted, so a
-	// reseal can tell a routine refresh from a login or a sign-out.
+	// reseal can tell a routine refresh from a login or a sign-out, and a
+	// listing can tell a signed-out store from a sealed login. nil means
+	// any non-empty store is signed in.
 	Accounts func(blob []byte) []string
 }
 
@@ -398,6 +401,9 @@ func (s ToolStore) store(v *vault.Vault, home string, blob []byte) error {
 	if err := v.ForgetHistory(s.VaultPath); err != nil {
 		return err
 	}
+	if err := writeLoginState(s.statePath(v.Root), s.HoldsLogin(blob)); err != nil {
+		return err
+	}
 	if sealstore.Empty(blob) {
 		// Signed out: the seal-day backups hold the login too, and an undo
 		// would write it back to disk (release QA: a signed-out `aws login`
@@ -405,6 +411,58 @@ func (s ToolStore) store(v *vault.Vault, home string, blob []byte) error {
 		return dropLoginBackups(v, func(p string) bool { return s.IsStoreFile(home, p) })
 	}
 	return nil
+}
+
+// HoldsLogin reports whether blob holds a login: an account, not just the
+// files a sign-out leaves behind (gcloud keeps an emptied credentials.db,
+// az an MSAL cache with no accounts).
+func (s ToolStore) HoldsLogin(blob []byte) bool {
+	if s.Accounts != nil {
+		return len(s.Accounts(blob)) > 0
+	}
+	return !sealstore.Empty(blob)
+}
+
+func (s ToolStore) statePath(root string) string {
+	return filepath.Join(root, "stores", s.Name+".json")
+}
+
+// SignedIn reports, prompt-free, whether the vault's copy of the store holds
+// a login: known is false when no write since 2.4.1 recorded it (a store
+// sealed by an older jit reads as unknown until its next reseal).
+func (s ToolStore) SignedIn(root string) (signedIn, known bool) {
+	return readLoginState(s.statePath(root))
+}
+
+// loginState is the one fact about a sealed login a listing may know
+// without decrypting it: whether it holds a login at all. Not secret.
+// Written beside every write of the sealed login by that write's only
+// writer (ToolStore.store, StoreAWSSSOCache), so the two cannot disagree.
+type loginState struct {
+	SignedIn bool `json:"signed_in"`
+}
+
+func writeLoginState(path string, signedIn bool) error {
+	data, err := json.Marshal(loginState{SignedIn: signedIn})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return atomicfile.WriteFileMode(path, data, 0o600)
+}
+
+func readLoginState(path string) (signedIn, known bool) {
+	data, err := os.ReadFile(path) // #nosec G304 -- jit's own file under its root
+	if err != nil {
+		return false, false
+	}
+	var state loginState
+	if json.Unmarshal(data, &state) != nil {
+		return false, false
+	}
+	return state.SignedIn, true
 }
 
 // dropLoginBackups deletes every recorded backup of a file a sealed login is

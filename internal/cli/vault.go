@@ -68,7 +68,7 @@ var requireUserPresence = func(reason string) error {
 	if err != nil {
 		return err
 	}
-	return ks.NewWrapper().RequireUserPresence(reason)
+	return awaitApproval(func() error { return ks.NewWrapper().RequireUserPresence(reason) })
 }
 
 // vaultListResult is jit vault list's --format json shape (GAPS.md #22).
@@ -1704,7 +1704,8 @@ var vaultRestoreCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault restore: %w", err)
 		}
-		if err := ks.NewWrapper().RequireUserPresence(fmt.Sprintf("restore a previous version of %q", args[0])); err != nil {
+		reason := fmt.Sprintf("restore a previous version of %q", args[0])
+		if err := awaitApproval(func() error { return ks.NewWrapper().RequireUserPresence(reason) }); err != nil {
 			return fmt.Errorf("jit vault restore: %w", err)
 		}
 		v, err := openVaultReadOnly()
@@ -3040,7 +3041,7 @@ func requireFreshUserPresence(v *vault.Vault, reason string) error {
 	// Said before blocking, as the service path says it: a command that
 	// printed its plan and then sat silent looked hung (release QA).
 	announceTouchIDWait()
-	if err := presence.RequireUserPresence(reason); err != nil {
+	if err := awaitApproval(func() error { return presence.RequireUserPresence(reason) }); err != nil {
 		return err
 	}
 	invocationAuth = freshUserPresenceMethod

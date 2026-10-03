@@ -66,6 +66,11 @@ type wrapToolJSON struct {
 	// of every family member reads (one `use` event per run, labelled with
 	// it), since a store row has no injects to count reads by.
 	StorePath string `json:"store_path,omitempty"`
+	// StoreSignedIn (a wrapped store row only) says whether the sealed
+	// store holds a login, nil when no reseal since 2.4.1 recorded it. A
+	// `gcloud auth revoke` or `az logout` leaves a sealed but signed-out
+	// store: wrapped, with nothing in it to protect. Prompt-free.
+	StoreSignedIn *bool `json:"store_signed_in,omitempty"`
 	// SSOProfiles (the aws row only) are the AWS profiles fetching through
 	// `jit aws-sso`, and SSOSignedIn whether the vault holds an AWS SSO
 	// login, nil when none was ever sealed. Both prompt-free: what the app
@@ -156,6 +161,7 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 		case entry.IsStore():
 			row.Kind, row.Store = "store", entry.Store
 			row.StorePath, _ = migrate.StoreVaultPath(entry.Store)
+			row.StoreSignedIn = storeSignedIn(entry.Store)
 		default:
 			row.Profile = entry.Profile
 			row.Injects = wrapInjectsFromProfile(home, entry, store)
@@ -318,6 +324,22 @@ func (l *wrapVaultLookup) classCount(class string) int {
 		}
 	}
 	return l.counts[class]
+}
+
+// storeSignedIn reads a tool store's login state, nil when unknown.
+func storeSignedIn(name string) *bool {
+	s, ok := migrate.ToolStoreNamed(name)
+	if !ok {
+		return nil
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil
+	}
+	if signedIn, known := s.SignedIn(root); known {
+		return &signedIn
+	}
+	return nil
 }
 
 // applyAWSSSOState fills the aws row's SSO fields from ~/.aws/config's

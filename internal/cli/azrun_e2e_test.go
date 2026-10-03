@@ -288,7 +288,25 @@ func TestAzRunE2E(t *testing.T) {
 	}
 	noPlaintext()
 
-	// 4. Sign-out: the store empties, and the run says so.
+	// 4. `az logout` signs out the active account only (the service
+	//    principal): the user is still signed in. A second one, by name,
+	//    drops the last account and keeps the cache file: signed out,
+	//    though the store is not empty.
+	run("logout")
+	if got := storeSignedIn("az"); got == nil || !*got {
+		t.Fatalf("one account left: %s, want signed in", signedInState(got))
+	}
+	if stderr := run("logout", "--username", "dev@example.com"); !strings.Contains(stderr, "signed out") {
+		t.Fatalf("the last az logout said %q", stderr)
+	}
+	if got := storeSignedIn("az"); got == nil || *got {
+		t.Fatalf("after the last az logout: %s, want signed out", signedInState(got))
+	}
+	if blob, _, _ := migrate.AzureStore.ReadSealed(v); sealstore.Empty(blob) {
+		t.Fatal("az logout emptied the store; this step no longer covers a signed-out cache")
+	}
+
+	// 5. `az account clear`: the store empties, and the run says so.
 	if stderr := run("account", "clear"); !strings.Contains(stderr, "signed out") {
 		t.Fatalf("sign-out said %q", stderr)
 	}

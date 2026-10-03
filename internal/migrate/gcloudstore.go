@@ -5,6 +5,8 @@ package migrate
 
 import (
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
@@ -34,7 +36,36 @@ var GcloudStore = ToolStore{
 	// the run links to: `gcloud auth print-access-token` left its token in
 	// ~/.config/gcloud/logs for 30 days (release QA). File logging is off
 	// for a wrapped run; --verbosity still prints to the terminal.
-	RunEnv: []string{"CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true"},
+	RunEnv:   []string{"CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true"},
+	Accounts: gcloudAccounts,
+}
+
+// gcloudAccounts lists a store's accounts by their legacy_credentials/
+// folders: gcloud writes one per account at a login or activate and deletes
+// it at a revoke. credentials.db is no witness: a revoke deletes the row,
+// but SQLite leaves the revoked token's bytes in the file's free pages
+// (checked against gcloud 587.0.0, 2026-10-03), so a byte search would call a
+// signed-out store signed in. gcloud writes the folder for every credential
+// it stores but a GCE VM's metadata login (credentials/store.py, Store),
+// which a Mac never has.
+func gcloudAccounts(blob []byte) []string {
+	files, err := sealstore.Files(blob)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for name := range files {
+		rest, ok := strings.CutPrefix(name, "legacy_credentials/")
+		if account, _, nested := strings.Cut(rest, "/"); ok && nested && account != "" {
+			seen[account] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for account := range seen {
+		out = append(out, account)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GcloudConfigDir is the gcloud config dir jit seals: the default one.

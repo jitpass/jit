@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests use the real enclave. They run only inside a test binary that
@@ -172,6 +173,52 @@ func TestHardwarePresenceKeyAsksOncePerWrapper(t *testing.T) {
 	}
 	if _, err := w.FetchMEK("must not show"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The dialog closes when the service cancels it (a caller that exited):
+// the open fails within moments, and nothing is cached. Interactive, since
+// the dialog must actually be up; leave it unanswered.
+//
+//	JIT_SE_INTERACTIVE=1 scripts/se-test.sh -test.run TestHardwareCancelClosesTheDialog
+func TestHardwareCancelClosesTheDialog(t *testing.T) {
+	needSignedBundle(t)
+	if os.Getenv("JIT_SE_INTERACTIVE") != "1" {
+		t.Skip("shows a Touch ID dialog: set JIT_SE_INTERACTIVE=1")
+	}
+	tag := hardwareTag(t)
+	h := hardware{tag: tag, group: AccessGroup, presence: true}
+	t.Cleanup(func() { _ = h.remove() })
+	w := newWrapper(t.TempDir(), tag, func(tag string) enclave {
+		if !strings.Contains(tag, "TEST-ONLY") {
+			t.Fatalf("hardware test built key %q", tag)
+		}
+		return hardware{tag: tag, group: AccessGroup, presence: true}
+	})
+	if err := w.Install(testMEK(t)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.FetchMEK("check that jit closes this dialog by itself (leave it; jit test)")
+		done <- err
+	}()
+	time.Sleep(2 * time.Second) // the dialog is up
+	w.CancelChallenge()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the open succeeded after the cancel; was the dialog answered?")
+		}
+		t.Logf("closed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dialog was still up 5s after the cancel")
+	}
+	w.mu.Lock()
+	cached := w.mek != nil
+	w.mu.Unlock()
+	if cached {
+		t.Fatal("a canceled open cached the key")
 	}
 }
 
