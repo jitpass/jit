@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -449,5 +450,29 @@ func TestStreamlitMigratableHookFlipsUnrewritableFiles(t *testing.T) {
 	nilHook := find(Config{HomeDir: home})
 	if nilHook.Remedy != RemedyMigrate {
 		t.Errorf("nil hook must keep the pre-hook optimistic remedy, got %q", nilHook.Remedy)
+	}
+}
+
+// A tool-minted login says so in the stream: what the human report's
+// uncounted block shows, as a field, so a consumer leaves it out of the
+// to-dos and the count the way secrets_total does. A login jit can fix
+// never carries it.
+func TestToolMintedFindingsAreMarked(t *testing.T) {
+	home := t.TempDir()
+	findings := []Finding{
+		{FindingType: FindingTypeCredentialFile, FilePath: filepath.Join(home, ".kube", "gke_gcloud_auth_plugin_cache"), Severity: SeverityHigh},
+		{FindingType: FindingTypeCredentialFile, FilePath: filepath.Join(home, ".azure", "msal_token_cache.json"), Severity: SeverityHigh, Remedy: RemedyWrap, FixCommand: "jit wrap az"},
+	}
+	annotateRemedies(findings, home, nil, nil)
+	gke, az := findings[0], findings[1]
+	if gke.ToolMinted == nil || gke.ToolMinted.Title == "" || gke.ToolMinted.Advice == "" || CountedAsSecret(gke) {
+		t.Fatalf("GKE plugin cache: tool_minted %+v counted %v", gke.ToolMinted, CountedAsSecret(gke))
+	}
+	if az.ToolMinted != nil || !CountedAsSecret(az) {
+		t.Fatalf("a login `jit wrap az` fixes was marked tool-minted: %+v", az.ToolMinted)
+	}
+	b, _ := json.Marshal(gke)
+	if !strings.Contains(string(b), `"tool_minted":{"title":`) {
+		t.Fatalf("not serialized: %s", b)
 	}
 }

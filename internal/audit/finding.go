@@ -237,7 +237,14 @@ import (
 // in the same file. Counted in the ledger as one exposed secret per value
 // (the same cause_group for every copy of it); the protected count is not
 // reduced, so the score falls by the copy, not by the vaulted entry.
-const SchemaVersion = "0.25.0"
+//
+// 0.26.0: a finding in a login a CLI mints for itself (an OAuth refresh
+// token the tool rewrites on every refresh, which jit cannot seal: kubelogin
+// on its disk cache, an `aws login` session no profile uses, the GKE auth
+// plugin's cache, ~/.mcp-auth) carries `tool_minted` {title, advice}. Such
+// findings were already left out of `secrets_total` since 2026-09-11; the
+// field is what lets a consumer leave them out too.
+const SchemaVersion = "0.26.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -594,6 +601,21 @@ type Finding struct {
 	// human report does, without parsing prose. Since 0.21.0.
 	Agent     string `json:"agent,omitempty"`
 	CacheArea string `json:"cache_area,omitempty"`
+
+	// ToolMinted is set on a login a CLI mints and rewrites for itself, an
+	// OAuth refresh token jit cannot seal (selfRotatingCaches): reported,
+	// but left out of the ledger, as the human report's uncounted "rotates
+	// itself" block shows it. Without it a consumer could not tell such a
+	// finding from a manual one it must count and list as a to-do. Since
+	// 0.26.0.
+	ToolMinted *ToolMintedLogin `json:"tool_minted,omitempty"`
+}
+
+// ToolMintedLogin is what the report says about a tool-minted login: what
+// the file is, and what to do if it was exposed.
+type ToolMintedLogin struct {
+	Title  string `json:"title"`
+	Advice string `json:"advice"`
 }
 
 // claimedValue is one credential a file-level scanner parsed and judged real
