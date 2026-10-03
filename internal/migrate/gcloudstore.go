@@ -30,6 +30,11 @@ var GcloudStore = ToolStore{
 	ConfigEnv:  "CLOUDSDK_CONFIG",
 	Provenance: "credentials.db",
 	DirMode:    0o755, // gcloud's own mode for its config dir; the store files inside are 0600
+	// gcloud logs every command, output included, under the settings dir
+	// the run links to: `gcloud auth print-access-token` left its token in
+	// ~/.config/gcloud/logs for 30 days (release QA). File logging is off
+	// for a wrapped run; --verbosity still prints to the terminal.
+	RunEnv: []string{"CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true"},
 }
 
 // GcloudConfigDir is the gcloud config dir jit seals: the default one.

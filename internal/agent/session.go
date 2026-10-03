@@ -6,7 +6,11 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -283,7 +287,11 @@ func (s *Server) discloseChallengeFull(reasonFor func(unlocking bool) string, op
 	s.mu.Unlock()
 
 	fetcher := s.newFetcher()
+	stopWatch := cancelWhenCallerGone(fetcher, c)
 	mek, err := fetcher.FetchMEK(reason)
+	if callerGone := stopWatch(); callerGone && err != nil {
+		err = errCallerGone
+	}
 	// The fetcher's own cache is pure residue once FetchMEK has returned its
 	// copy. Closing it here matters more than on the unlock path: every
 	// consent prompt comes through here, so this is the site that leaked a
@@ -296,6 +304,7 @@ func (s *Server) discloseChallengeFull(reasonFor func(unlocking bool) string, op
 	if err != nil {
 		event.Kind = KindDenied
 		event.Cause = fmt.Sprintf("%s: %s", reason, err)
+		event.Unanswered = promptUnanswered(err)
 	} else {
 		event.Kind = KindApproved
 		event.Cause = reason
@@ -612,7 +621,11 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	s.mu.Unlock()
 
 	fetcher := s.newFetcher()
+	stopWatch := cancelWhenCallerGone(fetcher, c)
 	mek, err := fetcher.FetchMEK(reason)
+	if callerGone := stopWatch(); callerGone && err != nil {
+		err = errCallerGone
+	}
 	// The MEK we keep is the copy FetchMEK returned; the fetcher's own cache
 	// has served its purpose the moment we have it.
 	closeFetcher(fetcher)
@@ -628,6 +641,7 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 		event := unlockEvent(op, c)
 		event.Kind = KindDenied
 		event.Cause = err.Error()
+		event.Unanswered = promptUnanswered(err)
 		event.AuthMethod = s.authMethod()
 		if label != "" {
 			event.Labels = []string{label}
@@ -1047,4 +1061,57 @@ func (s *Server) remainingLocked() time.Duration {
 		}
 	}
 	return remaining
+}
+
+// promptUnanswered reports whether a failed challenge timed out with nobody
+// answering, rather than being refused. Matched on the text keychainwrap's
+// challenge returns (keychain.m), since this package does not import it.
+func promptUnanswered(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "not answered within") || errors.Is(err, errCallerGone))
+}
+
+// cancelWhenCallerGone closes a prompt whose caller has exited (a `jit
+// aws-sso` an SDK killed, a Ctrl-C'd `jit unlock`): otherwise it stays on
+// screen for no one, up to its 2-minute timeout, and every later prompt
+// queues behind it (release QA). Only a fetcher that can cancel takes part
+// (the keychain one); a caller with no pid is never watched. Returns the
+// stop function to call once the challenge is over.
+func cancelWhenCallerGone(f MEKFetcher, c *caller) func() bool {
+	canceler, ok := f.(interface{ CancelChallenge() })
+	if !ok || c == nil || c.pid <= 0 {
+		return func() bool { return false }
+	}
+	done := make(chan struct{})
+	var canceled atomic.Bool
+	go func() {
+		t := time.NewTicker(callerWatchInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if !processAlive(c.pid) {
+					canceled.Store(true)
+					canceler.CancelChallenge()
+					return
+				}
+			}
+		}
+	}()
+	return func() bool { close(done); return canceled.Load() }
+}
+
+// errCallerGone is a challenge closed because its caller exited: nobody
+// refused it, so it is recorded as unanswered (promptUnanswered).
+var errCallerGone = errors.New("the prompt was closed: the process that asked exited, so it was not answered")
+
+// callerWatchInterval is how often cancelWhenCallerGone looks.
+var callerWatchInterval = 250 * time.Millisecond
+
+// processAlive reports whether pid still runs. EPERM means it does, as
+// someone else's.
+func processAlive(pid int32) bool {
+	err := syscall.Kill(int(pid), 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

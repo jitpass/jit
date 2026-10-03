@@ -17,11 +17,29 @@ static char *dupNSString(NSString *s) {
     return strdup(utf8);
 }
 
+// The context kw_challenge has up, for kw_cancel_challenge. One at a time:
+// the service serializes its challenges.
+static LAContext *kwCurrent = nil;
+static NSObject *kwCurrentLock = nil;
+
+static NSObject *currentLock(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ kwCurrentLock = [[NSObject alloc] init]; });
+    return kwCurrentLock;
+}
+
+void kw_cancel_challenge(void) {
+    @synchronized(currentLock()) {
+        [kwCurrent invalidate];
+    }
+}
+
 KWResult kw_challenge(const char *reason) {
     KWResult r = {0, NULL};
     @autoreleasepool {
         NSString *reasonStr = [NSString stringWithUTF8String:reason];
         LAContext *ctx = [[LAContext alloc] init];
+        @synchronized(currentLock()) { kwCurrent = ctx; }
 
         __block int done = 0;
         __block BOOL approved = NO;
@@ -45,6 +63,9 @@ KWResult kw_challenge(const char *reason) {
             [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
         }
 
+        @synchronized(currentLock()) {
+            if (kwCurrent == ctx) kwCurrent = nil;
+        }
         if (!done) {
             // Close the sheet jit stopped waiting for. Left open, it stays
             // on screen (or behind other windows) with no one waiting on it,

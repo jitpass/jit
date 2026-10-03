@@ -65,9 +65,10 @@ wrap did.
   again.
 - Only the default config folder is sealed. With `CLOUDSDK_CONFIG` set to
   another folder, gcloud runs without jit and says so.
-- gcloud logs every command's arguments in `~/.config/gcloud/logs`, so a
-  token typed on a gcloud command line stays there for 30 days, and so does
-  the hour-long access token `gcloud auth print-access-token` prints. Sealing
+- A wrapped gcloud writes no log files (`CLOUDSDK_CORE_DISABLE_FILE_LOGGING`,
+  unless you set it yourself): its logs record commands and their output,
+  tokens included, for 30 days. Logs from before the wrap stay in
+  `~/.config/gcloud/logs`; `jit scan` reports any token in them. Sealing
   doesn't touch the logs; `jit scan` reports any token in them.
 - `jit doctor` reports a folder a killed run left behind, and a plaintext
   login that came back while gcloud is wrapped.

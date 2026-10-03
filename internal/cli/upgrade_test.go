@@ -79,6 +79,10 @@ func TestVersionNewer(t *testing.T) {
 		{"v0.41.0", "v0.41.0+dirty", false}, // same version, build suffix ignored — --force reinstalls if wanted
 		{"v0.41.0", "v0.40.0+dirty", true},  // a lower dirty build still gets the offer
 		{"v0.41.0", "0.41.0", false},
+		{"v2.4.0", "2.4.0-rc6", true},      // a release candidate is offered its release
+		{"v2.4.0-rc6", "2.4.0", false},     // never "upgrade" a release to its candidate
+		{"v2.4.0-rc10", "2.4.0-rc9", true}, // rc numbers compare as numbers
+		{"v2.4.0", "2.4.0+dirty", false},   // build metadata is not a pre-release
 	}
 	for _, c := range cases {
 		if got := versionNewer(c.latest, c.current); got != c.want {

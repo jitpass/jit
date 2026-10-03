@@ -56,6 +56,10 @@ type ToolStore struct {
 	// vault's copy when another run sealed in between. nil means the run's
 	// store replaces it.
 	Merge func(base, current, after []byte) ([]byte, error)
+	// RunEnv is set in each run's environment unless the caller already
+	// sets the variable: what keeps the unsealed tool from writing a token
+	// back to disk somewhere else.
+	RunEnv []string
 	// Accounts names the accounts a store is signed in to, sorted, so a
 	// reseal can tell a routine refresh from a login or a sign-out.
 	Accounts func(blob []byte) []string

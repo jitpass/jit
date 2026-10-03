@@ -862,6 +862,10 @@ type SessionEvent struct {
 	// (the build), on denied events (why the challenge failed), and on
 	// approved events (the wording the human read on the prompt).
 	Cause string `json:"cause,omitempty"`
+	// Unanswered, on a denied event, says nobody answered the prompt before
+	// it timed out: no one said no. The kind stays denied (consumers filter
+	// on it); this is what lets a reader tell the two apart.
+	Unanswered bool `json:"unanswered,omitempty"`
 	// Labels are the caller-reported secret names this event touched
 	// (Request.Label) — "what was read", the one fact kernel provenance
 	// structurally cannot supply, since the agent only ever sees opaque

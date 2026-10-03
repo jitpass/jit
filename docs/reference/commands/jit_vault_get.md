@@ -11,7 +11,7 @@ scrollback and any output capture (tmux, script, CI logs). Prefer
 On a terminal, one metadata line follows on stderr: when the
 secret was last updated, which profiles reference it, and the config
 file its migration recorded as the source. Piped or redirected output
-receives the value only, never the footer.
+receives exactly the value: no footer, no trailing newline.
 
 --json prints an object with the value and the envelope's provenance
 (class, group, origin) and timestamps instead of the bare value.

@@ -462,3 +462,22 @@ func TestUndoRestoresTheCurrentAWSSSOLogin(t *testing.T) {
 		t.Fatalf("undo left the seal-day token: %q (%s)", b, out.String())
 	}
 }
+
+// An unwrapped store's vault copy is not "lost" by a purge: the tool has its
+// login on disk again.
+func TestSealedLoginOnDisk(t *testing.T) {
+	home := t.TempDir()
+	if sealedLoginOnDisk(home, migrate.AzureStorePath) {
+		t.Fatal("no login on disk, yet reported there")
+	}
+	dir := migrate.AzureConfigDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "msal_token_cache.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !sealedLoginOnDisk(home, migrate.AzureStorePath) || sealedLoginOnDisk(home, "myapp/API_KEY") {
+		t.Fatal("wrong answer for the az store or an ordinary secret")
+	}
+}

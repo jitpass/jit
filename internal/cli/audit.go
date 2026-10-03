@@ -918,6 +918,11 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 			kv{"level", "warn"}, kv{"kind", "unlock"}, kv{"status", "denied"},
 			kv{"method", authMethodSlug(e)})
 		subject = "unlock DENIED (" + authMethodLabel(e) + ")"
+		if e.Unanswered {
+			// Nobody said no: the prompt timed out unanswered.
+			subject = "unlock UNANSWERED (" + authMethodLabel(e) + ")"
+			pairs = append(pairs, kv{"unanswered", "true"})
+		}
 		detail = e.Cause
 		if e.Cause != "" {
 			pairs = append(pairs, kv{"reason", e.Cause})

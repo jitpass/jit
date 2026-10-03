@@ -694,6 +694,13 @@ func probeInKeychain(path, service, account string, which int, withoutUI bool) i
 	return int32(C.kw_probe_in_keychain(cp, cs, ca, C.int(which), w))
 }
 
+// CancelChallenge closes a prompt this process has up, if any; a no-op
+// otherwise. The service calls it when the process that asked for the prompt
+// has exited (agent.cancelWhenCallerGone).
+func (w *Wrapper) CancelChallenge() {
+	C.kw_cancel_challenge()
+}
+
 func realChallenge(reason string) error {
 	cReason := C.CString(reason)
 	defer C.free(unsafe.Pointer(cReason))

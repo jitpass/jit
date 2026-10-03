@@ -352,7 +352,14 @@ func upsertINIValue(lines []string, section, key, value string) []string {
 
 	flushIfLeavingTarget := func(nextSection string) {
 		if current == section && sectionSeen && !written {
-			out = append(out, newLine)
+			// Before the blank lines that close the section, not after
+			// them: appended after, the key sat against the next header,
+			// apart from its own section.
+			at := len(out)
+			for at > 0 && strings.TrimSpace(out[at-1]) == "" {
+				at--
+			}
+			out = append(out[:at], append([]string{newLine}, out[at:]...)...)
 			written = true
 		}
 		current = nextSection
