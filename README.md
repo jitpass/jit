@@ -364,7 +364,9 @@ line is saved as normal and your shell never waits on it.
 **Supported:** `.env` files, shell exports, AWS and Terraform, kubeconfig,
 Docker registries, GCP ADC, `.npmrc` and `.netrc`, MCP configs, bare token
 files, tokens in your shell history, wrappable CLIs (`gh`, `stripe`, `vercel`
-and more) and SSO CLIs that mint credentials at login. The full list, with
+and more), SSO CLIs that mint credentials at login, and the logins CLIs keep
+for themselves: gcloud and the Azure CLI (`jit wrap gcloud`, `jit wrap az`),
+AWS SSO and `aws login` sessions, kubelogin's tokens (moved to the keychain). The full list, with
 exactly what to type for each, is **[Supported tools](./docs/tools.md)**;
 anything else can be wrapped with [`jit wrap add`](./docs/wrap/custom-tools.md).
 

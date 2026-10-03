@@ -122,8 +122,8 @@ func writeMarkdownFindings(w io.Writer, findings []Finding, summary ScanSummary,
 	// path, keep the generic pointer for a clean report, and print nothing
 	// when every finding is manual-remedy (a `jit migrate <path>` example
 	// would answer "Nothing to migrate").
-	if example := firstFindingPath(findings); example != "" {
-		fmt.Fprintf(w, "Run `jit migrate %s --dry-run` to see the guided fix plan for it.\n", example)
+	if fix := firstFixCommand(findings); fix != "" {
+		fmt.Fprintf(w, "Run `%s --dry-run` to see the plan for the first fix.\n", fix)
 	} else if len(findings) == 0 {
 		fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
 	}

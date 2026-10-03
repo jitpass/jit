@@ -2,6 +2,13 @@
 
 Unwrap a tool: remove its shim and wrap profile
 
+### Synopsis
+
+jit wrap undo removes a tool's shim and its wrap profile. For a CLI whose
+login jit sealed (gcloud and its family, az), it first writes the login
+back to the tool's own folder in plaintext (after a fresh Touch ID) and
+unwraps every tool that reads it; the vault copy is kept.
+
 ```
 jit wrap undo <tool> [flags]
 ```

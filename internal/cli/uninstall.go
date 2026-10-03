@@ -61,7 +61,8 @@ var uninstallCmd = &cobra.Command{
 		"By itself it does NOT put migrated files back.\n\n" +
 		"Add --restore for the whole way out: every file jit migrated on this Mac\n" +
 		"gets its secrets back as plaintext first, then the purge runs. Live mounts,\n" +
-		"pointer files and MCP configs are written from the CURRENT vault values; a\n" +
+		"pointer files, MCP configs and the CLI logins jit sealed (gcloud, the Azure\n" +
+		"CLI, AWS sign-ins) are written from the CURRENT vault values; a\n" +
 		"shell config has jit's export line turned back into export lines, in place,\n" +
 		"so nothing you added since is lost; any other file gets its content from\n" +
 		"before jit, and when it changed since, today's version is kept beside it as\n" +

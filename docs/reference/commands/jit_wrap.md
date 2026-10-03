@@ -10,12 +10,15 @@ process (via `jit run --profile wrap-<tool>`), never in a plaintext config
 file. Works in scripts, Makefiles, and tools spawning tools, anywhere the
 binary is invoked, not just interactive shells.
 
-Store the secret first (`jit vault set`), then describe the tool:
+A catalog tool is wrapped by name: `jit wrap gh`. For a CLI that keeps
+its own login (`jit wrap gcloud`, `jit wrap az`) the wrap seals that
+login in the vault instead, and each run unseals it for that one run.
+Any other tool: store the secret first (`jit vault set`), then
 `jit wrap add <tool> --env VAR=<vault-path>`. See docs/wrap/ for the
 catalog of known tools with automatic discovery.
 
 ```
-jit wrap [flags]
+jit wrap [<tool>] [flags]
 ```
 
 ### Options

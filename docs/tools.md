@@ -26,13 +26,15 @@ short prefix.
 own. You run them exactly as before:
 
 - **AWS**: the CLI and every SDK (boto3, aws-sdk-go, Terraform's AWS provider),
-  static keys and `aws sso login` logins alike. [aws](./migrate/aws.md)
+  static keys, `aws sso login` and `aws login` sessions alike.
+  [aws](./migrate/aws.md)
 - **Terraform**: `terraform login` / `logout` and provider auth.
   [terraform](./migrate/terraform.md)
 - **git**: `git push` / `fetch` over HTTPS, submodules, LFS. [git](./migrate/git.md)
 - **Docker**: `docker login` / `logout`, and compose/buildx registry pulls.
   [docker](./migrate/docker.md)
-- **kubectl**: and any kubeconfig-based client. [kubernetes](./migrate/kubernetes.md);
+- **kubectl**: and any kubeconfig-based client; kubelogin's OIDC tokens move
+  to the keychain. [kubernetes](./migrate/kubernetes.md);
   Secret manifests on disk are their own surface, see
   [Kubernetes Secret manifests](./migrate/kubernetes-secret-manifests.md)
 - **Shell exports**: your `~/.zshrc` vars, in every new shell. [shell configs](./migrate/shell-configs.md)
@@ -53,6 +55,11 @@ the token is injected per call.
 `gh`, `glab`, `stripe`, `ngrok`, `doctl`, `hcloud`, `flyctl`, `vercel`,
 `railway`, `databricks`, `hf`, `supabase`, `wrangler`, `sentry-cli`, `snyk`,
 `circleci`, `vault`, `pulumi`, `descope`, `okta-cli-client`, `snow`, `jira`.
+
+**CLIs that keep their own login:** `gcloud` (and `bq`, `gsutil` and its
+docker and git helpers) and `az`. `jit wrap gcloud` / `jit wrap az` moves the
+login itself into the vault, and each run unseals it for that one run.
+[gcloud](./wrap/gcloud.md) · [az](./wrap/az.md)
 
 The AI coding CLIs wrap the same way: `claude`, `codex`, `gemini`,
 `cursor-agent`, `copilot`, `cline`, `opencode`, `kiro-cli`, `openai`. Their

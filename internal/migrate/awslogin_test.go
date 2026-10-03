@@ -110,8 +110,18 @@ func TestCaptureLeavesAWSLoginSessions(t *testing.T) {
 
 func TestAWSSealedLoginArgs(t *testing.T) {
 	root := t.TempDir()
-	if _, err := AWSSealedLoginArgs(root, "dev", false); err == nil || !strings.Contains(err.Error(), "not sealed") {
-		t.Fatalf("nothing sealed: %v", err)
+	home := t.TempDir()
+	if _, err := AWSSealedLoginArgs(root, home, "dev", false); err == nil || !strings.Contains(err.Error(), `no profile "dev" in ~/.aws/config`) {
+		t.Fatalf("no such profile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(AWSConfigPath(home)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(AWSConfigPath(home), []byte("[profile dev]\nsso_session = corp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AWSSealedLoginArgs(root, home, "dev", false); err == nil || !strings.Contains(err.Error(), "isn't sealed yet; run `jit migrate ~/.aws/config`") {
+		t.Fatalf("an unsealed profile: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(AWSSSOSealedConfigPath(root)), 0o700); err != nil {
 		t.Fatal(err)
@@ -129,12 +139,12 @@ func TestAWSSealedLoginArgs(t *testing.T) {
 		{"sso", false, "sso login --profile sso"},
 		{"sso", true, "sso login --profile sso --use-device-code"},
 	} {
-		got, err := AWSSealedLoginArgs(root, c.profile, c.remote)
+		got, err := AWSSealedLoginArgs(root, home, c.profile, c.remote)
 		if err != nil || strings.Join(got, " ") != c.want {
 			t.Errorf("%s remote=%v: %q, %v", c.profile, c.remote, got, err)
 		}
 	}
-	if _, err := AWSSealedLoginArgs(root, "nope", false); err == nil {
+	if _, err := AWSSealedLoginArgs(root, home, "nope", false); err == nil {
 		t.Fatal("an unknown profile got a sign-in")
 	}
 }

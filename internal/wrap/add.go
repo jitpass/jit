@@ -123,6 +123,12 @@ func AddGrant(home, tool, mountName, jitBinary string) (AddResult, error) {
 	if err != nil {
 		return AddResult{}, err
 	}
+	// A store-wrapped tool's shim unseals its login per run. A grant entry
+	// in its place would run the tool with no login at all, so the wrap
+	// that is there must be undone first, deliberately.
+	if e, ok := manifest.Tools[tool]; ok && e.IsStore() {
+		return AddResult{}, fmt.Errorf("%s is wrapped with its login sealed (jit wrap %s); a grant-wrap would replace that and leave it signed out. Run `jit wrap undo %s` first if that is what you want", tool, e.Store, tool)
+	}
 	// Refuse to clobber a hand-written env profile for this tool that jit
 	// wrap doesn't manage — same guard Add applies.
 	if _, managed := manifest.Tools[tool]; !managed {

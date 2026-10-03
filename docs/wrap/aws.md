@@ -16,8 +16,8 @@ jit wrap aws
 ```
 
 routes to the same flow as [`jit migrate --only=aws`](../migrate/aws.md):
-the keys leave `~/.aws/credentials` for the vault, an `aws sso login` is
-sealed with its profiles in `~/.aws/config`, and everything fetches on
+the keys leave `~/.aws/credentials` for the vault, an `aws sso login` or
+`aws login` session is sealed with its profiles in `~/.aws/config`, and everything fetches on
 demand through `credential_process`. After that, **that file no longer
 holds the real value** - though the CLI can still cache credentials it
 mints for itself, which

@@ -21,7 +21,7 @@ jit aws-sso login --profile <name> [flags]
 
 ```
       --profile string   the sealed AWS profile to sign in
-      --remote           sign in with a browser on another device (aws login --remote, aws sso login --use-device-code)
+      --remote           sign in with a browser on another device (over SSH)
 ```
 
 ### Options inherited from parent commands

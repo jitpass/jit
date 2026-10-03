@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -83,7 +84,7 @@ func runStoreRun(cmd *cobra.Command, s migrate.ToolStore, real string, args []st
 		// The user's own config dir elsewhere. Only the default is sealed
 		// (D7), so the tool runs as it would without jit — and says so.
 		if filepath.Clean(cfg) != filepath.Clean(dir) {
-			fmt.Fprintf(stderr, "jit: %s names %s, not the sealed %s; running %s without jit\n", s.ConfigEnv, cfg, dir, tool)
+			fmt.Fprintf(stderr, "jit: %s is %s, not %s; %s runs without jit\n", s.ConfigEnv, displayPath(home, cfg), displayPath(home, dir), tool)
 			return 0, execRealTool(s, real, args, tool)
 		}
 	}
@@ -104,7 +105,7 @@ func runStoreRun(cmd *cobra.Command, s migrate.ToolStore, real string, args []st
 		// Something logged in without the shim (an IDE calling the tool by
 		// absolute path). Use what is there rather than swap in an older
 		// vaulted login behind the user's back (D7), and say how to fix it.
-		fmt.Fprintln(stderr, hlCmds("jit: "+s.Label+" is back in plaintext in "+dir+"; run `jit wrap "+s.Name+"` to seal it again"))
+		fmt.Fprintln(stderr, hlCmds("jit: "+s.Label+" is in plaintext in "+displayPath(home, dir)+"; `jit wrap "+s.Name+"` seals it"))
 		return 0, execRealTool(s, real, args, tool)
 	}
 	for _, name := range ephemeral {
@@ -176,6 +177,12 @@ func materializeStore(s migrate.ToolStore, blob []byte, dir, runDir string) ([]b
 // A store that Rotates changes on every refresh, so its reseal is silent
 // unless a login came or went.
 func resealStoreRun(stderr io.Writer, s migrate.ToolStore, v vaultSetter, home, dir, runDir string, baseline, dek []byte) {
+	if _, err := os.Lstat(runDir); err != nil {
+		// The run's folder is gone (swept under it): packing nothing would
+		// read as a sign-out and seal an empty store over the login.
+		fmt.Fprintf(stderr, "jit: %s run folder went missing; the vault keeps the login it had\n", s.Tool)
+		return
+	}
 	after, err := s.Layout.Pack(runDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "jit: could not read %s store after the run: %v\n", s.Label, err)
@@ -185,8 +192,19 @@ func resealStoreRun(stderr io.Writer, s migrate.ToolStore, v vaultSetter, home, 
 	if bytes.Equal(after, baseline) {
 		return
 	}
+	refresh := s.Rotates && sameAccounts(s, baseline, after)
 	sealed, err := v.reseal(home, runDir, baseline, dek, after)
-	if err != nil {
+	switch {
+	case errors.Is(err, migrate.ErrResealBackup):
+		fmt.Fprintf(stderr, "jit: sealed %s; %v\n", s.Label, err)
+	case err != nil && refresh:
+		// Only a refreshed token was lost (a Touch ID declined after the
+		// screen locked mid-run): the vault still holds the login, and
+		// writing a 90-day refresh token to disk to save an hourly one is
+		// the wrong trade. The next run refreshes again.
+		fmt.Fprintf(stderr, "jit: the refreshed %s was not sealed (%v); the vault keeps the previous one\n", s.Label, err)
+		return
+	case err != nil:
 		fmt.Fprintf(stderr, "jit: could not seal %s: %v\n", s.Label, err)
 		rescueStore(stderr, s, dir, runDir)
 		return
@@ -194,27 +212,21 @@ func resealStoreRun(stderr io.Writer, s migrate.ToolStore, v vaultSetter, home, 
 	switch {
 	case sealstore.Empty(sealed):
 		fmt.Fprintf(stderr, "jit: %s is signed out; the vault holds no %s login now\n", s.Tool, s.Tool)
-	case s.Rotates && sealstore.Empty(baseline) == sealstore.Empty(after) && sameAccounts(baseline, after):
+	case refresh:
 		// A refresh: routine, and said nothing about before jit either.
 	default:
 		fmt.Fprintf(stderr, "jit: sealed %s into the vault; nothing was left in plaintext\n", s.Label)
 	}
 }
 
-// sameAccounts reports whether two stores hold the same set of files: a
-// refresh rewrites a file's tokens, a login or sign-out adds or drops one.
-func sameAccounts(a, b []byte) bool {
-	fa, errA := sealstore.Files(a)
-	fb, errB := sealstore.Files(b)
-	if errA != nil || errB != nil || len(fa) != len(fb) {
+// sameAccounts reports whether two stores are signed in to the same
+// accounts: a refresh rewrites tokens, a login or sign-out adds or drops
+// an account. An empty store is no account at all.
+func sameAccounts(s migrate.ToolStore, a, b []byte) bool {
+	if sealstore.Empty(a) || sealstore.Empty(b) || s.Accounts == nil {
 		return false
 	}
-	for name := range fa {
-		if _, ok := fb[name]; !ok {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(s.Accounts(a), s.Accounts(b))
 }
 
 // vaultSetter is the one vault operation resealStoreRun needs, so a test
@@ -249,7 +261,8 @@ func rescueStore(stderr io.Writer, s migrate.ToolStore, dir, runDir string) {
 			fmt.Fprintf(stderr, "jit: could not keep %s: %v\n", name, err)
 		}
 	}
-	fmt.Fprintln(stderr, hlCmds("jit: "+s.Label+" is in plaintext in "+dir+" for now; run `jit wrap "+s.Name+"` to seal it"))
+	home, _ := os.UserHomeDir()
+	fmt.Fprintln(stderr, hlCmds("jit: "+s.Label+" is in plaintext in "+displayPath(home, dir)+" for now; `jit wrap "+s.Name+"` seals it"))
 }
 
 // splitPlaintext reports which of the store's secret and ephemeral entries

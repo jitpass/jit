@@ -58,17 +58,18 @@ var awsSSOCmd = &cobra.Command{
 	Hidden:      true,
 	Annotations: map[string]string{helpVisibleAnnotation: "1"},
 	Short:       "Print AWS credential_process JSON for a sealed AWS profile",
-	Long: "Not typically run by hand: jit migrate rewrites each AWS SSO and `aws login`\n" +
-		"profile in ~/.aws/config to `credential_process = jit aws-sso --profile <name>`.\n" +
-		"The login lives in the vault; this unpacks it into a private folder for one\n" +
-		"run of `aws configure export-credentials` (AWS's own CLI does the refresh),\n" +
-		"seals it again if the run refreshed it, and prints the credentials. A login\n" +
-		"`aws sso login` just wrote to ~/.aws/sso/cache is moved into the vault first.\n" +
-		"Needs the AWS CLI v2 on PATH.",
+	Long: "Not run by hand: jit migrate points each AWS SSO and `aws login` profile\n" +
+		"in ~/.aws/config at `jit aws-sso --profile <name>`. The login lives in the\n" +
+		"vault; this unpacks it for one run of AWS's own `aws configure\n" +
+		"export-credentials`, which refreshes it, seals it again, and prints the\n" +
+		"credentials. A login `aws sso login` just wrote is moved into the vault\n" +
+		"first. Needs the AWS CLI v2 on PATH.\n\n" +
+		"Two subcommands are yours to run: `jit aws-sso login --profile <name>`\n" +
+		"signs a profile in again, and `jit aws-sso logout` signs out.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if awsSSOProfile == "" {
-			return fmt.Errorf("jit aws-sso: --profile is required")
+			return fmt.Errorf("jit aws-sso: --profile is required (~/.aws/config supplies it)")
 		}
 		// The service's cache first (D7): role credentials it holds in memory
 		// from an earlier fetch, served after the same consent an unseal
@@ -110,7 +111,11 @@ var awsSSOLoginCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit aws-sso login: %w", err)
 		}
-		loginArgs, err := migrate.AWSSealedLoginArgs(root, awsSSOLoginProfile, awsSSOLoginRemote)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("jit aws-sso login: %w", err)
+		}
+		loginArgs, err := migrate.AWSSealedLoginArgs(root, home, awsSSOLoginProfile, awsSSOLoginRemote)
 		if err != nil {
 			return fmt.Errorf("jit aws-sso login: %w", err)
 		}
@@ -141,10 +146,13 @@ var awsSSOLogoutCmd = &cobra.Command{
 		"empty.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// The service's cached role credentials go first, whatever the
+		// sign-out below does: a failed `aws sso logout` must not leave
+		// them served until the next lock.
+		clearAWSSSOCache()
 		if _, err := runAWSSSO(cmd.ErrOrStderr(), awsSSOInvocation{signOut: true}); err != nil {
 			return err
 		}
-		clearAWSSSOCache()
 		fmt.Fprintln(cmd.OutOrStdout(), "Signed out of AWS; the vault holds no AWS sign-in now.")
 		return nil
 	},
@@ -153,7 +161,7 @@ var awsSSOLogoutCmd = &cobra.Command{
 func init() {
 	awsSSOCmd.Flags().StringVar(&awsSSOProfile, "profile", "", "the AWS profile to fetch credentials for (supplied by ~/.aws/config)")
 	awsSSOLoginCmd.Flags().StringVar(&awsSSOLoginProfile, "profile", "", "the sealed AWS profile to sign in")
-	awsSSOLoginCmd.Flags().BoolVar(&awsSSOLoginRemote, "remote", false, "sign in with a browser on another device (aws login --remote, aws sso login --use-device-code)")
+	awsSSOLoginCmd.Flags().BoolVar(&awsSSOLoginRemote, "remote", false, "sign in with a browser on another device (over SSH)")
 	awsSSOCmd.AddCommand(awsSSOLoginCmd, awsSSOLogoutCmd)
 	rootCmd.AddCommand(awsSSOCmd)
 }
@@ -264,14 +272,26 @@ func awsSSOWithLogin(stderr io.Writer, v *vault.Vault, home, root, awsBin string
 	timeout := awsSSOTimeout
 	if inv.stdout != nil {
 		timeout = awsSSOLoginTimeout
-		// Ctrl-C is for the sign-in: it ends the AWS CLI (same process
-		// group), and jit lives on to seal what it left and clean up.
-		ints := make(chan os.Signal, 1)
-		signal.Notify(ints, os.Interrupt)
-		defer signal.Stop(ints)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	// A signal ends the AWS CLI, never jit before its cleanup: Ctrl-C on
+	// `aws s3 sync` reaches the inner CLI directly (same process group),
+	// and an SDK's SIGTERM to its credential_process is passed on by
+	// cancelling the run. Either way jit lives on to seal what the run left
+	// and remove the run folder, as forkAndWait does for the store runs.
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	go func() {
+		select {
+		case s := <-sigs:
+			if s != os.Interrupt {
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
 	var stdout bytes.Buffer
 	var runErr error
 	var errOut bytes.Buffer
@@ -288,14 +308,18 @@ func awsSSOWithLogin(stderr io.Writer, v *vault.Vault, home, root, awsBin string
 	}
 
 	// Reseal whatever the run left, success or not: a refresh that rotated
-	// the token before a later step failed has still spent the old one.
-	if after, err := migrate.AWSSSOLayout.Pack(awsDir); err == nil && !bytes.Equal(after, baseline) {
+	// the token before a later step failed has still spent the old one. A
+	// folder that went missing is skipped: packing nothing would read as a
+	// sign-out.
+	if _, err := os.Lstat(awsDir); err != nil {
+		fmt.Fprintln(stderr, "jit aws-sso: the run folder went missing; the vault keeps the login it had")
+	} else if after, err := migrate.AWSSSOLayout.Pack(awsDir); err == nil && !bytes.Equal(after, baseline) {
 		if err := migrate.StoreAWSSSOCache(v, home, after); err != nil {
 			fmt.Fprintf(stderr, "jit aws-sso: could not seal the refreshed login: %v\n", err)
 		}
 	}
 	if runErr != nil {
-		return nil, awsSSOError(inv.profile, errOut.String(), runErr)
+		return nil, awsSSOError(inv.profile, errOut.String(), runErr, ctx.Err(), timeout)
 	}
 	if args := inv.args; inv.profile != "" && len(args) > 1 && args[0] == "configure" && args[1] == "export-credentials" {
 		cacheAWSSSOCredentials(inv.profile, stdout.Bytes())
@@ -409,7 +433,7 @@ next:
 // awsSSOError turns the inner CLI's failure into what the caller should
 // do. The AWS CLI shows a credential_process's stderr in its own error, so
 // this sentence is what the user reads under `aws s3 ls`.
-func awsSSOError(profile, stderr string, runErr error) error {
+func awsSSOError(profile, stderr string, runErr, ctxErr error, timeout time.Duration) error {
 	msg := strings.TrimSpace(stderr)
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "error loading sso token") || strings.Contains(lower, "token for") && strings.Contains(lower, "does not exist") ||
@@ -421,8 +445,13 @@ func awsSSOError(profile, stderr string, runErr error) error {
 		}
 		return fmt.Errorf("jit aws-sso: no current AWS sign-in for this profile; run `%s`", login)
 	}
-	if errors.Is(runErr, context.DeadlineExceeded) {
-		return fmt.Errorf("jit aws-sso: the AWS CLI did not answer within %s", awsSSOTimeout)
+	// exec reports a context's end as the kill it caused ("signal:
+	// killed"), so the context itself says which it was.
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		return fmt.Errorf("jit aws-sso: the AWS CLI did not answer within %s", timeout)
+	}
+	if errors.Is(ctxErr, context.Canceled) {
+		return fmt.Errorf("jit aws-sso: interrupted; the login stays sealed")
 	}
 	if msg == "" {
 		return fmt.Errorf("jit aws-sso: aws %v", runErr)

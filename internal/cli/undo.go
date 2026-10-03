@@ -281,6 +281,7 @@ func migrateUndoRun(cmd *cobra.Command, args []string, report *undoReport) error
 	restoreErr := runRestores(out, home, latest, restoreOne)
 	if restoreErr == nil {
 		restoreCurrentAWSSSOLogin(out, v, home, latest)
+		restoreCurrentToolStores(out, v, home, latest)
 	}
 	// A restored loose secret file's dedicated vault secret is still there —
 	// undo reverses files, never the vault. Unlike a project secret it is
@@ -315,6 +316,30 @@ func restoreCurrentAWSSSOLogin(out io.Writer, v *vault.Vault, home string, recs 
 		return
 	}
 	fmt.Fprintln(out, "  the AWS login written back is the current one from the vault")
+}
+
+// restoreCurrentToolStores does for a tool store whose refresh token rotates
+// (the Azure CLI's) what restoreCurrentAWSSSOLogin does for AWS: the files
+// an undo just put back are the seal-day ones, so the vault's current copy
+// is written over them (design/azure-sealed-store.md A3).
+func restoreCurrentToolStores(out io.Writer, v *vault.Vault, home string, recs []migrate.BackupRecord) {
+	for _, s := range migrate.ToolStores() {
+		if !s.Rotates {
+			continue
+		}
+		touched := false
+		for _, rec := range recs {
+			touched = touched || s.IsStoreFile(home, rec.OriginalPath)
+		}
+		if sealed, err := s.Sealed(v); !touched || err != nil || !sealed {
+			continue
+		}
+		if _, err := s.RestoreCurrent(v, home); err != nil {
+			fmt.Fprintf(out, "  warning: %s came back as of sealing, not the current one: %v\n", s.Label, err)
+			continue
+		}
+		fmt.Fprintf(out, "  %s written back is the current one from the vault\n", s.Label)
+	}
 }
 
 // nudgeLooseRemainders prints, for each just-restored file that still has a

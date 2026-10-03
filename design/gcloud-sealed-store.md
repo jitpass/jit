@@ -5,7 +5,8 @@ Scope: vaulting the gcloud CLI's own login store (`credentials.db`,
 `legacy_credentials/`), the `jit gcloud-run` plumbing that materializes it
 for one command, the `store` wrap kind and its five shims, undo.
 Non-goals: minting tokens in jit (still deferred, `minting-broker.md` B),
-the AWS SSO cache and the Azure token cache (each needs its own spike), and
+the AWS SSO cache and the Azure token cache (each had its own spike and
+design since: `design/aws-sso-sealed.md`, `design/azure-sealed-store.md`), and
 application-default credentials, which `jit migrate` already vaults.
 
 Evidence: `spike/gcloud-sealed-config/FINDINGS.md` (E1–E9, SDK 587.0.0).
@@ -117,12 +118,17 @@ They share one wrap kind, `store`, and one manifest field (`Store:
 "gcloud"`). `jit wrap gcloud` installs all five whose real tool is on PATH.
 Each has its own catalog entry and docs page, as `plugins_doc_test` requires.
 
-**D9. Application-default credentials keep working inside the run.** The old
-`gcloud` wrap was a grant wrap (`jit run --with gcp`). When the gcp mount
-exists, `gcloud-run` registers the same grant on its own pid before forking,
-so the child (a descendant) gets the real ADC exactly as before. An existing
-grant-wrap manifest entry keeps working until the user re-runs
-`jit wrap gcloud`.
+**D9. Application-default credentials stay with the commands that use
+them.** The old `gcloud` wrap was a grant wrap (`jit run --with gcp`). As
+built, `gcloud auth application-default …` (the only gcloud command that
+reads ADC) still runs inside `jit run --with gcp` when the gcp mount
+exists, without unsealing the store; every other gcloud run unseals the
+store and gets no ADC grant. A program gcloud spawns that wants ADC gets
+it the way any program does: `jit run --with gcp`, or a grant-wrap of that
+program. (The design first had every run register the grant on its own
+pid; that was dropped as a second Touch ID on every gcloud call for a
+credential gcloud itself never reads.) An existing grant-wrap manifest
+entry keeps working until the user re-runs `jit wrap gcloud`.
 
 **D10. Sealing is a backed-up move.** `jit wrap gcloud` backs up each
 plaintext file (credentials.db, every file under legacy_credentials/,

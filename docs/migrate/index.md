@@ -226,8 +226,8 @@ Limit a run to specific categories with `--only`
 | `shell` | one secret per `export KEY=value` line | the export line replaced with `eval "$(jit export --profile ...)"` | [Shell configs](./shell-configs.md) |
 | `history` | one secret per distinct credential recorded in a shell history file (`~/.zsh_history`, `~/.bash_history`, `$HISTFILE`, fish) | every occurrence of the value replaced in place by a `<jit:redacted:VAR>` marker naming the vault entry; the command line itself, and every other byte of the file, untouched | [Shell history](./shell-history.md) |
 | `mcp` | one secret per server's env-block value | the server's `command` rewritten to launch via `jit run` | [MCP / AI tools](./mcp.md) |
-| `aws` | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config`; no file with the real value at all | [AWS](./aws.md) |
-| `kube` | the user's bearer token or cert/key pair | an `exec` block calling jit (client-go's exec-plugin protocol) | [Kubernetes](./kubernetes.md) |
+| `aws` | the profile's access key/secret/session token; an SSO or `aws login` profile's whole login | a `credential_process` line in `~/.aws/config`; no file with the real value at all | [AWS](./aws.md) |
+| `kube` | the user's bearer token or cert/key pair (kubelogin's OIDC tokens move to the keychain instead) | an `exec` block calling jit (client-go's exec-plugin protocol); kubelogin gets `--token-cache-storage=keyring` | [Kubernetes](./kubernetes.md) |
 | `k8s-secret` | one secret per `data:`/`stringData:` value, stored as the base64 string the manifest carries | a live-mounted pipe serving the manifest with placeholders; `jit run -- kubectl apply` gets real values, anything else gets decoys that are never valid base64, so an apply outside jit fails loudly | [Kubernetes Secret manifests](./kubernetes-secret-manifests.md) |
 | `terraform` | each host's API token | a `credentials_helper` wired into `~/.terraformrc` | [Terraform](./terraform.md) |
 | `docker` | each registry's username + password/token | a credential helper wired into `~/.docker/config.json`; `docker login`/`logout` keep working | [Docker](./docker.md) |

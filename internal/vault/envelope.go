@@ -148,6 +148,13 @@ const (
 	ClassTfvars    = "tfvars"
 	ClassTerraform = "terraform"
 	ClassAWS       = "aws"
+	// ClassAWSSignIn is the sealed AWS sign-in (design/aws-sso-sealed.md):
+	// the SSO and `aws login` sessions `jit aws-sso` unseals. Its own class,
+	// not ClassAWS, because the service lets a process fill its AWS
+	// credential cache only after reading THIS secret, and the class is the
+	// one fact about a read the service can verify (AEAD-bound into the
+	// wrap). Reading ordinary AWS keys proves nothing about the sign-in.
+	ClassAWSSignIn = "aws_signin"
 	ClassDocker    = "docker"
 	ClassGCP       = "gcp"
 	// ClassAzure is the Azure CLI's own login store (`jit wrap az`): its

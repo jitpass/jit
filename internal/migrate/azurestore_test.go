@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -196,5 +197,87 @@ func TestAzureStoreResealMergesOnlyWhenOvertaken(t *testing.T) {
 	written, err := AzureStore.Unseal(v, home)
 	if err != nil || len(written) != 1 {
 		t.Fatalf("unsealed %v, %v", written, err)
+	}
+}
+
+// MSAL writes its cache indented; a merged store must compare to the next
+// run's file entry by entry, not as "everything changed".
+func TestMergeAzureStoreIgnoresLayout(t *testing.T) {
+	indent := func(b []byte) []byte {
+		var out bytes.Buffer
+		if err := json.Indent(&out, b, "", "    "); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	// Run A starts from a compact (merged) base and rewrites the file
+	// indented, changing nothing; meanwhile run B signed ops out.
+	base := store(t, map[string][]byte{"msal_token_cache.json": msal(t, map[string]string{"dev": "rt-1", "ops": "rt-ops"})})
+	current := store(t, map[string][]byte{"msal_token_cache.json": msal(t, map[string]string{"dev": "rt-1"})})
+	after := store(t, map[string][]byte{"msal_token_cache.json": indent(msal(t, map[string]string{"dev": "rt-1", "ops": "rt-ops"}))})
+	merged, err := MergeAzureStore(base, current, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshTokens(t, merged); len(got) != 1 || got["dev"] != "rt-1" {
+		t.Fatalf("an unchanged but re-indented run undid a sign-out: %v", got)
+	}
+	files, _ := sealstore.Files(merged)
+	if !bytes.Contains(files["msal_token_cache.json"], []byte("\n    \"")) {
+		t.Fatalf("merged cache is not in MSAL's layout: %s", files["msal_token_cache.json"])
+	}
+}
+
+// A refresh racing a sign-out: the run rotated ops's token while another
+// run signed ops out. The sign-out stands.
+func TestMergeAzureStoreSignOutBeatsARefresh(t *testing.T) {
+	base := store(t, map[string][]byte{"msal_token_cache.json": msal(t, map[string]string{"dev": "rt-1", "ops": "rt-ops"})})
+	current := store(t, map[string][]byte{"msal_token_cache.json": msal(t, map[string]string{"dev": "rt-1"})})
+	after := store(t, map[string][]byte{"msal_token_cache.json": msal(t, map[string]string{"dev": "rt-1", "ops": "rt-ops-2"})})
+	merged, err := MergeAzureStore(base, current, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshTokens(t, merged); len(got) != 1 || got["ops"] != "" {
+		t.Fatalf("a signed-out account's refresh token came back: %v", got)
+	}
+}
+
+// Undo's current-copy restore writes the vault's store over the seal-day
+// files, and a re-wrap with a plaintext login keeps vault-only accounts.
+func TestAzureStoreRestoreCurrentAndRewrap(t *testing.T) {
+	home := t.TempDir()
+	v := newTestVault(t)
+	dir := AzureConfigDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(accounts map[string]string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "msal_token_cache.json"), msal(t, accounts), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(map[string]string{"dev": "rt-1"})
+	if _, err := AzureStore.Seal(v, home); err != nil {
+		t.Fatal(err)
+	}
+	// A login made without the shim: the plaintext has ops only.
+	write(map[string]string{"ops": "rt-ops"})
+	if _, err := AzureStore.Seal(v, home); err != nil {
+		t.Fatal(err)
+	}
+	sealed, _, _ := AzureStore.ReadSealed(v)
+	if got := refreshTokens(t, sealed); got["dev"] != "rt-1" || got["ops"] != "rt-ops" {
+		t.Fatalf("re-wrap lost a vault-only account: %v", got)
+	}
+	// Undo put back a seal-day file; the current copy goes over it.
+	write(map[string]string{"dev": "rt-OLD"})
+	if _, err := AzureStore.RestoreCurrent(v, home); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "msal_token_cache.json")) // #nosec G304 -- test path
+	if !bytes.Contains(b, []byte("rt-1")) || bytes.Contains(b, []byte("rt-OLD")) {
+		t.Fatalf("restored cache %s", b)
 	}
 }

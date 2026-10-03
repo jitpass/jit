@@ -217,7 +217,7 @@ func ApplyAWSSSO(v *vault.Vault, home string, profiles []string, tracker *Backup
 		command := fmt.Sprintf("%s aws-sso --profile %s", quoteIfNeeded(jitPath), quoteIfNeeded(p))
 		lines = upsertINIValue(lines, section, "credential_process", command)
 	}
-	if err := atomicfile.WriteFileMode(configPath, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+	if err := writeThroughLink(configPath, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 		return res, fmt.Errorf("writing %s: %w", configPath, err)
 	}
 	res.Profiles = profiles
@@ -238,7 +238,7 @@ func ApplyAWSSSO(v *vault.Vault, home string, profiles []string, tracker *Backup
 // every `jit aws-sso` run whose refresh rotated the token (D4). No backup:
 // per-file backups are taken at sealing only (D10).
 func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
-	meta, err := newProvenance(vault.ClassAWS, AWSSSOCacheDir(home))
+	meta, err := newProvenance(vault.ClassAWSSignIn, AWSSSOCacheDir(home))
 	if err != nil {
 		return err
 	}
@@ -480,7 +480,7 @@ func awsLoginCacheFiles(home string, sessions []string) []string {
 // profile in again, to run against the sealed config: `aws login` for a
 // console-credentials profile, `aws sso login` for an SSO one. remote is
 // the flow for a machine whose browser is elsewhere (over SSH).
-func AWSSealedLoginArgs(root, profile string, remote bool) ([]string, error) {
+func AWSSealedLoginArgs(root, home, profile string, remote bool) ([]string, error) {
 	_, sections, err := parseINILines(AWSSSOSealedConfigPath(root))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
@@ -488,7 +488,10 @@ func AWSSealedLoginArgs(root, profile string, remote bool) ([]string, error) {
 	kv := sections[awsConfigSectionName(profile)]
 	switch {
 	case kv == nil:
-		return nil, fmt.Errorf("profile %q is not sealed by jit; sign in with the AWS CLI, then run `jit migrate ~/.aws/config`", profile)
+		if _, user, err := parseINILines(AWSConfigPath(home)); err == nil && user[awsConfigSectionName(profile)] != nil {
+			return nil, fmt.Errorf("profile %q isn't sealed yet; run `jit migrate ~/.aws/config`", profile)
+		}
+		return nil, fmt.Errorf("no profile %q in ~/.aws/config", profile)
 	case isAWSLoginProfile(kv):
 		args := []string{"login", "--profile", profile}
 		if remote {

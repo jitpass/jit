@@ -76,7 +76,7 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 	if RcHasPathLine(home, shell) {
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: true, Detail: rc + " has the shim PATH line"})
 	} else {
-		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line, re-run `jit wrap add` for any tool"})
+		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line, re-run `jit wrap <tool>` for any wrapped tool"})
 	}
 
 	for _, tool := range manifestTools(manifest) {

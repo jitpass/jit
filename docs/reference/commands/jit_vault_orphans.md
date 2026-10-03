@@ -12,8 +12,10 @@ that named them is gone. With --prune, they are permanently deleted after a
 
 "Referenced" is judged against everything jit can find: the current
 directory's profile store, the global one, every project store under your
-home folder, the profile behind every registered mount, and pointer files
-(jit's own in-place pointer files and ~/.clisso.yaml). A file among those
+home folder, the profile behind every registered mount, pointer files
+(jit's own in-place pointer files and ~/.clisso.yaml), and the sealed CLI
+logins a wrap or ~/.aws/config uses (gcloud-cli/store, azure-cli/store,
+aws-sso/cache). A file among those
 that can't be read stops the command instead of making its secrets look
 orphaned. A project outside your home folder is not searched, so check each
 secret's origin before pruning.

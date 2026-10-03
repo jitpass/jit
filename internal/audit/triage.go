@@ -148,16 +148,22 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		// block, and putting it on the command too made scan the one report
 		// where a runnable thing wasn't cyan.
 		_, _ = cmd.Fprintln(w, style.GlyphAction+" jit migrate")
-		wraps := 0
+		wraps, files := 0, 0
+		wrapped := map[string]bool{}
 		for _, m := range migratable {
-			if m.wrapTool != "" {
+			switch {
+			case m.wrapTool == "":
+				files++
+			case !wrapped[m.wrapTool]:
+				// One CLI per tool: the Azure CLI's two files are one wrap.
+				wrapped[m.wrapTool] = true
 				wraps++
 			}
 		}
 		// Name only what happens: a plan that is all wraps (the gcloud store,
 		// clisso) used to read "rewrites 0 files and wraps 1 CLI".
 		var does []string
-		if files := len(migratable) - wraps; files > 0 {
+		if files > 0 {
 			does = append(does, "rewrites "+countWord(files, "file", "files"))
 		}
 		if wraps > 0 {
@@ -360,7 +366,7 @@ func writeToolMintedBlock(w io.Writer, findings []Finding, home string, bold, ye
 		}
 		for _, p := range e.files {
 			fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
-				termtext.TruncHead(fileAddr(home, p, lineMap, nil), termtext.Width()-len(triageNoteIndent)))
+				termtext.TruncMid(fileAddr(home, p, lineMap, nil), termtext.Width()-len(triageNoteIndent)))
 		}
 		// One arrow per action, after the last entry sharing it — the two
 		// gcloud entries always appear together and carry one instruction.

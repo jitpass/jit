@@ -785,8 +785,10 @@ func (s *Server) handle(req Request, c *caller) Response {
 		return s.awsCachePut(req, c)
 	case OpAWSCacheClear:
 		// No prompt and no proof: emptying the cache only costs the next
-		// fetch its speed, like any revoke.
+		// fetch its speed, like any revoke. Audited (a sign-out, a new
+		// login), collapsed on the op since any client can ask.
 		s.clearAWSCache()
+		s.recordAggregated(KindUse, OpAWSCacheClear, "", c, "")
 		return Response{OK: true}
 	case OpUnwrap:
 		// A live process grant answers first: the human already approved this
@@ -800,9 +802,10 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// minutes-old unlock are different facts in an audit. Any miss falls
 		// through to the ordinary path unchanged.
 		if dek, path, ok := s.grantUnwrap(c, req.Data); ok {
-			if req.Class == awsClass {
-				s.noteAWSUnwrap(c)
-			}
+			// No AWS cache proof here: req.Class is unverified on this path
+			// (see above), and a proof decides who may put credentials in
+			// front of the next AWS call. The sealed sign-in is never read
+			// through a grant; `jit aws-sso` reads it on the path below.
 			// Collapse on the RAW argv, never the redacted form — the same
 			// requirement recordUse documents at length and has a test for.
 			// Redaction can map two different callers onto one string, and
@@ -852,9 +855,9 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		// The class is AEAD-verified by open() just above: this caller now
-		// holds an aws credential it was allowed, which is what lets it
-		// fill the AWS cache (awscache.go).
-		if req.Class == awsClass {
+		// holds the sealed AWS sign-in it was allowed, which is what lets
+		// it fill the AWS cache (awscache.go).
+		if req.Class == awsSignInClass {
 			s.noteAWSUnwrap(c)
 		}
 		return Response{OK: true, Data: dek}

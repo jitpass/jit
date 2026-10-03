@@ -40,6 +40,14 @@ always the default, and `json` always means "one JSON snapshot on stdout".
 | `jit scan` | `text`, `markdown`/`md`, `ndjson` (no plain `json`) |
 | `jit migrate <path>` | `text`, `json` (needs `--yes`; see [Migrate JSON output](./migrate-json.md)) |
 | `jit migrate redact` | `text`, `json` (needs `--yes`; same page) |
+| `jit migrate caches`, `jit migrate settings` | `text`, `json` (needs `--yes`) |
+| `jit migrate undo` | `text`, `json` (a real run needs `--yes`) |
+| `jit wrap <tool>` | `text`, `json` (a native tool needs `--yes`) |
+| `jit wrap add`, `jit wrap list` | `text`, `json` (`--all` is json-only) |
+| `jit service log` | `text`, `json` |
+| `jit grant list`, `jit job list` | `text`, `json` |
+| `jit vault duplicates`, `jit vault settings`, `jit vault rm` | `text`, `json` |
+| `jit uninstall` | `text`, `json` (with `--dry-run`), `ndjson` |
 
 Two commands have a wider vocabulary because they emit a stream of records
 rather than a snapshot:

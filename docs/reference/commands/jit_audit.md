@@ -18,7 +18,9 @@ the log records that a command ran, never the secret it may have carried.
 It also records what the service refused at its socket: a rejected peer (a
 process the kernel says isn't yours, probing the agent), a malformed request, an
 unwrap whose claimed credential class doesn't match the ciphertext it sent
-(op=class-mismatch — a caller with no vault data trying to summon a prompt), or
+(op=class-mismatch — a caller with no vault data trying to summon a prompt), an
+AWS credential cache fill from a process that had not just read an AWS
+credential (op=aws-cache-refused — someone trying to plant credentials), or
 the accept loop failing, each as a kind=error line with the peer's provenance.
 Repeated rejections collapse into one line carrying a count; a collapsed line
 names the first caller of that window, because keying them per caller would let

@@ -137,10 +137,15 @@ session, not the scope. A cloned repo's config, or a script that slips a
   FileVault on.
 - **Credentials a tool mints for itself are not jit's.** After the AWS CLI uses
   a migrated key to assume a role it caches the resulting STS session in
-  plaintext under `~/.aws/cli/cache`, and `aws sso login` writes tokens to
-  `~/.aws/sso/cache`. jit does not manage, clean or decoy them; it reports them
-  as out of scope rather than letting a clean scan imply the directory it just
-  tidied is empty.
+  plaintext under `~/.aws/cli/cache`. jit does not manage, clean or decoy it;
+  it reports it as out of scope rather than letting a clean scan imply the
+  directory it just tidied is empty. Sign-in logins a CLI keeps for itself
+  are a different case where jit can act: the gcloud and Azure CLI logins,
+  AWS SSO and `aws login` sessions are sealed in the vault (`jit wrap gcloud`,
+  `jit wrap az`, `jit migrate ~/.aws/config`).
+- **A sealed CLI login is in plaintext while the CLI runs**, in an
+  owner-only folder under jit's own directory, removed when the run ends
+  (and by the next run or a service start if a run was killed).
 - **Refusing a prompt is bounded, not permanent.** A declined consent prompt
   cannot be cached as a lasting "no" - the prompt cannot distinguish a human's
   decline from a keychain failure - so it pauses that caller instead (about 2s,

@@ -1375,7 +1375,13 @@ func kubeloginOnDisk(path string) bool {
 		base, args := filepath.Base(u.User.Exec.Command), u.User.Exec.Args
 		isKubelogin := base == "kubectl" && len(args) > 1 && args[0] == "oidc-login" && args[1] == "get-token" ||
 			(base == "kubelogin" || base == "kubectl-oidc_login") && len(args) > 0 && args[0] == "get-token"
-		if !isKubelogin {
+		// Azure's AKS kubelogin shares the name but never takes an OIDC
+		// issuer (migrate.kubeloginArgs' rule).
+		issuer := false
+		for _, a := range args {
+			issuer = issuer || a == "--oidc-issuer-url" || strings.HasPrefix(a, "--oidc-issuer-url=")
+		}
+		if !isKubelogin || !issuer {
 			continue
 		}
 		storage := ""

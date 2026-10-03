@@ -70,3 +70,7 @@ Removes the tool's shim and its `wrap-<tool>` profile. The vaulted secret
 stays (delete it with `jit vault rm` if you're done with it), and a
 scrubbed config file is restored byte-for-byte by
 [`jit migrate undo`](../migrate/undo-and-remove.md).
+
+For a store wrap (`gcloud` and its family, `az`), `jit wrap undo` writes
+the sealed login back to the tool's folder itself, after a fresh Touch ID,
+and unwraps every tool that reads it. The vault copy is kept.

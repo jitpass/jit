@@ -30,6 +30,11 @@ users:
     exec:
       command: kubectl-oidc_login
       args: [get-token, --token-cache-storage, keyring]
+- name: aks
+  user:
+    exec:
+      command: kubelogin
+      args: [get-token, --login, azurecli, --server-id, 6dae42f8-4368-4678-94ff-3960e28e3630]
 - name: eks
   user:
     exec:
@@ -138,5 +143,31 @@ func TestApplyKubeloginKeyringRefusesANonKubeloginUser(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(KubeconfigPath(home)); string(b) != kubeloginKubeconfig {
 		t.Fatal("a refused switch changed the kubeconfig")
+	}
+}
+
+// A kubeconfig kept as a link into a dotfiles repo stays a link.
+func TestApplyKubeloginKeyringWritesThroughALink(t *testing.T) {
+	home := kubeloginHome(t)
+	v := newTestVault(t)
+	repo := filepath.Join(t.TempDir(), "kubeconfig")
+	data, _ := os.ReadFile(KubeconfigPath(home)) // #nosec G304 -- test path
+	if err := os.WriteFile(repo, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(KubeconfigPath(home)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repo, KubeconfigPath(home)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyKubeloginKeyring(v, home, []string{"oidc-dev"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(KubeconfigPath(home)); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced: %v %v", info.Mode(), err)
+	}
+	if b, _ := os.ReadFile(repo); !strings.Contains(string(b), kubeloginKeyringFlag) { // #nosec G304 -- test path
+		t.Fatalf("the repo file was not rewritten:\n%s", b)
 	}
 }
