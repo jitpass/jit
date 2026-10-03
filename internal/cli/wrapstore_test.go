@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,6 +236,57 @@ func signedInState(b *bool) string {
 		return "signed in"
 	}
 	return "signed out"
+}
+
+// The app's view of a store-wrap: each wrapped row says whether the
+// sealed store holds a login, and carries the store's own login command
+// (a family member, its namesake's), so a signed-out row can offer to log
+// in through the shim. The text table says "signed out".
+func TestWrapListShowsAStoreSignedOut(t *testing.T) {
+	home := withFixtureHome(t)
+	withTestKeystore(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	putToolOnPath(t, "gcloud")
+	putToolOnPath(t, "bq")
+	plantGcloudLogin(t, home, "1//FIRST")
+	if out, err := execWrap(t, "gcloud"); err != nil {
+		t.Fatalf("jit wrap gcloud: %v\n%s", err, out)
+	}
+	rows := func() map[string]wrapToolJSON {
+		t.Helper()
+		listed, err := execWrap(t, "list", "--format", "json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var res wrapListResult
+		if err := json.Unmarshal([]byte(listed), &res); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]wrapToolJSON{}
+		for _, r := range res.Tools {
+			out[r.Tool] = r
+		}
+		return out
+	}
+	for _, tool := range []string{"gcloud", "bq"} {
+		r := rows()[tool]
+		if r.LoginCommand != "gcloud auth login" || r.StoreSignedIn == nil || !*r.StoreSignedIn {
+			t.Fatalf("%s row: login %q, %s; want gcloud auth login, signed in", tool, r.LoginCommand, signedInState(r.StoreSignedIn))
+		}
+	}
+
+	tool := filepath.Join(t.TempDir(), "gcloud")
+	if err := os.WriteFile(tool, []byte(fakeGcloud), 0o755); err != nil { // #nosec G306 -- a test stub must be executable
+		t.Fatal(err)
+	}
+	runGcloudRunForTest(t, tool, "revoke")
+	if r := rows()["bq"]; r.StoreSignedIn == nil || *r.StoreSignedIn {
+		t.Fatalf("bq row after a revoke: %s, want signed out", signedInState(r.StoreSignedIn))
+	}
+	if out, _ := execWrap(t, "list"); !strings.Contains(out, "signed out") || strings.Contains(out, "login sealed") {
+		t.Fatalf("wrap list after a revoke:\n%s", out)
+	}
 }
 
 func TestStoreSignedInUnknownBeforeAnyWrite(t *testing.T) {

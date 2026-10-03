@@ -26,19 +26,20 @@ const AzureStorePath = "azure-cli/store"
 // entry (MergeAzureStore), and no backup is taken per reseal: undo and
 // Remove JitPass write back the vault's current copy.
 var AzureStore = ToolStore{
-	Name:       "az",
-	Tool:       "Azure CLI",
-	Label:      "the Azure CLI's login",
-	VaultPath:  AzureStorePath,
-	Class:      vault.ClassAzure,
-	Layout:     sealstore.Azure,
-	ConfigDir:  AzureConfigDir,
-	ConfigEnv:  "AZURE_CONFIG_DIR",
-	Provenance: "msal_token_cache.json",
-	DirMode:    0o700,
-	Rotates:    true,
-	Merge:      MergeAzureStore,
-	Accounts:   azureAccounts,
+	Name:         "az",
+	Tool:         "Azure CLI",
+	Label:        "the Azure CLI's login",
+	LoginCommand: "az login",
+	VaultPath:    AzureStorePath,
+	Class:        vault.ClassAzure,
+	Layout:       sealstore.Azure,
+	ConfigDir:    AzureConfigDir,
+	ConfigEnv:    "AZURE_CONFIG_DIR",
+	Provenance:   "msal_token_cache.json",
+	DirMode:      0o700,
+	Rotates:      true,
+	Merge:        MergeAzureStore,
+	Accounts:     azureAccounts,
 }
 
 // azureAccounts lists a store's accounts: the MSAL cache's Account keys

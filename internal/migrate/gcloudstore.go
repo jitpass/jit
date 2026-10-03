@@ -22,16 +22,17 @@ const GcloudStorePath = "gcloud-cli/store"
 // so the store changes only at a login, an activate or a revoke: a run's
 // store replaces the vault's, with a fresh backup each time (D10).
 var GcloudStore = ToolStore{
-	Name:       "gcloud",
-	Tool:       "gcloud",
-	Label:      "gcloud's login",
-	VaultPath:  GcloudStorePath,
-	Class:      vault.ClassGCP,
-	Layout:     sealstore.Gcloud,
-	ConfigDir:  GcloudConfigDir,
-	ConfigEnv:  "CLOUDSDK_CONFIG",
-	Provenance: "credentials.db",
-	DirMode:    0o755, // gcloud's own mode for its config dir; the store files inside are 0600
+	Name:         "gcloud",
+	Tool:         "gcloud",
+	Label:        "gcloud's login",
+	LoginCommand: "gcloud auth login",
+	VaultPath:    GcloudStorePath,
+	Class:        vault.ClassGCP,
+	Layout:       sealstore.Gcloud,
+	ConfigDir:    GcloudConfigDir,
+	ConfigEnv:    "CLOUDSDK_CONFIG",
+	Provenance:   "credentials.db",
+	DirMode:      0o755, // gcloud's own mode for its config dir; the store files inside are 0600
 	// gcloud logs every command, output included, under the settings dir
 	// the run links to: `gcloud auth print-access-token` left its token in
 	// ~/.config/gcloud/logs for 30 days (release QA). File logging is off

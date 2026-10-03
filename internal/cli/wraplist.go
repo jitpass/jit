@@ -71,6 +71,10 @@ type wrapToolJSON struct {
 	// `gcloud auth revoke` or `az logout` leaves a sealed but signed-out
 	// store: wrapped, with nothing in it to protect. Prompt-free.
 	StoreSignedIn *bool `json:"store_signed_in,omitempty"`
+	// LoginCommand (store rows) is the store's own sign-in command, every
+	// family member carrying its namesake's ("gcloud auth login" on bq):
+	// run through the shim, the login is sealed straight into the vault.
+	LoginCommand string `json:"login_command,omitempty"`
 	// SSOProfiles (the aws row only) are the AWS profiles fetching through
 	// `jit aws-sso`, and SSOSignedIn whether the vault holds an AWS SSO
 	// login, nil when none was ever sealed. Both prompt-free: what the app
@@ -162,6 +166,7 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			row.Kind, row.Store = "store", entry.Store
 			row.StorePath, _ = migrate.StoreVaultPath(entry.Store)
 			row.StoreSignedIn = storeSignedIn(entry.Store)
+			row.LoginCommand = storeLoginCommand(entry.Store)
 		default:
 			row.Profile = entry.Profile
 			row.Injects = wrapInjectsFromProfile(home, entry, store)
@@ -217,6 +222,7 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			if ce.Kind == wrap.KindStore {
 				row.Store = ce.Store
 				row.StorePath, _ = migrate.StoreVaultPath(ce.Store)
+				row.LoginCommand = storeLoginCommand(ce.Store)
 			}
 			if tool == "aws" {
 				applyAWSSSOState(&row, home)
@@ -340,6 +346,12 @@ func storeSignedIn(name string) *bool {
 		return &signedIn
 	}
 	return nil
+}
+
+// storeLoginCommand is a tool store's sign-in command, "" for any other.
+func storeLoginCommand(name string) string {
+	s, _ := migrate.ToolStoreNamed(name)
+	return s.LoginCommand
 }
 
 // applyAWSSSOState fills the aws row's SSO fields from ~/.aws/config's

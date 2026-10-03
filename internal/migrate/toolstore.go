@@ -32,11 +32,14 @@ type ToolStore struct {
 	Name string
 	// Tool names the CLI in messages ("gcloud", "Azure CLI"), and Label its
 	// login ("gcloud's login").
-	Tool      string
-	Label     string
-	VaultPath string
-	Class     string
-	Layout    sealstore.Layout
+	Tool  string
+	Label string
+	// LoginCommand is the tool's own sign-in command. Run through the shim,
+	// its login is sealed straight into the vault.
+	LoginCommand string
+	VaultPath    string
+	Class        string
+	Layout       sealstore.Layout
 	// ConfigDir is the config dir jit seals, the tool's default. ConfigEnv
 	// is the variable that moves it: a run points it at the run dir, and a
 	// user's own setting elsewhere is left alone.
