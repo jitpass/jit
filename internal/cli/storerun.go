@@ -210,7 +210,7 @@ func resealStoreRun(stderr io.Writer, s migrate.ToolStore, v vaultSetter, home, 
 		return
 	}
 	switch {
-	case sealstore.Empty(sealed):
+	case !s.HoldsLogin(sealed):
 		fmt.Fprintf(stderr, "jit: %s is signed out; the vault holds no %s login now\n", s.Tool, s.Tool)
 	case refresh:
 		// A refresh: routine, and said nothing about before jit either.

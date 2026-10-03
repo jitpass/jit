@@ -118,7 +118,9 @@ var uninstallOpenVault = func(reason string) (*vault.Vault, error) {
 }
 
 // uninstallChallenge is the bare presence prompt, a var for the same reason.
-var uninstallChallenge = keychainwrap.Challenge
+var uninstallChallenge = func(reason string) error {
+	return awaitApproval(func() error { return keychainwrap.Challenge(reason) })
+}
 
 // uninstallNeedsVaultKey reports whether the presence check should go
 // through the vault's own key. It should whenever there are secrets to

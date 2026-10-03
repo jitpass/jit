@@ -190,6 +190,9 @@ func (h hardware) seal(plaintext []byte) ([]byte, error) {
 	return takeBytes(out, n), nil
 }
 
+// cancelOpen closes the dialog of an open in progress in this process.
+func cancelOpen() { C.se_cancel_open() }
+
 func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 	if len(sealed) == 0 || len(sealed) > maxBytes {
 		return nil, fmt.Errorf("refusing to open %d bytes", len(sealed))

@@ -88,6 +88,8 @@ case "$1" in
   peek)    cat "$AZURE_CONFIG_DIR/msal_token_cache.json" > "$OUT" ;;
   refresh) printf '{"RefreshToken":{"dev-rt":{"secret":"rt-ROTATED"}}}' > "$AZURE_CONFIG_DIR/msal_token_cache.json" ;;
   setting) echo work >> "$AZURE_CONFIG_DIR/config" ;;
+  logout)  printf '{"AccessToken":{},"Account":{},"IdToken":{},"RefreshToken":{},"AppMetadata":{}}' > "$AZURE_CONFIG_DIR/msal_token_cache.json"
+           printf '[]' > "$AZURE_CONFIG_DIR/service_principal_entries.json" ;;
   clear)   rm -f "$AZURE_CONFIG_DIR/msal_token_cache.json" "$AZURE_CONFIG_DIR/service_principal_entries.json" ;;
 esac
 `
@@ -121,6 +123,19 @@ func azRunForTest(t *testing.T, args ...string) (string, string) {
 	}
 	got, _ := os.ReadFile(out) // #nosec G304 -- test path
 	return home, string(got) + stderr.String()
+}
+
+// `az logout` empties the cache but keeps both files: the store is sealed
+// and non-empty, yet holds no account, and the listing says signed out.
+func TestAzRunRecordsASignOut(t *testing.T) {
+	azRunForTest(t)
+	if got := storeSignedIn("az"); got == nil || !*got {
+		t.Fatalf("after the seal: %s, want signed in", signedInState(got))
+	}
+	azRunForTest(t, "logout")
+	if got := storeSignedIn("az"); got == nil || *got {
+		t.Fatalf("after az logout: %s, want signed out", signedInState(got))
+	}
 }
 
 // The run sees the unsealed login through AZURE_CONFIG_DIR, a refresh is

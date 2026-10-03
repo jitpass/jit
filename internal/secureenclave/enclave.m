@@ -137,19 +137,46 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
     }
 }
 
+// The context se_open has up, for se_cancel_open: the same arrangement as
+// keychainwrap's kw_cancel_challenge. One at a time: the service
+// serializes its unlocks.
+static LAContext *seCurrent = nil;
+static NSObject *seCurrentLock = nil;
+
+static NSObject *currentLock(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seCurrentLock = [[NSObject alloc] init]; });
+    return seCurrentLock;
+}
+
+void se_cancel_open(void) {
+    @synchronized(currentLock()) {
+        [seCurrent invalidate];
+    }
+}
+
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
                  const char *reason, unsigned char **out, int *out_len, int *decrypting) {
     @autoreleasepool {
         *decrypting = 0;
         LAContext *ctx = [[LAContext alloc] init];
         ctx.localizedReason = [NSString stringWithUTF8String:reason];
+        // Registered before the lookup, so a cancel that lands before the
+        // dialog is up still fails the open rather than missing it.
+        @synchronized(currentLock()) { seCurrent = ctx; }
         OSStatus st = 0;
         SecKeyRef k = copyKey(tag, group, ctx, &st);
-        if (!k) return fail(@"finding the Secure Enclave key", st);
+        CFDataRef pt = NULL;
         CFErrorRef e = NULL;
-        NSData *in = [NSData dataWithBytesNoCopy:(void *)ct length:ct_len freeWhenDone:NO];
-        CFDataRef pt = SecKeyCreateDecryptedData(k, kSEAlgorithm, (__bridge CFDataRef)in, &e);
-        CFRelease(k);
+        if (k) {
+            NSData *in = [NSData dataWithBytesNoCopy:(void *)ct length:ct_len freeWhenDone:NO];
+            pt = SecKeyCreateDecryptedData(k, kSEAlgorithm, (__bridge CFDataRef)in, &e);
+            CFRelease(k);
+        }
+        @synchronized(currentLock()) {
+            if (seCurrent == ctx) seCurrent = nil;
+        }
+        if (!k) return fail(@"finding the Secure Enclave key", st);
         if (!pt) {
             *decrypting = 1;
             return failCF(@"opening with the Secure Enclave key", e);

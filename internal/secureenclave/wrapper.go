@@ -347,6 +347,17 @@ func (w *Wrapper) RequireUserPresence(reason string) error {
 	return nil
 }
 
+// CancelChallenge closes an unlock dialog this process has up, if any; a
+// no-op otherwise. The service calls it when the process that asked has
+// exited (agent.cancelWhenCallerGone), as it does keychainwrap's. The open
+// then fails, and fetchMEK caches nothing.
+func (w *Wrapper) CancelChallenge() {
+	cancelEnclaveOpen()
+}
+
+// cancelEnclaveOpen is a var so a test can see the call without hardware.
+var cancelEnclaveOpen = cancelOpen
+
 // Delete removes the sealed file and then the enclave keys, so a crash
 // between the two leaves a key with no file (harmless, reported by Presence
 // as Absent) rather than a file with no key. Both slots' keys go, whichever

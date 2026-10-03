@@ -133,6 +133,7 @@ func newRootCmd() *cobra.Command {
 		// invocationCommandPath itself or this record loses its "(by ...)".
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			invocationCommandPath = cmd.CommandPath()
+			invocationCmd = cmd
 		},
 	}
 	cmd.AddGroup(

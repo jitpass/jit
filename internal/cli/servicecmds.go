@@ -238,7 +238,7 @@ func requireConsentOffPresence() error {
 		}
 		return requireFreshUserPresence(v, reason)
 	}
-	return keychainwrap.Challenge(reason)
+	return awaitApproval(func() error { return keychainwrap.Challenge(reason) })
 }
 
 var agentRestartCmd = &cobra.Command{

@@ -34,7 +34,8 @@ starts without it and gcloud fetches a fresh access token.
 Log in as usual. `gcloud auth login` runs inside the private folder, and
 the new login goes straight into the vault. Nothing is written to
 `~/.config/gcloud`. A logout or `gcloud auth revoke` is sealed the same
-way. Saving a new login can take a Touch ID if the vault has locked
+way, and once the last account is gone `jit wrap list` shows gcloud as
+signed out. Saving a new login can take a Touch ID if the vault has locked
 meanwhile. If you decline, jit leaves the login in `~/.config/gcloud` in
 plaintext rather than lose it, and says so.
 

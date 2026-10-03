@@ -1074,8 +1074,8 @@ func promptUnanswered(err error) bool {
 // aws-sso` an SDK killed, a Ctrl-C'd `jit unlock`): otherwise it stays on
 // screen for no one, up to its 2-minute timeout, and every later prompt
 // queues behind it (release QA). Only a fetcher that can cancel takes part
-// (the keychain one); a caller with no pid is never watched. Returns the
-// stop function to call once the challenge is over.
+// (the keychain's and the Secure Enclave's); a caller with no pid is never
+// watched. Returns the stop function to call once the challenge is over.
 func cancelWhenCallerGone(f MEKFetcher, c *caller) func() bool {
 	canceler, ok := f.(interface{ CancelChallenge() })
 	if !ok || c == nil || c.pid <= 0 {
