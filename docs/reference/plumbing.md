@@ -1,20 +1,22 @@
 ---
 title: Plumbing protocols
-description: The commands other tools invoke - aws-credential-process, k8s-exec-credential, terraform-credentials, docker-credential, git-credential.
+description: The commands other tools invoke - aws-credential-process, aws-sso, k8s-exec-credential, terraform-credentials, docker-credential, git-credential, and the gcloud-run and az-run the store shims run.
 ---
 
 # Plumbing protocols
 
-Seven commands exist to be invoked by *other tools' configuration* - or, in
-the last case, by jit's own shell hook - rather than by hand. `jit --help`
+These commands exist to be invoked by *other tools' configuration*, by
+jit's own shims, or by jit's shell hook, rather than by hand. `jit --help`
 groups them separately and shell tab-completion omits them entirely, for
 exactly that reason.
 
-The first six implement the consuming tool's documented credential-plugin
-protocol, and each fetch requires the vault to be unlocked (the
-[service](../service/index.md)'s session, or a Touch ID prompt). The
-seventh, `jit guard check`, is the odd one out: it reads no secret, needs
-no unlock, and exists only to answer a yes/no question for the shell hook.
+Most implement the consuming tool's documented credential-plugin protocol,
+and each fetch requires the vault to be unlocked (the
+[service](../service/index.md)'s session, or a Touch ID prompt).
+`jit gcloud-run` and `jit az-run` are what the store shims run around a
+CLI that keeps its own login. `jit guard check` is the odd one out: it
+reads no secret, needs no unlock, and exists only to answer a yes/no
+question for the shell hook.
 
 ## `jit aws-credential-process --profile <name>`
 
@@ -22,6 +24,30 @@ Implements AWS's [`credential_process`] contract: prints a JSON document
 with the profile's access key, secret key, and session token to stdout.
 Wired into `~/.aws/config` by [the AWS migration](../migrate/aws.md);
 consulted by the CLI and every SDK that reads shared config.
+
+## `jit aws-sso --profile <name>`
+
+Implements the same `credential_process` contract for an AWS SSO or
+`aws login` profile whose login is sealed in the vault. It unpacks the
+login into a private folder for one run of AWS's own
+`aws configure export-credentials` (AWS's CLI does the refresh, so the AWS
+CLI v2 must be on PATH), seals it again if the run refreshed it, and prints
+the credentials. Wired into `~/.aws/config` by
+[`jit migrate ~/.aws/config`](../migrate/aws.md#aws-sso-iam-identity-center).
+
+Two subcommands are run by hand: `jit aws-sso login --profile <name>`
+signs a sealed profile in again, straight into the vault (an `aws login`
+profile needs it, since `aws login` refuses a sealed profile), and
+`jit aws-sso logout` signs out of every sealed session.
+
+## `jit gcloud-run --real <path> -- [args]`, `jit az-run --real <path> -- [args]`
+
+What the shims [`jit wrap gcloud`](../wrap/gcloud.md) and
+[`jit wrap az`](../wrap/az.md) install run around every invocation of the
+tool. The tool's login lives in the vault; the command unpacks it into a
+private folder for that one run, points the tool at it (`CLOUDSDK_CONFIG`,
+`AZURE_CONFIG_DIR`), and seals it again afterwards if the run changed it.
+The tool's exit status passes through unchanged.
 
 ## `jit k8s-exec-credential --profile <name>`
 

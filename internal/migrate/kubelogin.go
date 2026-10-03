@@ -15,7 +15,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jitpass/jit/internal/atomicfile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -59,7 +58,16 @@ func kubeloginArgs(userMap map[string]interface{}) ([]interface{}, bool) {
 	default:
 		return nil, false
 	}
-	return args, true
+	// Microsoft's AKS kubelogin (Azure/kubelogin) has the same binary name
+	// and a get-token of its own, with no --token-cache-storage: adding the
+	// flag there breaks kubectl. int128's get-token always names an OIDC
+	// issuer, which Azure's never does.
+	for _, w := range words {
+		if w == "--oidc-issuer-url" || strings.HasPrefix(w, "--oidc-issuer-url=") {
+			return args, true
+		}
+	}
+	return nil, false
 }
 
 // kubeloginStorage returns the --token-cache-storage value args set, ""
@@ -174,7 +182,7 @@ func ApplyKubeloginKeyring(v *vault.Vault, home string, userNames []string, trac
 	if err != nil {
 		return res, err
 	}
-	if err := atomicfile.WriteFileMode(path, out, 0o600); err != nil {
+	if err := writeThroughLink(path, out, 0o600); err != nil {
 		return res, fmt.Errorf("writing %s: %w", path, err)
 	}
 	res.Users = userNames

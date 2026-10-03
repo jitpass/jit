@@ -446,15 +446,15 @@ func TestReportsShowIncompleteScanBanner(t *testing.T) {
 // actually act on. hasAutoFix now delegates to the Remedy annotation (the
 // single source of truth for who can act), so findings are annotated first —
 // exactly as they are before any renderer runs.
-func TestFirstFindingPathSkipsUnfixable(t *testing.T) {
+func TestFirstFixCommandSkipsUnfixable(t *testing.T) {
 	key := "k"
 	unfixable := []Finding{
 		{FindingType: FindingTypePrivateKeyRisk, FilePath: "/home/u/.ssh/id_ed25519", KeyName: &key},
 		{FindingType: FindingTypeCredentialFile, FilePath: "/home/u/.mcp-auth/mcp-remote-0.1.37/abc_tokens.json", KeyName: &key},
 	}
 	annotateRemedies(unfixable, "/home/u", nil, nil)
-	if got := firstFindingPath(unfixable); got != "" {
-		t.Errorf("firstFindingPath = %q, want \"\" so the trailer falls back to its <path> placeholder", got)
+	if got := firstFixCommand(unfixable); got != "" {
+		t.Errorf("firstFixCommand = %q, want \"\" so the trailer falls back to its <path> placeholder", got)
 	}
 
 	// A real, fixable finding is preferred even when an unfixable one sorts
@@ -465,8 +465,13 @@ func TestFirstFindingPathSkipsUnfixable(t *testing.T) {
 		KeyName:     &key,
 	})
 	annotateRemedies(mixed, "/home/u", nil, nil)
-	if got := firstFindingPath(mixed); got != "/home/u/proj/.streamlit/secrets.toml" {
-		t.Errorf("firstFindingPath = %q, want the migratable file", got)
+	if got := firstFixCommand(mixed); got != "jit migrate ~/proj/.streamlit/secrets.toml" {
+		t.Errorf("firstFixCommand = %q, want the migratable file's fix", got)
+	}
+	// A store file's fix is its wrap, never a migrate that redirects.
+	gcloud := append(unfixable, Finding{FindingType: FindingTypeCredentialFile, FilePath: "/home/u/.config/gcloud/credentials.db", KeyName: &key, Remedy: RemedyWrap, FixCommand: "jit wrap gcloud"})
+	if got := firstFixCommand(gcloud); got != "jit wrap gcloud" {
+		t.Errorf("firstFixCommand = %q, want the wrap", got)
 	}
 }
 

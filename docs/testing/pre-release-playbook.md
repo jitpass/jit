@@ -240,6 +240,22 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
   profiles; doctor json is valid; rekey re-wraps and every secret still decrypts.
 - **Hunt:** audit masking never leaks a value; doctor/status numbers agree with reality.
 
+### Sealed CLI logins (gcloud, az, AWS sign-ins, kubelogin)
+- **Exercise:** `jit wrap gcloud` / `jit wrap az`, then real `gcloud` / `az` commands (a fetch,
+  a login, a logout, two runs at once); `jit migrate ~/.aws/config` with an SSO profile and an
+  `aws login` profile, then `aws sts get-caller-identity --profile …`, `jit aws-sso login`,
+  `jit aws-sso logout`; `jit migrate ~/.kube/config` with a kubelogin user; `jit wrap undo`,
+  `jit migrate undo`, `jit uninstall --restore --dry-run`.
+- **Expect:** no `credentials.db`, `msal_token_cache.json`, `service_principal_entries.json` or SSO
+  cache left in the tool's folder; each run's folder under jit's root gone after the run; a
+  refresh resealed silently; `jit audit` shows the reads (and AWS cache fills); undo hands back the
+  current login, not the seal-day one.
+- **Hunt:** Ctrl-C / `kill -TERM` mid-run (folder swept, login not lost); screen lock during a long
+  `az` run (no plaintext rescue of a refresh); a symlinked `~/.aws/config` or `~/.kube/config`
+  stays a link; Azure AKS kubelogin (`--login azurecli`) left untouched.
+- The fake servers and opt-in e2e tests (`JIT_GCLOUD_E2E`, `JIT_AZURE_E2E`, `JIT_AWS_SSO_E2E`)
+  drive the real CLIs without accounts; a real sign-in still needs one.
+
 ## 6. Cross-cutting hunts (do these across ALL commands)
 
 - **Flag consistency:** `-y/--yes`, `--quiet`, `--json/--format`, `-h` behave the same everywhere;

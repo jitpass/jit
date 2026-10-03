@@ -52,7 +52,9 @@ the Identity Center session ends (8 hours by default, up to 90 days). Each
 credential fetch also caches role credentials in `~/.aws/cli/cache`.
 
 `jit migrate ~/.aws/config` (or bare `jit migrate`, when `jit scan` reports
-the login) seals both:
+the login) seals both. Each fetch then runs AWS's own CLI, so the AWS CLI v2
+must stay on PATH: a machine with only Terraform or an SDK would lose its
+credentials.
 
 ```ini
 [profile dev]
@@ -72,7 +74,8 @@ region = us-east-1
   login ever touching `~/.aws/sso/cache`.
 - `jit aws-sso logout` signs out. Plain `aws sso logout` finds nothing to
   sign out of once the login is sealed.
-- Nothing is left in `~/.aws/sso/cache` or `~/.aws/cli/cache`.
+- Nothing is left in `~/.aws/sso/cache`, and no SSO role credentials in
+  `~/.aws/cli/cache` (assume-role sessions there are the CLI's, as before).
 
 The first fetch after an unlock runs AWS's CLI once more inside jit, about
 a quarter of a second. The role credentials it returns are kept in the
@@ -113,8 +116,9 @@ region = us-east-1
   would. Like `aws logout`, that is local only. If a session was exposed,
   change the console password: that is what ends its refresh token.
 
-The session's credentials last 15 minutes, so each fetch after that runs
-AWS's CLI inside jit (about a quarter of a second).
+The session's credentials last 15 minutes, too short for the service's
+cache, so every fetch runs AWS's CLI inside jit (about a quarter of a
+second).
 
 ## What jit does not cover
 
@@ -160,5 +164,5 @@ its next fetch.
 
 `jit aws-credential-process` and `jit aws-sso` are the [plumbing
 commands](../reference/plumbing.md) the config invokes - you never run them
-by hand (except `jit aws-sso logout`). Reversing the migration: [`jit migrate
+by hand (except `jit aws-sso login` and `jit aws-sso logout`). Reversing the migration: [`jit migrate
 undo`](./undo-and-remove.md).

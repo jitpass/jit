@@ -7,8 +7,9 @@ Wrap a tool by hand: a shim on PATH that injects a profile or grants a global mo
 jit wrap add installs a shim so a tool works by its native name. Two forms:
 --env wraps a tool that reads a token from an ENV VAR (gh, stripe): the shim
 injects a wrap-<tool> profile. --grant wraps a tool that reads a machine-wide
-credential FILE (gcloud reads the gcp ADC): the shim runs `jit run --with
-<name>` so the tool gets the real file, gated by a disclosed challenge.
+credential FILE (terraform/tofu read the gcp ADC): the shim runs `jit run
+--with <name>` so the tool gets the real file, gated by a disclosed challenge.
+gcloud itself is wrapped with `jit wrap gcloud`, which seals its own login.
 
 ```
 jit wrap add <tool> --env VAR=<vault-path> [--env ...] | --grant <name> [flags]
@@ -19,7 +20,7 @@ jit wrap add <tool> --env VAR=<vault-path> [--env ...] | --grant <name> [flags]
 ```
   jit vault set wrap-gh/GH_TOKEN
   jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN
-  jit wrap add gcloud --grant gcp
+  jit wrap add tofu --grant gcp
 ```
 
 ### Options

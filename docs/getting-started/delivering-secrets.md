@@ -108,7 +108,7 @@ grant ends when the run exits.
 To keep typing the tool directly, with no `jit run` prefix, grant-wrap it once:
 
 ```
-jit wrap add gcloud --grant gcp           # then `gcloud …` grants the ADC per call
+jit wrap add tofu --grant gcp             # then `tofu …` grants the ADC per call
 ```
 
 **Use `jit run --with` when:** you want the explicit, hard-gated form instead of

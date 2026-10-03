@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"errors"
 	"time"
 
 	"github.com/jitpass/jit/internal/lineage"
@@ -35,9 +36,14 @@ import (
 // Caller identity is the anchor of the proof, not a decision about who is
 // trusted: the decision was the consent the unwrap passed.
 
-// awsClass is the vault class AWS secrets carry (vault.ClassAWS; this
-// package never imports the vault).
-const awsClass = "aws"
+// awsSignInClass is the class of the sealed AWS sign-in
+// (vault.ClassAWSSignIn; this package never imports the vault). Only a
+// verified read of a secret of this class earns the right to fill the
+// cache: reading ordinary AWS keys does not (`jit run --profile aws-dev`
+// reads those and then execs the user's program, which keeps the pid and
+// fork time the proof is anchored to), and the cache read is gated on the
+// same class, so a fetch asks one question, not two.
+const awsSignInClass = "aws_signin"
 
 const (
 	// awsCacheMargin: serve only credentials with at least this long left.
@@ -107,7 +113,7 @@ func (s *Server) awsCacheGet(req Request, c *caller) Response {
 	if !ok || e.expires.Sub(awsNow()) < awsCacheMargin {
 		return Response{OK: true}
 	}
-	if err := s.gateConsent(awsClass, c, req.Op); err != nil {
+	if err := s.gateConsent(awsSignInClass, c, req.Op); err != nil {
 		return Response{OK: false, Error: err.Error()}
 	}
 	s.recordUse(OpAWSCacheGet, c, "aws-sso:"+req.CacheKey)
@@ -121,6 +127,31 @@ func (s *Server) awsCachePut(req Request, c *caller) Response {
 	if !s.sessionLive() {
 		return Response{OK: false, Error: "aws_cache_put: the vault is locked"}
 	}
+	stored, err := s.fillAWSCache(req, c)
+	// Audited after the cache lock is released. A fill puts credentials in
+	// front of the next AWS call, so each accepted one names its caller. A
+	// refused one is the attempt the proof exists for (a client planting
+	// credentials for an account it controls): recorded too, but collapsed
+	// on the op alone, since any client can trigger it at will and a
+	// per-caller line would let a flood evict the history
+	// (recordRejectedClass's reasoning).
+	switch {
+	case err != nil:
+		s.recordAggregated(KindError, opAWSCacheRefused, "", c, "aws-sso:"+req.CacheKey)
+		return Response{OK: false, Error: err.Error()}
+	case stored:
+		s.recordUse(OpAWSCachePut, c, "aws-sso:"+req.CacheKey)
+	}
+	return Response{OK: true}
+}
+
+// opAWSCacheRefused is the op label for a cache fill turned away for want
+// of a proof, in the socket-boundary rejections' terse style.
+const opAWSCacheRefused = "aws-cache-refused"
+
+// fillAWSCache stores req's credentials if c may fill the cache. stored is
+// false for credentials too close to expiry to be worth serving.
+func (s *Server) fillAWSCache(req Request, c *caller) (stored bool, err error) {
 	now := awsNow()
 	start, startOK := int64(0), false
 	if c != nil {
@@ -130,11 +161,11 @@ func (s *Server) awsCachePut(req Request, c *caller) Response {
 	defer s.awsCacheMu.Unlock()
 	p, ok := s.awsProofs[callerPID(c)]
 	if !ok || !startOK || p.start != start || now.Sub(p.at) > awsCacheProofTTL {
-		return Response{OK: false, Error: "aws_cache_put: only a process that has just read an AWS credential may fill the cache"}
+		return false, errors.New("aws_cache_put: only a process that has just read an AWS credential may fill the cache")
 	}
 	expires := time.Unix(req.ExpiresUnix, 0)
 	if expires.Sub(now) < awsCacheMargin {
-		return Response{OK: true} // too close to expiry to be worth serving
+		return false, nil // too close to expiry to be worth serving
 	}
 	if expires.Sub(now) > awsCacheMaxLife {
 		expires = now.Add(awsCacheMaxLife)
@@ -143,7 +174,7 @@ func (s *Server) awsCachePut(req Request, c *caller) Response {
 		s.awsCache = map[string]awsCacheEntry{}
 	}
 	s.awsCache[req.CacheKey] = awsCacheEntry{data: append([]byte(nil), req.Data...), expires: expires}
-	return Response{OK: true}
+	return true, nil
 }
 
 func callerPID(c *caller) int32 {

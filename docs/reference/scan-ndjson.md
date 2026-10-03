@@ -71,7 +71,7 @@ record; consumers can treat its absence as a truncated run.
 
 One thing the human and markdown reports carry is deliberately absent here: the
 **"Outside jit's scope, found anyway"** advisory, which names credentials other
-tools minted for themselves (`~/.aws/cli/cache`, `~/.aws/sso/cache`,
+tools minted for themselves (`~/.aws/cli/cache`,
 `~/.aws/credentials-cache`, `~/.clisso.log`, assume-role profiles). If you diff NDJSON against the markdown report, that
 difference is by design rather than a dropped record. This schema describes
 findings jit stands behind and can act on; the advisory is a note to a human

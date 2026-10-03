@@ -296,7 +296,7 @@ func TestReinstallCommand(t *testing.T) {
 		{"sops", Entry{With: "sops"}, "`jit wrap sops`"},
 	}
 	for _, c := range cases {
-		if got := reinstallCommand(c.tool, c.entry); got != c.want {
+		if got := ReinstallCommand(c.tool, c.entry); got != c.want {
 			t.Errorf("%s: %s, want %s", c.tool, got, c.want)
 		}
 	}

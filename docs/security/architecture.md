@@ -252,15 +252,22 @@ compromised user account safe. The boundaries:
   recorded rather than eating it. It also does nothing for shells that were
   already running when it was installed, and nothing at all outside zsh -
   bash has no pre-write hook to attach to.
+- **A sealed CLI login is in plaintext while the CLI runs.** gcloud, the
+  Azure CLI and `jit aws-sso` need their login as files, so each run unpacks
+  it into an owner-only folder under jit's own directory
+  (`~/Library/Application Support/jitpass/{gcloud-run,az-run,aws-sso-run}/`)
+  and removes it when the run ends. A run killed before its cleanup leaves
+  the folder; the next run and every service start remove it, and
+  `jit doctor` reports one until then. Between `aws sso login` and the next
+  AWS call, a fresh SSO login is in `~/.aws/sso/cache` until jit seals it.
 - **A process you give a secret to can do anything with it.** Injection
   delivers the real value to the target process; what that process does is
   outside jit's control. That's the point of naming callers on every
   prompt - the decision happens before delivery.
 - **Credentials a tool mints for itself are not jit's.** The concrete case:
   after the AWS CLI uses a migrated key to assume a role, it caches the
-  resulting STS session in plaintext under `~/.aws/cli/cache`,
-  `aws sso login` writes its tokens to `~/.aws/sso/cache`, and clisso caches
-  a session in `~/.aws/credentials-cache` when asked to. jit stores what
+  resulting STS session in plaintext under `~/.aws/cli/cache`, and clisso
+  caches a session in `~/.aws/credentials-cache` when asked to. jit stores what
   *you* stored; these were minted downstream, will be minted again on the
   next run, and jit does not manage, clean or decoy them. It does now say
   they are there - `jit scan` reports them as out of scope rather than

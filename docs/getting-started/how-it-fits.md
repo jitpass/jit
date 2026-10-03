@@ -69,7 +69,7 @@ these three let you "just type the command," but through different machinery.
 | Pattern | What you actually run | Who does the work |
 | --- | --- | --- |
 | **Native hook** (call-out) | `aws s3 ls`, `terraform apply` | The tool calls jit on demand through its own credential mechanism. No prefix, no shim. |
-| **Wrap shim** (looks native) | `gh pr list`, `gcloud storage ls` | A `PATH` shim transparently runs `jit run` for you. Feels like the bare tool; it is jit underneath. |
+| **Wrap shim** (looks native) | `gh pr list`, `gcloud storage ls` | A `PATH` shim transparently runs the tool through jit for you. Feels like the bare tool; it is jit underneath. |
 | **Explicit [`jit run`](../run/index.md)** | `jit run ./deploy.sh`, `jit run --with gcp -- terraform apply` | You launch through jit directly: a project's `.env`, a named `--profile`, or a machine-global `--with` grant. |
 
 An [AI job](../service/ai-jobs.md) is none of these three: the AI tool never
@@ -77,8 +77,8 @@ runs the command itself. It asks the service to run a command you approved,
 and reads back the output with every secret value hidden.
 
 `aws` is *truly* native (jit hooked its
-`credential_process`, nothing wraps it), but a grant-wrapped `gcloud` only
-*looks* native, the shim is quietly running `jit run --with gcp -- gcloud`.
+`credential_process`, nothing wraps it), but a grant-wrapped `tofu` only
+*looks* native, the shim is quietly running `jit run --with gcp -- tofu`.
 
 ## One credential, all the way through
 
@@ -93,8 +93,9 @@ secret) end to end:
    path. Read it cold now and you get a decoy.
 3. **Use, one-off.** `jit run --with gcp -- terraform apply` grants the real
    file to that run's process tree, and only that tree, until it exits.
-4. **Use, natively.** `jit wrap add gcloud --grant gcp` once, and typing
-   `gcloud` after that carries the grant for you.
+4. **Use, natively.** `jit wrap add tofu --grant gcp` once, and typing
+   `tofu` after that carries the grant for you. (`gcloud` itself keeps its
+   own login, which [`jit wrap gcloud`](../wrap/gcloud.md) seals.)
 5. **Throughout.** Every grant is a fresh Touch ID that names the credential,
    even when jit is already unlocked. A cloned repo's config can never trigger
    it.

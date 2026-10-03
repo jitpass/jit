@@ -639,7 +639,7 @@ func TestPlanExtrasWrapAndGuardRows(t *testing.T) {
 
 	for _, want := range []string{
 		"[CLI wrap] 1",
-		"jit wrap undo <tool>",
+		"clisso keeps working through a jit shim; reversible: jit wrap undo clisso",
 		"clisso",
 		"each mint goes", // wrapBody may break the line inside the phrase
 		"[shell history guard] 1",

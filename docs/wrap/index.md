@@ -32,7 +32,8 @@ Unwrapping is two steps, because two things changed. `jit wrap undo <tool>`
 removes the shim and the `wrap-<tool>` profile; the tool's config file was
 scrubbed by `jit wrap`, so putting the token back in it is
 [`jit migrate undo`](../migrate/undo-and-remove.md) on that file. Run only
-the first and the tool stays logged out. See
+the first and the tool stays logged out. A store wrap (gcloud, az) is the
+exception: `jit wrap undo` writes the sealed login back itself. See
 [troubleshooting](./troubleshooting.md#unwrap-jit-wrap-undo-tool).
 
 ## Shim-based plugins
@@ -186,7 +187,7 @@ sops --decrypt secrets.enc.yaml          # native; the shim grants the real key
 
 Application-default credentials (the `gcp` mount) are still granted this
 way to `gcloud auth application-default` commands, through the gcloud
-store wrap below.
+store wrap above.
 
 Any other tool that reads one of these files wraps the same way by hand:
 `jit wrap add <tool> --grant <name>`, with names `gcp`, `sops`, `npm`,

@@ -49,7 +49,14 @@ var Azure = Layout{
 // account; anything near this is not a store this package wrote.
 const maxBlob = 64 << 20
 
-func (l Layout) isSecret(name string) bool    { return contains(l.Secrets, name) }
+func (l Layout) isSecret(name string) bool { return contains(l.Secrets, name) }
+
+// IsSecretFile reports whether a store entry (slash-separated, relative to
+// the config dir) sits under one of the layout's secret names.
+func (l Layout) IsSecretFile(name string) bool {
+	_, err := l.checkName(name)
+	return err == nil
+}
 func (l Layout) isEphemeral(name string) bool { return contains(l.Ephemeral, name) }
 
 // isPrivate reports whether a top-level name is either kind of non-setting.

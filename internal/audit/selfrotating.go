@@ -102,6 +102,18 @@ var selfRotatingCaches = []selfRotatingCache{
 		title:  "A gcloud legacy credential copy (rewritten on every login)",
 		action: "`jit wrap gcloud` seals it in the vault; if it was exposed, `gcloud auth revoke` first",
 	},
+	// `aws sso login`'s token cache. A login a profile in ~/.aws/config
+	// uses is sealed by `jit migrate ~/.aws/config` and counted
+	// (scanAWSSSOCache sets that remedy); this entry is for one no profile
+	// uses, which no migrate can take and no mount can serve (the CLI
+	// rewrites the file on every refresh).
+	{
+		match:      filepath.Join(".aws", "sso", "cache"),
+		dir:        true,
+		title:      "An IAM Identity Center login (renews itself)",
+		action:     "no profile in ~/.aws/config uses it; if exposed, `aws sso logout`",
+		toolMinted: true,
+	},
 	// `aws login` (AWS CLI 2.32+): console-session credentials, a refresh
 	// token, and the DPoP private key that is meant to bind the token to this
 	// machine, all in one file the CLI rewrites on every refresh. A copy of
@@ -113,7 +125,7 @@ var selfRotatingCaches = []selfRotatingCache{
 	{
 		match:      filepath.Join(".aws", "login", "cache"),
 		dir:        true,
-		title:      "An AWS console login (`aws login`, renews itself)",
+		title:      "An AWS console login (aws login, renews itself)",
 		action:     "no profile in ~/.aws/config uses it; if exposed, change the console password, then `aws logout`",
 		toolMinted: true,
 	},
@@ -125,7 +137,7 @@ var selfRotatingCaches = []selfRotatingCache{
 		match:      filepath.Join(".kube", "cache", "oidc-login"),
 		dir:        true,
 		title:      "A kubelogin OIDC login (renews itself)",
-		action:     "add `--token-cache-storage=keyring` to kubelogin's args in the kubeconfig that uses it, then delete this file",
+		action:     "left over if kubelogin already uses the keychain: delete it; otherwise add `--token-cache-storage=keyring` to its args",
 		toolMinted: true,
 	},
 	// gke-gcloud-auth-plugin's cache beside the kubeconfig: the access token

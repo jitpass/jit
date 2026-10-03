@@ -193,6 +193,13 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			}
 			if ce.Kind == wrap.KindNative {
 				row.VaultSecrets = store.classCount(ce.NativeCategory)
+				if ce.NativeCategory == vault.ClassAWS {
+					// A sealed SSO or `aws login` sign-in is an AWS credential
+					// in the vault too, with a class of its own
+					// (design/aws-sso-sealed.md D12): a machine whose only AWS
+					// login is sealed is protected, not "not through jit yet".
+					row.VaultSecrets += store.classCount(vault.ClassAWSSignIn)
+				}
 			}
 			// The migrate category behind a grant wrap stamps its mount
 			// name as the class, so the same count says whether the file

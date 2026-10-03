@@ -350,6 +350,10 @@ func DescribeUse(op string) string {
 		return "read a secret via grant"
 	case OpAWSCacheGet:
 		return "read cached AWS credentials"
+	case OpAWSCachePut:
+		return "cached AWS credentials"
+	case OpAWSCacheClear:
+		return "cleared cached AWS credentials"
 	default:
 		return op
 	}

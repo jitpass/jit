@@ -30,7 +30,7 @@ import (
 // implemented yet; wrapCmd's own RunE says so instead of guessing.
 
 var wrapCmd = &cobra.Command{
-	Use:     "wrap",
+	Use:     "wrap [<tool>]",
 	GroupID: groupWorkflow,
 	Short:   "Wrap CLI tools so their tokens are injected just-in-time",
 	Long: "jit wrap puts a shim first on PATH for each wrapped tool: you keep typing\n" +
@@ -38,7 +38,10 @@ var wrapCmd = &cobra.Command{
 		"process (via `jit run --profile wrap-<tool>`), never in a plaintext config\n" +
 		"file. Works in scripts, Makefiles, and tools spawning tools, anywhere the\n" +
 		"binary is invoked, not just interactive shells.\n\n" +
-		"Store the secret first (`jit vault set`), then describe the tool:\n" +
+		"A catalog tool is wrapped by name: `jit wrap gh`. For a CLI that keeps\n" +
+		"its own login (`jit wrap gcloud`, `jit wrap az`) the wrap seals that\n" +
+		"login in the vault instead, and each run unseals it for that one run.\n" +
+		"Any other tool: store the secret first (`jit vault set`), then\n" +
 		"`jit wrap add <tool> --env VAR=<vault-path>`. See docs/wrap/ for the\n" +
 		"catalog of known tools with automatic discovery.",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -481,11 +484,12 @@ var wrapAddCmd = &cobra.Command{
 	Long: "jit wrap add installs a shim so a tool works by its native name. Two forms:\n" +
 		"--env wraps a tool that reads a token from an ENV VAR (gh, stripe): the shim\n" +
 		"injects a wrap-<tool> profile. --grant wraps a tool that reads a machine-wide\n" +
-		"credential FILE (gcloud reads the gcp ADC): the shim runs `jit run --with\n" +
-		"<name>` so the tool gets the real file, gated by a disclosed challenge.",
+		"credential FILE (terraform/tofu read the gcp ADC): the shim runs `jit run\n" +
+		"--with <name>` so the tool gets the real file, gated by a disclosed challenge.\n" +
+		"gcloud itself is wrapped with `jit wrap gcloud`, which seals its own login.",
 	Example: "  jit vault set wrap-gh/GH_TOKEN\n" +
 		"  jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN\n" +
-		"  jit wrap add gcloud --grant gcp",
+		"  jit wrap add tofu --grant gcp",
 	Args:              requireArgs(1, 1, "a tool to wrap, e.g. `jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN`"),
 	ValidArgsFunction: completeWrapCatalog,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -648,7 +652,7 @@ var wrapListCmd = &cobra.Command{
 			entry := manifest.Tools[tool]
 			health := "ok"
 			if !installed[tool] {
-				health = "missing, re-run `jit wrap add " + tool + " ...`"
+				health = "missing, re-run " + wrap.ReinstallCommand(tool, entry)
 			}
 			kind, detail := "env", strings.Join(entry.Vars, ",")
 			if entry.IsGrant() {
@@ -661,7 +665,14 @@ var wrapListCmd = &cobra.Command{
 				kind, detail = "run-grant", "project mounts at the tool's cwd"
 			}
 			if entry.IsStore() {
-				kind, detail = "store", "jit "+entry.Store+"-run"
+				kind, detail = "store", "login sealed"
+				if s, ok := migrate.ToolStoreNamed(entry.Store); ok {
+					if found, _ := s.Layout.Plaintext(s.ConfigDir(home)); len(found) > 0 {
+						// The wrap was cancelled before sealing, or a login
+						// was made without the shim: doctor says what to run.
+						detail = "login on disk"
+					}
+				}
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, kind, detail, health)
 		}
@@ -670,8 +681,12 @@ var wrapListCmd = &cobra.Command{
 }
 
 var wrapUndoCmd = &cobra.Command{
-	Use:               "undo <tool>",
-	Short:             "Unwrap a tool: remove its shim and wrap profile",
+	Use:   "undo <tool>",
+	Short: "Unwrap a tool: remove its shim and wrap profile",
+	Long: "jit wrap undo removes a tool's shim and its wrap profile. For a CLI whose\n" +
+		"login jit sealed (gcloud and its family, az), it first writes the login\n" +
+		"back to the tool's own folder in plaintext (after a fresh Touch ID) and\n" +
+		"unwraps every tool that reads it; the vault copy is kept.",
 	Args:              requireArgs(1, 1, "a wrapped tool (see `jit wrap list`)"),
 	ValidArgsFunction: completeWrappedTools,
 	RunE: func(cmd *cobra.Command, args []string) error {

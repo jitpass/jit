@@ -143,3 +143,23 @@ func TestAddValidatesInput(t *testing.T) {
 		}
 	}
 }
+
+// A grant-wrap must not replace a store-wrap: the shim would then run the
+// tool without unsealing its login.
+func TestAddGrantRefusesAStoreWrappedTool(t *testing.T) {
+	home := t.TempDir()
+	m, err := LoadManifest(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Tools["gcloud"] = Entry{Store: "gcloud"}
+	if err := m.Save(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddGrant(home, "gcloud", "gcp", "/usr/local/bin/jit"); err == nil || !strings.Contains(err.Error(), "jit wrap undo gcloud") {
+		t.Fatalf("grant over a store-wrap: %v", err)
+	}
+	if m, _ := LoadManifest(home); m.Tools["gcloud"].Store != "gcloud" {
+		t.Fatalf("the store-wrap was replaced: %+v", m.Tools["gcloud"])
+	}
+}

@@ -578,7 +578,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 				suffix = fmt.Sprintf(" … and %d more", len(paths)-1)
 			}
 			avail := termtext.Width() - 4 - len(prefix) - termtext.VisibleWidth(suffix)
-			fmt.Fprintf(w, "    %s%s%s\n", prefix, termtext.TruncHead(displayFilePath(home, paths[0]), avail), suffix)
+			fmt.Fprintf(w, "    %s%s%s\n", prefix, termtext.TruncMid(displayFilePath(home, paths[0]), avail), suffix)
 		}
 	}
 	fmt.Fprintln(w)
@@ -713,11 +713,11 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// "Nothing to migrate" — found by adversarial QA, 2026-08-02. Each
 	// manual finding's own evidence line says what to do.
 	fmt.Fprintln(w)
-	if example := firstFindingPath(findings); example != "" {
+	if fix := firstFixCommand(findings); fix != "" {
 		fmt.Fprint(w, "  ")
 		termtext.Wrap(w, 2, "    ",
-			cmd.Sprintf(style.GlyphAction+" jit migrate %s --dry-run", displayFilePath(home, example))+
-				"   the guided fix plan for the first flagged file")
+			cmd.Sprintf(style.GlyphAction+" %s --dry-run", fix)+
+				"   the plan for the first fix, changing nothing")
 	}
 	fmt.Fprint(w, "  ")
 	// The way back. The triage view points here with "→ jit scan --full  the
@@ -783,12 +783,16 @@ const heavyCategoryCount = 10
 // trailer, in the same category order the report renders, so the example names
 // a file the reader can actually see above it. Empty string when nothing was
 // flagged (a clean report needs no fix example).
-func firstFindingPath(findings []Finding) string {
+// firstFixCommand is the fix the report suggests trying first: the first
+// auto-fixable finding's own command, so a store file points at `jit wrap
+// gcloud` and an SSO login at `jit migrate ~/.aws/config`, never at a
+// `jit migrate <file>` that would only redirect elsewhere.
+func firstFixCommand(findings []Finding) string {
 	byType := groupFindingsByType(findings)
 	for _, ft := range AllFindingTypes {
 		for _, f := range byType[ft] {
-			if f.FilePath != "" && hasAutoFix(f) {
-				return f.FilePath
+			if f.FixCommand != "" && hasAutoFix(f) {
+				return f.FixCommand
 			}
 		}
 	}
@@ -955,7 +959,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 			}
 			archived := LooksArchived(loc.Path)
 			avail := termtext.Width() - len(locIndent) - 2 - itemTagsWidth(archived, false)
-			fmt.Fprintf(w, "%s- %s", locIndent, termtext.TruncHead(entry, avail))
+			fmt.Fprintf(w, "%s- %s", locIndent, termtext.TruncMid(entry, avail))
 			writeItemTags(w, archived, false)
 			fmt.Fprintln(w)
 		}
@@ -970,7 +974,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 	// edge to edge.
 	archived := LooksArchived(item.rep.FilePath)
 	avail := termtext.Width() - 4 - itemTagsWidth(archived, unfiltered)
-	fmt.Fprintf(w, "  "+style.GlyphBullet+" %s", termtext.TruncHead(displayFilePath(home, item.rep.FilePath), avail))
+	fmt.Fprintf(w, "  "+style.GlyphBullet+" %s", termtext.TruncMid(displayFilePath(home, item.rep.FilePath), avail))
 	writeItemTags(w, archived, unfiltered)
 	fmt.Fprint(w, "\n\n")
 	for _, f := range item.findings {

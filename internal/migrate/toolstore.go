@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jitpass/jit/internal/atomicfile"
 	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -55,6 +56,9 @@ type ToolStore struct {
 	// vault's copy when another run sealed in between. nil means the run's
 	// store replaces it.
 	Merge func(base, current, after []byte) ([]byte, error)
+	// Accounts names the accounts a store is signed in to, sorted, so a
+	// reseal can tell a routine refresh from a login or a sign-out.
+	Accounts func(blob []byte) []string
 }
 
 // ToolStores lists every sealed tool store.
@@ -122,6 +126,17 @@ func (s ToolStore) Seal(v *vault.Vault, home string) (StoreSealResult, error) {
 	blob, err := s.Layout.Pack(dir)
 	if err != nil {
 		return res, fmt.Errorf("reading %s store: %w", s.Label, err)
+	}
+	if sealed && s.Merge != nil {
+		// A login made without the shim, beside accounts only the vault
+		// holds: keep both, the plaintext's entries winning.
+		current, err := v.Get(s.VaultPath)
+		if err != nil {
+			return res, err
+		}
+		if blob, err = s.Merge(nil, current, blob); err != nil {
+			return res, err
+		}
 	}
 	for _, f := range files {
 		data, err := os.ReadFile(f) // #nosec G304 -- f is under the tool's config dir, from s.files
@@ -197,29 +212,42 @@ func (s ToolStore) Reseal(v *vault.Vault, home, runDir string, base, dek, after 
 	if s.Rotates {
 		return after, nil
 	}
+	if err := s.backupRun(v, home, runDir); err != nil {
+		return after, fmt.Errorf("%w: %v", ErrResealBackup, err)
+	}
+	return after, nil
+}
+
+// ErrResealBackup says a reseal stored the login but could not record its
+// backup: the login is sealed, only undo would hand back an older copy.
+var ErrResealBackup = errors.New("sealed, but its backup was not recorded")
+
+// backupRun records fresh backups of the store a run left, under the
+// original paths.
+func (s ToolStore) backupRun(v *vault.Vault, home, runDir string) error {
 	files, err := s.files(runDir)
 	if err != nil || len(files) == 0 {
-		return after, err
+		return err
 	}
 	dir := s.ConfigDir(home)
 	var originals []string
 	for _, f := range files {
 		rel, err := filepath.Rel(runDir, f)
 		if err != nil {
-			return after, err
+			return err
 		}
 		originals = append(originals, filepath.Join(dir, rel))
 	}
 	for i, f := range files {
 		data, err := os.ReadFile(f) // #nosec G304 -- f is under the run's own private dir
 		if err != nil {
-			return after, err
+			return err
 		}
 		if _, err := storeSecretBackup(v, originals[i], data, backupFlags{restoreWith: restorePartners(originals, originals[i])}); err != nil {
-			return after, err
+			return err
 		}
 	}
-	return after, nil
+	return nil
 }
 
 // lock takes the store's reseal lock, blocking until it is free: a hidden
@@ -266,6 +294,38 @@ func (s ToolStore) Unseal(v *vault.Vault, home string) ([]string, error) {
 		return nil, err
 	}
 	return s.files(dir)
+}
+
+// RestoreCurrent writes the vault's current store over the config dir's
+// secret files: after `jit migrate undo` put back the seal-day copies, for
+// a store that Rotates (its seal-day refresh token was long since rotated
+// away; AWS SSO D10's reasoning). Returns the files written.
+func (s ToolStore) RestoreCurrent(v *vault.Vault, home string) ([]string, error) {
+	blob, err := v.Get(s.VaultPath)
+	if err != nil {
+		return nil, err
+	}
+	files, err := sealstore.Files(blob)
+	if err != nil {
+		return nil, err
+	}
+	dir := s.ConfigDir(home)
+	if err := os.MkdirAll(dir, s.DirMode); err != nil {
+		return nil, err
+	}
+	var written []string
+	for name, data := range files {
+		if !s.Layout.IsSecretFile(name) {
+			continue
+		}
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := atomicfile.WriteFileMode(p, data, 0o600); err != nil {
+			return written, err
+		}
+		written = append(written, p)
+	}
+	sort.Strings(written)
+	return written, nil
 }
 
 // IsStoreFile reports whether path is one of the files sealing moves into

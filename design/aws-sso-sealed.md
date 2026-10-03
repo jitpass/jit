@@ -1,6 +1,7 @@
 # Spec: AWS SSO logins, sealed in the vault
 
-Status: approved for build 2026-10-02 (spike succeeded, #212)
+Status: built 2026-10-02 (spike #212; build #213, #215, #217; QA fixes for
+2.4.0, see D7 and D12)
 Scope: IAM Identity Center logins the AWS CLI caches in
 `~/.aws/sso/cache`, the role credentials it caches in `~/.aws/cli/cache`,
 and the `~/.aws/config` profiles that use them.
@@ -148,6 +149,19 @@ change is what ends a session (botocore `LoginRefreshPasswordChanged`).
 `AWS_LOGIN_CACHE_DIRECTORY` is dropped from the inner environment, so the
 cache resolves into the run dir.
 
+**D12. The cache proof is the sign-in's own class (2.4.0 QA).** The fill
+proof was first "a consented unwrap of an aws-class secret". Release QA
+found two ways around it: the grant path recorded a proof on the caller's
+unverified class claim, so any process under a grant (a grant-wrapped
+npm's postinstall) could earn one; and `jit run --profile <aws keys>`
+reads aws-class keys and then execs the user's program, which keeps the
+pid and fork time the proof is anchored to. So the sealed sign-in has its
+own class, `aws_signin` (vault.ClassAWSSignIn): the proof is a read of
+THAT class, AEAD-verified on the normal unwrap path, and never recorded
+on the grant path. The cache read is gated on the same class, so a fetch
+asks one consent question. Fills, refused fills and clears are audited
+(a refused fill collapsed on its op, since any client can trigger it).
+
 ## Limits
 
 - While a fetch runs, the run dir holds the token in plaintext (owner-only,
@@ -156,3 +170,8 @@ cache resolves into the run dir.
 - Between `aws sso login` and the first fetch, the login is in plaintext.
 - A program that reads `~/.aws/sso/cache` itself rather than going through
   the profile's credential_process (a hand-rolled SSO client) sees no login.
+- A native `aws sso login` is captured whole: the next `jit aws-sso` run
+  moves every file in `~/.aws/sso/cache` into the vault, so an SSO profile
+  jit has not sealed (added after the migration) loses its login until
+  `jit migrate ~/.aws/config` seals it too, which the scan and the inner
+  CLI's error both point at.

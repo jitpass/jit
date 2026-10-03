@@ -77,7 +77,7 @@ func runStoreWrap(cmd *cobra.Command, home string, entry wrap.CatalogEntry, open
 	}
 
 	dir := displayPath(home, store.ConfigDir(home))
-	fmt.Fprintf(out, "Wrapped %s (%s):\n", strings.Join(wrapped, ", "), entry.Doc)
+	fmt.Fprintf(out, "Wrapped %s:\n", strings.Join(wrapped, ", "))
 	switch {
 	case sealed.AlreadySealed:
 		fmt.Fprintf(out, "  store  already in the vault; nothing in plaintext in %s\n", dir)
@@ -224,7 +224,7 @@ func storeWrapFindings(home, root string) []checkFinding {
 			out = append(out, checkFinding{
 				Kind:   kindWrapStore,
 				Path:   s.ConfigDir(home),
-				Detail: fmt.Sprintf("%s: the login is back in plaintext in %s (something logged in without the shim)", s.Name, displayPath(home, s.ConfigDir(home))),
+				Detail: fmt.Sprintf("%s: the login is in plaintext in %s", s.Name, displayPath(home, s.ConfigDir(home))),
 				Action: "`jit wrap " + s.Name + "` seals it again",
 			})
 		}

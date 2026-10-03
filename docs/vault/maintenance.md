@@ -160,7 +160,9 @@ once the profile that named a secret is gone. By default it only lists them;
 
 "Referenced" is judged against every profile jit can see: the project-local
 (current directory) and global profile stores, plus the profile behind every
-registered mount. A secret used only by another project you are not in and
+registered mount, pointer files, and the sealed CLI logins a wrap or
+`~/.aws/config` uses (`gcloud-cli/store`, `azure-cli/store`,
+`aws-sso/cache`). A secret used only by another project you are not in and
 have not mounted would look orphaned here, so check each secret's origin
 before pruning, or delete just one with `jit vault rm <path>`.
 

@@ -301,13 +301,13 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 			pluralWord(len(d.awsProfiles), "AWS profile", "AWS profiles")+" in ~/.aws/credentials "+glyphAction+" secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
 			d.awsProfiles)
 		printMigratePlanCategory(w,
-			pluralWord(len(d.awsSSOProfiles), "AWS sign-in profile", "AWS sign-in profiles")+" in ~/.aws/config "+glyphAction+" the SSO or console login moves to the vault; each profile fetches through jit, and AWS's own CLI still refreshes it",
+			pluralWord(len(d.awsSSOProfiles), "AWS sign-in profile", "AWS sign-in profiles")+" in ~/.aws/config "+glyphAction+" each login moves to the vault; AWS's CLI still refreshes it",
 			d.awsSSOProfiles)
 		printMigratePlanCategory(w,
 			pluralWord(len(d.k8sUsers), "kubeconfig user", "kubeconfig users")+" in ~/.kube/config "+glyphAction+" secrets move to the vault; fetched automatically whenever kubectl runs",
 			d.k8sUsers)
 		printMigratePlanCategory(w,
-			pluralWord(len(d.kubeloginUsers), "kubelogin user", "kubelogin users")+" in ~/.kube/config "+glyphAction+" kubelogin keeps its tokens in the keychain; the plaintext cache goes (backed up first), and each login signs in once more",
+			pluralWord(len(d.kubeloginUsers), "kubelogin user", "kubelogin users")+" in ~/.kube/config "+glyphAction+" tokens move to the keychain; each login signs in once more",
 			d.kubeloginUsers)
 		printMigratePlanCategory(w,
 			pluralWord(len(d.terraformHosts), "Terraform Cloud host", "Terraform Cloud hosts")+" in ~/.terraform.d/credentials.tfrc.json "+glyphAction+" tokens move to the vault; fetched automatically whenever terraform runs",
@@ -401,7 +401,12 @@ func printPlanExtras(w io.Writer, home string, e *planExtras) {
 		// line (the kind-specific consequence), which the shared shape's
 		// inline "(note)" would jam into an unreadable parenthetical.
 		fmt.Fprintf(w, "[%s] %d\n", pluralWord(len(e.wraps), "CLI wrap", "CLI wraps"), len(e.wraps))
-		fmt.Fprintf(w, "  "+glyphAction+" each tool keeps working through a jit shim; reversible: jit wrap undo <tool>\n")
+		if len(e.wraps) == 1 {
+			tool := e.wraps[0].tool
+			fmt.Fprintf(w, "  "+glyphAction+" %s keeps working through a jit shim; reversible: jit wrap undo %s\n", tool, tool)
+		} else {
+			fmt.Fprintf(w, "  "+glyphAction+" each tool keeps working through a jit shim; reversible: jit wrap undo <tool>\n")
+		}
 		for _, row := range e.wraps {
 			fmt.Fprintf(w, "  "+glyphBullet+" %s\n", row.tool)
 			if row.detail != "" {

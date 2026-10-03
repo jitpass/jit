@@ -25,7 +25,9 @@ agent-cache sweep described below). Each target is resolved on its own:
                moved into a profile and the vault, the file keeps working as a
                live mount. A machine-wide file at a known path (a shell config
                like ~/.zshrc, a shell history file like ~/.zsh_history,
-               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,
+               ~/.aws/credentials, ~/.aws/config (its SSO and `aws login`
+               profiles are sealed), ~/.kube/config (kubelogin moves to the
+               keychain), Terraform Cloud creds,
                ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP
                application-default credentials, a SOPS age key, ~/.netrc,
                ~/.pypirc, Claude Desktop's MCP config, Claude Code's

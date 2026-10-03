@@ -22,7 +22,8 @@ By itself it does NOT put migrated files back.
 
 Add --restore for the whole way out: every file jit migrated on this Mac
 gets its secrets back as plaintext first, then the purge runs. Live mounts,
-pointer files and MCP configs are written from the CURRENT vault values; a
+pointer files, MCP configs and the CLI logins jit sealed (gcloud, the Azure
+CLI, AWS sign-ins) are written from the CURRENT vault values; a
 shell config has jit's export line turned back into export lines, in place,
 so nothing you added since is lost; any other file gets its content from
 before jit, and when it changed since, today's version is kept beside it as

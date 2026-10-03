@@ -38,6 +38,36 @@ var AzureStore = ToolStore{
 	DirMode:    0o700,
 	Rotates:    true,
 	Merge:      MergeAzureStore,
+	Accounts:   azureAccounts,
+}
+
+// azureAccounts lists a store's accounts: the MSAL cache's Account keys
+// and each service principal (client, tenant). Sorted.
+func azureAccounts(blob []byte) []string {
+	files, err := sealstore.Files(blob)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	var cache struct {
+		Account map[string]json.RawMessage `json:"Account"`
+	}
+	if json.Unmarshal(files["msal_token_cache.json"], &cache) == nil {
+		for k := range cache.Account {
+			out = append(out, "user:"+k)
+		}
+	}
+	var sps []struct {
+		ClientID string `json:"client_id"`
+		Tenant   string `json:"tenant"`
+	}
+	if json.Unmarshal(files["service_principal_entries.json"], &sps) == nil {
+		for _, e := range sps {
+			out = append(out, "sp:"+e.ClientID+"/"+e.Tenant)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // AzureConfigDir is the Azure CLI config dir jit seals: the default one.
@@ -104,25 +134,42 @@ func mergeMSALCache(base, current, after []byte) ([]byte, error) {
 		for key := range union(b[section], a[section]) {
 			was, wasOK := b[section][key]
 			now, nowOK := a[section][key]
-			if wasOK == nowOK && bytes.Equal(was, now) {
-				continue // the run left it alone: current's stands
-			}
-			if !nowOK {
+			_, curOK := out[section][key]
+			switch {
+			case wasOK == nowOK && sameJSON(was, now):
+				// The run left it alone: current's stands.
+			case !nowOK:
 				delete(out[section], key)
-				continue
+			case wasOK && !curOK:
+				// Another run removed it (a sign-out) while this one
+				// refreshed it: the sign-out stands, or a live refresh
+				// token would come back for an account that is gone.
+			default:
+				if out[section] == nil {
+					out[section] = map[string]json.RawMessage{}
+				}
+				out[section][key] = now
 			}
-			if out[section] == nil {
-				out[section] = map[string]json.RawMessage{}
-			}
-			out[section][key] = now
 		}
 	}
 	for _, entries := range out {
 		if len(entries) > 0 {
-			return json.Marshal(out)
+			// MSAL's own layout (token_cache.py: indent=4), so the next
+			// run's file compares to this one entry by entry.
+			return json.MarshalIndent(out, "", "    ")
 		}
 	}
 	return nil, nil
+}
+
+// sameJSON reports whether two JSON values are equal ignoring layout: MSAL
+// writes its cache indented, and a merged store or an older one may not be.
+func sameJSON(a, b []byte) bool {
+	var ca, cb bytes.Buffer
+	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
+		return bytes.Equal(a, b)
+	}
+	return bytes.Equal(ca.Bytes(), cb.Bytes())
 }
 
 // mergeSPEntries merges service principal entries by client and tenant,
@@ -150,12 +197,15 @@ func mergeSPEntries(base, current, after []byte) ([]byte, error) {
 	for key := range union(b, a) {
 		was, wasOK := b[key]
 		now, nowOK := a[key]
+		_, curOK := out[key]
 		switch {
-		case wasOK == nowOK && bytes.Equal(was, now):
-		case nowOK:
-			out[key] = now
-		default:
+		case wasOK == nowOK && sameJSON(was, now):
+		case !nowOK:
 			delete(out, key)
+		case wasOK && !curOK:
+			// Logged out by another run meanwhile: that stands.
+		default:
+			out[key] = now
 		}
 	}
 	if len(out) == 0 {

@@ -1346,3 +1346,22 @@ func TestAWSLoginCacheIsFixableWhenAProfileUsesIt(t *testing.T) {
 		}
 	}
 }
+
+// An SSO login no profile uses is left to the tool, uncounted, with no
+// migrate offered: there is nothing for one to rewrite.
+func TestUnusedSSOLoginIsToolMinted(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".aws", "sso", "cache")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, "ee0bfd2552fbd840c02cc48b6e823320543c450f.json"), `{"accessToken":"a","refreshToken":"`+tokenBody(60)+`","startUrl":"https://x.awsapps.com/start"}`)
+	writeFile(t, filepath.Join(home, ".aws", "config"), "[default]\nregion = us-east-1\n")
+	findings, err := scanAWSSSOCache(Config{HomeDir: home})
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("findings %v, %v", findings, err)
+	}
+	annotateRemedies(findings, home, nil, nil)
+	f := findings[0]
+	if f.Remedy != RemedyManual || f.FixCommand != "" || f.ToolMinted == nil || CountedAsSecret(f) {
+		t.Fatalf("remedy %q fix %q tool_minted %+v counted %v", f.Remedy, f.FixCommand, f.ToolMinted, CountedAsSecret(f))
+	}
+}

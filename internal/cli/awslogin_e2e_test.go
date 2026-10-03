@@ -216,7 +216,7 @@ func TestAWSLoginE2E(t *testing.T) {
 	if out, err := c.CombinedOutput(); err == nil || !strings.Contains(string(out), "Credential Process") {
 		t.Fatalf("aws login on the sealed profile: %v\n%s", err, out)
 	}
-	args, err := migrate.AWSSealedLoginArgs(root, "dev", true)
+	args, err := migrate.AWSSealedLoginArgs(root, home, "dev", true)
 	if err != nil {
 		t.Fatal(err)
 	}

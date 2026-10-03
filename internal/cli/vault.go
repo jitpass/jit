@@ -2377,8 +2377,10 @@ var vaultOrphansCmd = &cobra.Command{
 		"[y/N] confirmation and a fresh Touch ID/passcode.\n\n" +
 		"\"Referenced\" is judged against everything jit can find: the current\n" +
 		"directory's profile store, the global one, every project store under your\n" +
-		"home folder, the profile behind every registered mount, and pointer files\n" +
-		"(jit's own in-place pointer files and ~/.clisso.yaml). A file among those\n" +
+		"home folder, the profile behind every registered mount, pointer files\n" +
+		"(jit's own in-place pointer files and ~/.clisso.yaml), and the sealed CLI\n" +
+		"logins a wrap or ~/.aws/config uses (gcloud-cli/store, azure-cli/store,\n" +
+		"aws-sso/cache). A file among those\n" +
 		"that can't be read stops the command instead of making its secrets look\n" +
 		"orphaned. A project outside your home folder is not searched, so check each\n" +
 		"secret's origin before pruning.\n\n" +

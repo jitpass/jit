@@ -78,8 +78,17 @@ const unlockAnd = unlockTheVault + " and "
 // With the unlock the credential is named by its one word ("use aws"): the
 // full phrase took a fourth line, and the vault is the larger half of what
 // is being approved.
+// credentialName is a class as the Touch ID sentence names it: the class
+// itself, except where the class is an identifier no person would say.
+func credentialName(class string) string {
+	if class == awsSignInClass {
+		return "AWS sign-in"
+	}
+	return class
+}
+
 func consentReasonFor(req consent.Request, unlocking bool) string {
-	cc, class := req.Caller, req.Credential
+	cc, class := req.Caller, credentialName(req.Credential)
 	const lead = "let "
 	what := fmt.Sprintf(" use your %s credential", class)
 	if unlocking {

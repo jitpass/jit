@@ -93,6 +93,9 @@ mechanism, so nothing about your workflow changes:
 | GCP application-default credentials | `~/.config/gcloud/application_default_credentials.json` | [Live-mounted from a template](../migrate/gcp.md); Google SDKs read the same path, non-secret fields untouched |
 | `.npmrc` auth tokens | project or global `.npmrc` | [Live-mounted from a template](../migrate/npm.md); non-secret settings untouched |
 | CLI tool tokens | `gh`, `stripe`, `ngrok`, … config files | [`jit wrap`](../wrap/index.md): a PATH shim injects the token per invocation, ~25 ms overhead |
+| A CLI's own login | gcloud's `~/.config/gcloud`, the Azure CLI's `~/.azure` | [`jit wrap gcloud`](../wrap/gcloud.md) / [`jit wrap az`](../wrap/az.md): the login is sealed in the vault and unsealed into a private folder for each run |
+| AWS sign-ins | `aws sso login` / `aws login` caches under `~/.aws` | Sealed by [`jit migrate ~/.aws/config`](../migrate/aws.md#aws-sso-iam-identity-center); each fetch runs AWS's own CLI on the unsealed login |
+| kubelogin OIDC tokens | `~/.kube/cache/oidc-login` | [Moved to the keychain](../migrate/kubernetes.md#oidc-logins-kubelogin) by `jit migrate ~/.kube/config` |
 
 ## Every prompt tells you why it appeared
 

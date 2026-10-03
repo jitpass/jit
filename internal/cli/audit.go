@@ -336,7 +336,9 @@ var auditCmd = &cobra.Command{
 		"It also records what the service refused at its socket: a rejected peer (a\n" +
 		"process the kernel says isn't yours, probing the agent), a malformed request, an\n" +
 		"unwrap whose claimed credential class doesn't match the ciphertext it sent\n" +
-		"(op=class-mismatch — a caller with no vault data trying to summon a prompt), or\n" +
+		"(op=class-mismatch — a caller with no vault data trying to summon a prompt), an\n" +
+		"AWS credential cache fill from a process that had not just read an AWS\n" +
+		"credential (op=aws-cache-refused — someone trying to plant credentials), or\n" +
 		"the accept loop failing, each as a kind=error line with the peer's provenance.\n" +
 		"Repeated rejections collapse into one line carrying a count; a collapsed line\n" +
 		"names the first caller of that window, because keying them per caller would let\n" +

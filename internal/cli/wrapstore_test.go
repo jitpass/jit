@@ -338,7 +338,7 @@ func TestStoreWrapDoctorFindings(t *testing.T) {
 	}
 	writeStoreWrapManifest(t, home, true)
 	got = storeWrapFindings(home, root)
-	if len(got) != 2 || !strings.Contains(got[1].Detail, "back in plaintext") {
+	if len(got) != 2 || !strings.Contains(got[1].Detail, "the login is in plaintext") {
 		t.Fatalf("findings %+v, want the plaintext-back finding too", got)
 	}
 	fixes = fixesFor(got[1].Kind, got[1].Action)

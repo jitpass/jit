@@ -80,6 +80,10 @@ then **[Install](./getting-started/install.md)** →
   [aws](./wrap/aws.md) · [terraform](./wrap/terraform.md) ·
   [docker](./wrap/docker.md) · [git](./wrap/git.md) ·
   [clisso](./wrap/clisso.md)
+- Sealed CLI logins: [gcloud](./wrap/gcloud.md) (with [bq](./wrap/bq.md),
+  [gsutil](./wrap/gsutil.md) and the docker and git helpers) ·
+  [az](./wrap/az.md): the CLI's own login moves into the vault and is
+  unsealed for each run
 - [Custom tools](./wrap/custom-tools.md) - wrap anything that reads an env var
 - [Wrap troubleshooting](./wrap/troubleshooting.md) - `wrap list`, `doctor --wrap`, `wrap undo`
 

@@ -388,9 +388,9 @@ func wrapPlanDetail(home, tool string) string {
 				tools = append(tools, t)
 			}
 		}
-		detail = entry.Doc + ": the login store moves to the vault (backed up encrypted first)"
+		detail = "the login store moves to the vault (backed up first)"
 		if len(tools) > 0 {
-			detail += "; " + strings.Join(tools, ", ") + " unseal it per run"
+			detail += "; " + strings.Join(tools, ", ") + " " + pluralWord(len(tools), "unseals", "unseal") + " it per run"
 		}
 	}
 	// A first shim also puts ~/.jit/shims on PATH by appending to the
@@ -459,7 +459,9 @@ var migrateCmd = &cobra.Command{
 		"               moved into a profile and the vault, the file keeps working as a\n" +
 		"               live mount. A machine-wide file at a known path (a shell config\n" +
 		"               like ~/.zshrc, a shell history file like ~/.zsh_history,\n" +
-		"               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,\n" +
+		"               ~/.aws/credentials, ~/.aws/config (its SSO and `aws login`\n" +
+		"               profiles are sealed), ~/.kube/config (kubelogin moves to the\n" +
+		"               keychain), Terraform Cloud creds,\n" +
 		"               ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP\n" +
 		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
 		"               ~/.pypirc, Claude Desktop's MCP config, Claude Code's\n" +
@@ -1421,7 +1423,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			// (plan §12a), so name the tools and the command right here.
 			if g, ok := globalMountGuidanceForPath(home, adcPath); ok {
 				fmt.Fprintf(out, "    tools that read it (%s): jit run --with %s <command>\n", g.tools, g.name)
-				fmt.Fprintf(out, "    or, to keep typing gcloud directly: jit wrap add gcloud --grant %s\n", g.name)
+				fmt.Fprintf(out, "    or, to keep typing one by name: jit wrap add <tool> --grant %s\n", g.name)
 			}
 		}
 		fmt.Fprintln(out)
@@ -1761,7 +1763,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// wraps aren't an --only category, so running them anyway would do work
 	// the user explicitly scoped out — skip them, and say so.
 	if len(migrateOnly) > 0 && len(tools) > 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "note: --only is set, skipping %s %s: %s\n", pluralWord(len(tools), "CLI", "CLIs"), pluralWord(len(tools), "wrap", "wraps"), strings.Join(tools, ", "))
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: --only is set, skipping %s: %s\n", countWord(len(tools), "CLI wrap", "CLI wraps"), strings.Join(tools, ", "))
 		tools = nil
 	}
 	// The guard is offered only when this scan found a credential in history:

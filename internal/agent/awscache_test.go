@@ -5,6 +5,7 @@ package agent
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,11 +18,11 @@ var awsCreds = []byte(`{"Version":1,"AccessKeyId":"ASIACACHED","SecretAccessKey"
 // consented unwrap of an aws-class secret.
 func readAWS(t *testing.T, c *Client) {
 	t.Helper()
-	wrapped, err := c.WrapKeyLabeled(bytes.Repeat([]byte{7}, 32), "aws-sso/cache", awsClass)
+	wrapped, err := c.WrapKeyLabeled(bytes.Repeat([]byte{7}, 32), "aws-sso/cache", awsSignInClass)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.UnwrapKeyLabeled(wrapped, "aws-sso/cache", awsClass); err != nil {
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws-sso/cache", awsSignInClass); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -181,5 +182,86 @@ func TestAWSCacheReadIsConsented(t *testing.T) {
 	deny.Store(true)
 	if _, ok, err := c.AWSCacheGet("dev"); err == nil || ok {
 		t.Fatalf("a declined program got cached credentials: ok %v err %v", ok, err)
+	}
+}
+
+// The audit log shows who filled the cache, every refused fill (the attack
+// the proof stops), and clears: a refused fill collapses on its op, so a
+// flood from many identities is one line.
+func TestAWSCacheIsAudited(t *testing.T) {
+	_, socket, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+	c := NewClient(socket)
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		_ = c.AWSCachePut("evil", awsCreds, time.Now().Add(time.Hour)) // refused: no proof
+	}
+	readAWS(t, c)
+	if err := c.AWSCachePut("dev", awsCreds, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AWSCacheClear(); err != nil {
+		t.Fatal(err)
+	}
+	events, err := c.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byOp := map[string]SessionEvent{}
+	for _, e := range events {
+		byOp[e.Op] = e
+	}
+	if e, ok := byOp[opAWSCacheRefused]; !ok || e.Kind != KindError || e.Count != 3 || !containsString(e.Labels, "aws-sso:evil") {
+		t.Errorf("refused fills: %+v", e)
+	}
+	if e, ok := byOp[OpAWSCachePut]; !ok || e.Kind != KindUse || !containsString(e.Labels, "aws-sso:dev") {
+		t.Errorf("accepted fill: %+v", e)
+	}
+	if _, ok := byOp[OpAWSCacheClear]; !ok {
+		t.Errorf("clear not audited: %v", byOp)
+	}
+}
+
+// The supply-chain case: a process inside a grant (a grant-wrapped npm's
+// postinstall) unwraps a covered secret while CLAIMING the sign-in class.
+// The grant path never verifies the class, so it must not earn a proof.
+func TestAWSCacheGrantReadEarnsNoProof(t *testing.T) {
+	s, socket, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+	sec := sealGrantSecret(t, "npm/NPM_TOKEN", "npmrc", bytes.Repeat([]byte{9}, 32))
+	wireGrantResolver(s, sec)
+	c := NewClient(socket)
+	if _, err := c.GrantCreate(int32(os.Getpid()), "", []string{"npm"}, "", time.Hour); err != nil { // #nosec G115 -- test pid
+		t.Fatal(err)
+	}
+	if _, err := c.UnwrapKeyLabeled(sec.Wrapped, "aws-sso/cache", awsSignInClass); err != nil {
+		t.Fatalf("the grant should still serve its own secret: %v", err)
+	}
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AWSCachePut("prod", awsCreds, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("a grant-served read with a claimed class filled the AWS cache")
+	}
+}
+
+// `jit run --profile aws-dev` reads ordinary AWS keys and then execs the
+// user's program, which keeps the pid and fork time. Reading AWS keys must
+// not earn the proof: only the sealed sign-in does.
+func TestAWSCacheOrdinaryAWSKeysEarnNoProof(t *testing.T) {
+	_, socket, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+	c := NewClient(socket)
+	wrapped, err := c.WrapKeyLabeled(bytes.Repeat([]byte{7}, 32), "aws-dev/AWS_SECRET_ACCESS_KEY", "aws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws-dev/AWS_SECRET_ACCESS_KEY", "aws"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AWSCachePut("prod", awsCreds, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("reading an AWS key let the caller fill the AWS cache")
 	}
 }

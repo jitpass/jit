@@ -29,17 +29,20 @@ package consent
 // importing it (consent stays a pure package); the TEST imports vault, which
 // is where the coupling belongs.
 var credentialClasses = map[string]bool{
-	"aws":       true,
-	"terraform": true,
-	"docker":    true,
-	"git":       true,
-	"kube":      true,
-	"gcp":       true,
-	"azure":     true,
-	"sops":      true,
-	"npmrc":     true,
-	"netrc":     true,
-	"pypirc":    true,
+	"aws": true,
+	// aws_signin is the sealed AWS SSO / `aws login` session: it mints role
+	// credentials for every account the user is assigned.
+	"aws_signin": true,
+	"terraform":  true,
+	"docker":     true,
+	"git":        true,
+	"kube":       true,
+	"gcp":        true,
+	"azure":      true,
+	"sops":       true,
+	"npmrc":      true,
+	"netrc":      true,
+	"pypirc":     true,
 	// cargo is a crates.io/registry publish token — the same
 	// supply-chain blast radius as npmrc's and pypirc's, gated for the
 	// same reason.

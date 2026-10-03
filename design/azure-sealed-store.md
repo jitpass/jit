@@ -68,9 +68,19 @@ file appears or goes) is announced, as gcloud's always are. stderr stays
 clean for the tools that parse az.
 
 **A3. No backup per reseal.** Unlike gcloud's, which changes only at a
-login, this store would leave a backup every hour. `jit wrap undo az` and
-`jit uninstall --restore` write back the vault's current copy (AWS SSO
-D10's reasoning).
+login, this store would leave a backup every hour. `jit wrap undo az`,
+`jit uninstall --restore` and `jit migrate undo` write back the vault's
+current copy (AWS SSO D10's reasoning; `ToolStore.RestoreCurrent`).
+
+**A5. A refresh that cannot be sealed is dropped, not rescued (2.4.0 QA).**
+A reseal can fail when the session ended mid-run (the screen locked during
+a long `az aks create`) and Touch ID is declined. For a new login the run's
+store is moved to `~/.azure` rather than lost; for a routine refresh (same
+accounts) it is not: the vault keeps the previous login, the next run
+refreshes again, and no 90-day refresh token is written to disk to save an
+hourly one. The merge compares entries by content, not layout (MSAL writes
+indented JSON), writes MSAL's own layout, and lets another run's sign-out
+win over this run's refresh of the same account.
 
 **A4. Nothing is ephemeral.** az rebuilds no secret cache of its own, and
 the command logs redact service principal secrets (spike E4), so the layout
