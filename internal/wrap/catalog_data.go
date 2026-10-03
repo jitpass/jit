@@ -594,14 +594,46 @@ var catalog = map[string]CatalogEntry{
 	// the tool run inside `jit run --with <mount>` by its own name. The
 	// migration comes first (`jit migrate <file>`), and the wrap says so
 	// when the mount is not there yet.
+	// Store kinds: the tool keeps its own login store in its config dir
+	// (gcloud's credentials.db, a refresh token with no fixed expiry). The
+	// wrap seals the store into the vault and every shim in the family
+	// unseals it per run through `jit gcloud-run`. Five names read the
+	// store (spike/gcloud-sealed-config E6-E8): gcloud (and, through it,
+	// gke-gcloud-auth-plugin, which runs gcloud from PATH), bq and gsutil
+	// (their own entry points), and the docker and git credential helpers,
+	// which load gcloud's library in-process and are launched by name.
 	"gcloud": {
 		Tool:       "gcloud",
-		Kind:       KindGrant,
-		Grant:      "gcp",
-		Doc:        "Google Cloud application-default credentials, served as a live mount to gcloud and the Google SDKs",
-		VerifyHint: "gcloud auth application-default print-access-token",
-		// The only check that exercises the mount; its output is the token.
-		VerifyPrintsSecret: true,
+		Kind:       KindStore,
+		Store:      "gcloud",
+		Doc:        "Google Cloud CLI login (refresh token), sealed in the vault and unsealed per run",
+		VerifyHint: "gcloud auth list",
+	},
+	"bq": {
+		Tool:       "bq",
+		Kind:       KindStore,
+		Store:      "gcloud",
+		Doc:        "BigQuery CLI, reading the sealed Google Cloud CLI login",
+		VerifyHint: "bq version",
+	},
+	"gsutil": {
+		Tool:       "gsutil",
+		Kind:       KindStore,
+		Store:      "gcloud",
+		Doc:        "Cloud Storage CLI, reading the sealed Google Cloud CLI login",
+		VerifyHint: "gsutil version -l",
+	},
+	"docker-credential-gcloud": {
+		Tool:  "docker-credential-gcloud",
+		Kind:  KindStore,
+		Store: "gcloud",
+		Doc:   "Docker credential helper for Google registries, reading the sealed Google Cloud CLI login",
+	},
+	"git-credential-gcloud": {
+		Tool:  "git-credential-gcloud",
+		Kind:  KindStore,
+		Store: "gcloud",
+		Doc:   "git credential helper for Google source repositories, reading the sealed Google Cloud CLI login",
 	},
 	"sops": {
 		Tool:       "sops",

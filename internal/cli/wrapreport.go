@@ -20,8 +20,8 @@ import (
 // the text. Paths, names and vault paths, never a value.
 type wrapReport struct {
 	Tool string `json:"tool"`
-	// Kind is the catalog's: "shim", "native", "grant", "capture" or
-	// "rungrant".
+	// Kind is the catalog's: "shim", "native", "grant", "capture",
+	// "rungrant" or "store".
 	Kind string `json:"kind"`
 	// Wrapped is whether the wrap finished: the shim and profile are in
 	// place, or for a native tool the migration ran.
@@ -37,6 +37,14 @@ type wrapReport struct {
 	// is, the shim has nothing to serve.
 	Grant         string `json:"grant,omitempty"`
 	GrantMigrated *bool  `json:"grant_migrated,omitempty"`
+	// Store is the login store a store wrap sealed (gcloud), and Shims the
+	// ~-paths of every shim in its family that was installed: one wrap
+	// shims gcloud, bq, gsutil and the two credential helpers together.
+	// StoreLoggedOut says the store holds no login yet; the next login
+	// through the shim is captured into it.
+	Store          string   `json:"store,omitempty"`
+	Shims          []string `json:"shims,omitempty"`
+	StoreLoggedOut bool     `json:"store_logged_out,omitempty"`
 	// Vaulted are other secrets the wrap moved into the vault (clisso's
 	// client secrets), by vault path.
 	Vaulted []string `json:"vaulted"`

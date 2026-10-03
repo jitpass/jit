@@ -13,6 +13,17 @@ and an adversarial pass) changed the decision:
   user asks for it. The design is recorded with the review's corrections
   folded in, so reviving it starts from facts, not from the first draft.
 
+**Update 2026-10-02: the gcloud store is now protected, without a mint.**
+Two premises above fell. The gcloud refresh token does not self-expire
+(Google: revoked, unused for 6 months, or the admin's session length), and
+supply-chain worms harvest these stores at install time (Shai-Hulud 2.0,
+Nov 2025: 373 AWS, 300 GCP, 115 Azure credentials verified exposed). The
+store is now sealed in the vault and materialized per run through
+`CLOUDSDK_CONFIG` (`design/gcloud-sealed-store.md`, evidence in
+`spike/gcloud-sealed-config/`). That is the ephemeral-store variant noted
+in point 2 below, and it needs no network surface: gcloud's own code still
+does every refresh. Part B (the mint) stays deferred; part C stays rejected.
+
 Companions: `internal/cli/clissocapture.go:37-45` (the best in-tree
 statement of capture vs mint), `internal/audit/derived.go:12-27` (the
 derived-credentials boundary), `design/migrate-clean.md` (backup/undo

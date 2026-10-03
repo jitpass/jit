@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -213,6 +214,12 @@ func runCatalogWrap(cmd *cobra.Command, tool string, rep *wrapReport) error {
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("Check it: open a new shell and run `%s`.\n", entry.VerifyHint)))
 		}
 		return nil
+	}
+
+	// Store tools keep their own login store in their config dir; the wrap
+	// seals it and shims the whole family that reads it.
+	if entry.Kind == wrap.KindStore {
+		return runStoreWrap(cmd, home, entry, openV, rep)
 	}
 
 	// Capture tools mint credentials rather than carrying one, so there is
@@ -653,6 +660,9 @@ var wrapListCmd = &cobra.Command{
 			if entry.IsRunGrant() {
 				kind, detail = "run-grant", "project mounts at the tool's cwd"
 			}
+			if entry.IsStore() {
+				kind, detail = "store", "jit "+entry.Store+"-run"
+			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, kind, detail, health)
 		}
 		return w.Flush()
@@ -669,6 +679,12 @@ var wrapUndoCmd = &cobra.Command{
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("jit wrap undo: %w", err)
+		}
+		// A store-wrap is a family: undoing any member puts the login back
+		// and unwraps them all, since a shim left on bq would unseal a store
+		// that is no longer sealed.
+		if m, err := wrap.LoadManifest(home); err == nil && m.Tools[tool].IsStore() {
+			return runStoreUndo(cmd, home, m.Tools[tool].Store, m)
 		}
 		if wrapDryRun {
 			prev, err := wrap.PreviewUndo(home, tool)
@@ -711,29 +727,35 @@ var wrapUndoCmd = &cobra.Command{
 		if len(res.VaultPaths) > 0 {
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("Vault secrets were kept: %s, `jit vault rm <path>` removes one for good.\n", strings.Join(res.VaultPaths, ", "))))
 		}
-		// The PATH line comes out only when the shim directory is EMPTY, not
-		// when the wrap manifest is — the docker/git credential helpers live
-		// there too (scripts wrap never counts), are found strictly by $PATH
-		// lookup, and removing the line broke their lookup in the next shell
-		// with no message (issue #77). The directory's contents are the one
-		// honest ledger of who still needs the line.
-		if res.Remaining == 0 {
-			rc := wrap.RcFile(home, os.Getenv("SHELL"))
-			if len(res.Leftovers) == 0 {
-				changed, err := wrap.RemovePathLine(rc)
-				if err != nil {
-					return fmt.Errorf("jit wrap undo: %w", err)
-				}
-				if changed {
-					fmt.Fprintf(out, "Last wrapped tool gone, removed the shim PATH line from %s.\n", rc)
-				}
-			} else {
-				wrapBody(out, 0, "  ", "Last wrapped tool gone; the shim PATH line stays in "+displayPath(home, rc)+
-					": "+strings.Join(res.Leftovers, ", ")+" still in "+displayPath(home, wrap.ShimDir(home))+".")
-			}
+		return finishUnwrapPath(out, home, res)
+	},
+}
+
+// finishUnwrapPath takes the shim PATH line out once the last shim is gone.
+// The PATH line comes out only when the shim directory is EMPTY, not when
+// the wrap manifest is — the docker/git credential helpers live there too
+// (scripts wrap never counts), are found strictly by $PATH lookup, and
+// removing the line broke their lookup in the next shell with no message
+// (issue #77). The directory's contents are the one honest ledger of who
+// still needs the line.
+func finishUnwrapPath(out io.Writer, home string, res wrap.UndoResult) error {
+	if res.Remaining != 0 {
+		return nil
+	}
+	rc := wrap.RcFile(home, os.Getenv("SHELL"))
+	if len(res.Leftovers) == 0 {
+		changed, err := wrap.RemovePathLine(rc)
+		if err != nil {
+			return fmt.Errorf("jit wrap undo: %w", err)
+		}
+		if changed {
+			fmt.Fprintf(out, "Last wrapped tool gone, removed the shim PATH line from %s.\n", rc)
 		}
 		return nil
-	},
+	}
+	wrapBody(out, 0, "  ", "Last wrapped tool gone; the shim PATH line stays in "+displayPath(home, rc)+
+		": "+strings.Join(res.Leftovers, ", ")+" still in "+displayPath(home, wrap.ShimDir(home))+".")
+	return nil
 }
 
 // parseWrapEnv turns repeated --env VAR=<vault-path> flags into the map +

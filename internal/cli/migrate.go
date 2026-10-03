@@ -367,6 +367,9 @@ func wrapPlanDetail(home, tool string) string {
 		detail = entry.Doc + ": shim only; every run happens inside a jit run grant"
 	case wrap.KindGrant:
 		detail = entry.Doc + ": shim only; every run grants the " + entry.Grant + " mount to that one process"
+	case wrap.KindStore:
+		detail = entry.Doc + ": the login store moves to the vault (backed up encrypted first); " +
+			strings.Join(wrap.StoreFamily(entry.Store), ", ") + " unseal it per run"
 	}
 	// A first shim also puts ~/.jit/shims on PATH by appending to the
 	// shell rc — a file edit the plan must disclose (ensureShimOnPath).

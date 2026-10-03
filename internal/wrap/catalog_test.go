@@ -95,6 +95,19 @@ func TestCatalogEntriesAreWellFormed(t *testing.T) {
 			if len(e.EnvVars) != 0 || len(e.Sources) != 0 || len(e.TokenCommand) != 0 || e.NativeCategory != "" {
 				t.Errorf("%s: grant entry must not carry shim or native fields", tool)
 			}
+		case KindStore:
+			// A store entry names the sealed store its family shares and
+			// nothing else; the family's namesake must exist, since the
+			// shim's plumbing command (`jit <Store>-run`) is named for it.
+			if e.Store == "" {
+				t.Errorf("%s: store entry needs Store", tool)
+			}
+			if len(e.EnvVars) != 0 || len(e.Sources) != 0 || len(e.TokenCommand) != 0 || e.NativeCategory != "" || e.Grant != "" {
+				t.Errorf("%s: store entry must not carry shim, native or grant fields", tool)
+			}
+			if fam := StoreFamily(e.Store); len(fam) == 0 || fam[0] != e.Store {
+				t.Errorf("%s: store %q has no namesake catalog entry (family %q)", tool, e.Store, fam)
+			}
 		default:
 			t.Errorf("%s: unknown kind %q", tool, e.Kind)
 		}
@@ -201,7 +214,9 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 // as it is; vault token lookup prints the token as id; snyk config get api
 // prints the stored token.
 func TestVerifyHintsThatPrintASecretSayItSo(t *testing.T) {
-	prints := map[string]bool{"gcloud": true, "sops": true}
+	// gcloud left this set on 2026-10-02: its wrap became a store-wrap,
+	// checked with `gcloud auth list`, which prints account names only.
+	prints := map[string]bool{"sops": true}
 	// Commands that print the credential they check. A hint containing one
 	// must be marked, whichever tool it belongs to.
 	secretCommands := []string{
@@ -239,5 +254,27 @@ func TestVerifyHintsRunThroughTheWrap(t *testing.T) {
 		if m, hit := e.MatchAccount(home, args); hit {
 			t.Errorf("%s: hint %q matches account rule %+v", tool, e.VerifyHint, m.Rule)
 		}
+	}
+}
+
+func TestStoreFamily(t *testing.T) {
+	got := StoreFamily("gcloud")
+	want := []string{"gcloud", "bq", "docker-credential-gcloud", "git-credential-gcloud", "gsutil"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("StoreFamily(gcloud) = %q, want %q", got, want)
+	}
+	if got := StoreFamily("nothing"); len(got) != 0 {
+		t.Fatalf("an unknown store has family %q", got)
+	}
+}
+
+func TestStoreWrapShimArgv(t *testing.T) {
+	got := shimArgv("bq", "/sdk/bin/bq", Entry{Store: "gcloud"}, []string{"ls", "--project_id=p"})
+	want := []string{"jit", "gcloud-run", "--real", "/sdk/bin/bq", "--", "ls", "--project_id=p"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("shimArgv = %q, want %q", got, want)
+	}
+	if !(Entry{Store: "gcloud"}).IsProfileless() {
+		t.Fatal("a store-wrap reported a profile")
 	}
 }

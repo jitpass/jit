@@ -412,8 +412,11 @@ func TestWrapListJSONAllAddsTheCatalog(t *testing.T) {
 	}
 	// The app runs verify_hint for the user; a check whose output is a
 	// token must say so, or Verify puts a live token in a window.
-	if g := byName["gcloud"]; g.VerifyHint == "" || !g.VerifyPrintsSecret {
-		t.Errorf("gcloud verify = %q, prints secret %v; want a hint marked as printing one", g.VerifyHint, g.VerifyPrintsSecret)
+	if s := byName["sops"]; s.VerifyHint == "" || !s.VerifyPrintsSecret {
+		t.Errorf("sops verify = %q, prints secret %v; want a hint marked as printing one", s.VerifyHint, s.VerifyPrintsSecret)
+	}
+	if g := byName["gcloud"]; g.VerifyPrintsSecret {
+		t.Errorf("gcloud verify %q is marked as printing a secret; gcloud auth list prints account names", g.VerifyHint)
 	}
 	if gh.VerifyPrintsSecret {
 		t.Error("gh's verify hint is marked as printing a secret; gh auth status masks the token")
@@ -518,8 +521,8 @@ func TestWrapGrantToolInstallsShimAndSaysMigrateFirst(t *testing.T) {
 		if r.Tool == "sops" && (r.Kind != "grant" || !r.Wrapped || r.With != "sops" || !r.Catalog) {
 			t.Errorf("sops row = %+v, want catalog grant kind, wrapped, with sops", r)
 		}
-		if r.Tool == "gcloud" && (r.Kind != "grant" || r.With != "gcp") {
-			t.Errorf("gcloud row = %+v, want catalog grant kind with gcp", r)
+		if r.Tool == "gcloud" && (r.Kind != "store" || r.Store != "gcloud" || r.With != "") {
+			t.Errorf("gcloud row = %+v, want catalog store kind on the gcloud store", r)
 		}
 	}
 }
