@@ -46,7 +46,12 @@ KWResult kw_challenge(const char *reason) {
         }
 
         if (!done) {
-            r.error_message = strdup("local authentication timed out waiting for a response");
+            // Close the sheet jit stopped waiting for. Left open, it stays
+            // on screen (or behind other windows) with no one waiting on it,
+            // and the next prompt queues behind it; an answer to it would
+            // approve a request that has already failed.
+            [ctx invalidate];
+            r.error_message = strdup("the prompt was not answered within 2 minutes; run the command again");
             return r;
         }
         if (!approved) {

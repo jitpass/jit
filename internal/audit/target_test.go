@@ -6,6 +6,7 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -329,5 +330,36 @@ func TestScanFileContentForTokensClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("clean file produced %d findings: %+v", len(findings), findings)
+	}
+}
+
+// A targeted scan of a folder that holds a fixed-path credential store finds
+// it: `jit scan ~/.aws` must not read CLEAN over a live SSO refresh token.
+func TestTargetedScanFindsKnownStoresInsideTheTarget(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".aws", "sso", "cache")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, "ee0bfd2552fbd840c02cc48b6e823320543c450f.json"), `{"accessToken":"a","refreshToken":"`+tokenBody(60)+`"}`)
+	writeFile(t, filepath.Join(home, ".aws", "config"), "[profile dev]\nsso_session = corp\nsso_account_id = 1\nsso_role_name = R\n\n[sso-session corp]\nsso_start_url = https://x\n")
+	cfg := Config{HomeDir: home}
+	findings, _, err := TargetedScan(cfg, []string{filepath.Join(home, ".aws")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range findings {
+		found = found || strings.HasPrefix(f.FilePath, dir) && f.FixCommand == "jit migrate ~/.aws/config"
+	}
+	if !found {
+		t.Fatalf("jit scan ~/.aws missed the SSO login: %+v", findings)
+	}
+	// A target elsewhere does not pick it up.
+	other := filepath.Join(home, "proj")
+	mkdirAll(t, other)
+	findings, _, _ = TargetedScan(cfg, []string{other})
+	for _, f := range findings {
+		if strings.HasPrefix(f.FilePath, dir) {
+			t.Fatalf("a scan of %s reported %s", other, f.FilePath)
+		}
 	}
 }

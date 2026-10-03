@@ -223,12 +223,18 @@ phase0(){
   ver=$("$JIT" version 2>&1); expect_contains "jit binary runs" "$ver" "jit version"
   info "$ver"
   svc=$("$JIT" service status 2>&1)
-  expect_contains "service is running" "$svc" "running"
+  # "not running" contains "running": assert the absence, not the word.
+  expect_missing "service is running" "$svc" "not running"
   # service and CLI should be on the same build (a stale service is the #1 release-day trap)
   local cliv svcv
   cliv=$(printf '%s' "$svc" | grep -oE 'CLI [0-9.]+' | awk '{print $2}')
   svcv=$(printf '%s' "$svc" | grep -oE 'service [0-9.]+' | awk '{print $2}')
-  expect_eq "service build == CLI build ($svcv vs $cliv)" "$svcv" "$cliv"
+  # Two empty strings are equal: a status that names no build is a failure.
+  if [ -z "$cliv" ] || [ -z "$svcv" ]; then
+    fail "service build == CLI build — status named no build (service '$svcv', CLI '$cliv')"
+  else
+    expect_eq "service build == CLI build ($svcv vs $cliv)" "$svcv" "$cliv"
+  fi
   # Whole-machine doctor reads YOUR profiles, so its verdict is recorded as a
   # baseline here, not asserted: phase 4 checks the fixture's own profile, and
   # phase 8 checks the machine is no worse than it was.
@@ -432,8 +438,8 @@ phase8(){
   # --grep patterns behave.
   expect_contains "audit --kind cmd records commands" "$("$JIT" audit --kind cmd 2>&1)" "jit "
   expect_contains "audit --grep filters (single word)" "$("$JIT" audit --grep migrate 2>&1)" "migrate"
-  local af; af=$("$JIT" audit --kind error 2>&1)
-  expect_contains "audit --kind filter runs" "$af" "audit"
+  # The empty-result message mentions "audit" too, so judge by exit status.
+  if "$JIT" audit --kind error >/dev/null 2>&1; then pass "audit --kind filter runs"; else fail "audit --kind error exited non-zero"; fi
   local st; st=$("$JIT" status 2>&1)
   expect_contains "status prints version" "$st" "$("$JIT" version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
   expect_contains "status reconciles secrets" "$st" "reconciled"

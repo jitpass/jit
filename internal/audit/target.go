@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -75,6 +76,20 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 			all = append(all, fs...)
 			degraded = append(degraded, failures...)
 			filesScanned++
+		}
+	}
+	// The fixed-path credential stores (an SSO or `aws login` cache, a
+	// kubelogin cache, the Azure CLI's files, ~/.aws/credentials itself) are
+	// read by their own scanners, which only the machine scan ran: `jit scan
+	// ~/.aws` reported CLEAN over a live refresh token, and a CI gate on it
+	// passed. Run them here too and keep what lies inside a target; their
+	// findings carry the structured fix, which wins over a content match of
+	// the same file below.
+	if known, _ := scanKnownCredentialFiles(cfg); len(known) > 0 {
+		for _, f := range known {
+			if underAnyTarget(f.FilePath, targets) {
+				all = append(all, f)
+			}
 		}
 	}
 	all = dedupeFindings(all)
@@ -256,4 +271,15 @@ func dedupeFindings(findings []Finding) []Finding {
 		out = append(out, f)
 	}
 	return out
+}
+
+// underAnyTarget reports whether path is one of the targets or inside one.
+func underAnyTarget(path string, targets []string) bool {
+	for _, t := range targets {
+		rel, err := filepath.Rel(filepath.Clean(t), filepath.Clean(path))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

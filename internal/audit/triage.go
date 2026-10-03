@@ -800,6 +800,7 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 		seen     map[string]bool
 		reads    []string
 		seenRead map[string]bool
+		logins   int
 		wrapTool string
 	}
 	byFile := map[string]*agg{}
@@ -808,11 +809,23 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 		if f.Remedy == RemedyManual || f.Remedy == "" || !CountedAsSecret(f) || f.Archived {
 			continue
 		}
-		a, ok := byFile[f.FilePath]
+		// A login whose fix rewrites another file (an SSO cache sealed by
+		// `jit migrate ~/.aws/config`, a kubelogin cache moved to the
+		// keychain by `jit migrate ~/.kube/config`) is that file's row: it
+		// is what the command touches, and the cache is not "rewritten".
+		row, login := f.FilePath, false
+		if target, ok := strings.CutPrefix(f.FixCommand, "jit migrate "); ok && f.Remedy == RemedyMigrate && strings.HasPrefix(target, "~/") && !strings.HasSuffix(f.FilePath, strings.TrimPrefix(target, "~")) {
+			row, login = target, true
+		}
+		a, ok := byFile[row]
 		if !ok {
 			a = &agg{seen: map[string]bool{}, seenRead: map[string]bool{}}
-			byFile[f.FilePath] = a
-			order = append(order, f.FilePath)
+			byFile[row] = a
+			order = append(order, row)
+		}
+		if login {
+			a.logins++
+			continue
 		}
 		if f.Remedy == RemedyWrap {
 			a.wrapTool = strings.TrimPrefix(f.FixCommand, "jit wrap ")
@@ -842,6 +855,10 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 	for _, file := range order {
 		a := byFile[file]
 		label := "secret-shaped values"
+		if a.logins > 0 && len(a.keys) == 0 && len(a.reads) == 0 {
+			out = append(out, triageFile{file: file, label: countWord(a.logins, "login", "logins") + " in its caches"})
+			continue
+		}
 		// Only when the file holds nothing of its own. A config carrying both
 		// an embedded secret and a pointer is labelled by the secret — that is
 		// the thing in it.
