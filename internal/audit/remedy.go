@@ -179,6 +179,15 @@ func annotateRemedies(findings []Finding, home string, k8sMigratable, streamlitM
 			f.FixCommand = "jit migrate " + shellSafePath(home, f.FilePath)
 		}
 	}
+	// Last, since it reads the remedy: a tool-minted login jit can fix
+	// (kubelogin's switch, a profile's `aws login` session) is no longer
+	// one left to its tool.
+	for i := range findings {
+		if toolMintedLogin(findings[i]) {
+			c, _ := toolMintedLoginFor(findings[i].FilePath)
+			findings[i].ToolMinted = &ToolMintedLogin{Title: c.title, Advice: c.action}
+		}
+	}
 	annotateCauseGroups(findings)
 }
 
