@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
@@ -61,7 +62,11 @@ type wrapToolJSON struct {
 	With       string           `json:"with,omitempty"`
 	Capture    string           `json:"capture,omitempty"`
 	Store      string           `json:"store,omitempty"`
-	VerifyHint string           `json:"verify_hint,omitempty"`
+	// StorePath is a store row's sealed store, by vault path: what each run
+	// of every family member reads (one `use` event per run, labelled with
+	// it), since a store row has no injects to count reads by.
+	StorePath  string `json:"store_path,omitempty"`
+	VerifyHint string `json:"verify_hint,omitempty"`
 	// VerifyPrintsSecret says VerifyHint's output is itself a credential:
 	// run it for its exit status and never show, log or keep what it prints.
 	VerifyPrintsSecret bool `json:"verify_prints_secret,omitempty"`
@@ -144,6 +149,7 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			row.Kind = "rungrant"
 		case entry.IsStore():
 			row.Kind, row.Store = "store", entry.Store
+			row.StorePath, _ = migrate.StoreVaultPath(entry.Store)
 		default:
 			row.Profile = entry.Profile
 			row.Injects = wrapInjectsFromProfile(home, entry, store)
@@ -191,6 +197,7 @@ func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) 
 			}
 			if ce.Kind == wrap.KindStore {
 				row.Store = ce.Store
+				row.StorePath, _ = migrate.StoreVaultPath(ce.Store)
 			}
 			res.Tools = append(res.Tools, row)
 		}

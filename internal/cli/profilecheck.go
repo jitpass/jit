@@ -127,6 +127,13 @@ const (
 	// verdict `jit wrap doctor` always gave; `jit doctor` used to disagree
 	// with it, and now doesn't.
 	kindWrap checkKind = "wrap"
+	// kindWrapStore is a store-wrap's login sitting on disk although the
+	// wrap is installed: a folder an interrupted gcloud run left unsealed,
+	// or a plaintext login that came back (design/gcloud-sealed-store.md).
+	// Not kindWrap: the tool runs fine, the secret is merely exposed, so it
+	// is advisory, and each finding's Action names the one command that
+	// fixes it.
+	kindWrapStore checkKind = "wrap_store"
 	// kindWrapEnv is a wrap check that failed for a reason true of THIS
 	// process rather than of the installation: the shim dir absent from the
 	// PATH this run was handed, or the real tool missing from it. A new login
@@ -361,7 +368,7 @@ const (
 var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
 	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
-	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
+	kindService, kindBackup, kindWrap, kindWrapEnv, kindWrapStore, kindMount,
 	kindMountStale, kindMountMoved, kindMountUnregistered,
 	kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindVaultKeyCopy, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
@@ -384,7 +391,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindRegistryEmpty, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindMountMoved, kindMountUnregistered, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
+	case kindOrphan, kindRegistryEmpty, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindMountMoved, kindMountUnregistered, kindWrapEnv, kindWrapStore, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
 		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool, kindNotLoggedIn:
 		return true
 	default:

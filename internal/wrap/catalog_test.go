@@ -278,3 +278,26 @@ func TestStoreWrapShimArgv(t *testing.T) {
 		t.Fatal("a store-wrap reported a profile")
 	}
 }
+
+func TestReinstallCommand(t *testing.T) {
+	cases := []struct {
+		tool  string
+		entry Entry
+		want  string
+	}{
+		{"gh", Entry{Profile: "wrap-gh"}, "`jit wrap gh`"},
+		{"bq", Entry{Store: "gcloud"}, "`jit wrap gcloud`"},
+		{"clisso", Entry{Capture: "clisso"}, "`jit wrap clisso`"},
+		{"mytool", Entry{Profile: "wrap-mytool"}, "`jit wrap add mytool ...`"},
+		// A hand grant-wrap on another mount keeps its --grant flag only in
+		// the user's memory: `jit wrap sops` would rebuild the catalog's own
+		// sops grant, not this one.
+		{"sops", Entry{With: "gcp"}, "`jit wrap add sops ...`"},
+		{"sops", Entry{With: "sops"}, "`jit wrap sops`"},
+	}
+	for _, c := range cases {
+		if got := reinstallCommand(c.tool, c.entry); got != c.want {
+			t.Errorf("%s: %s, want %s", c.tool, got, c.want)
+		}
+	}
+}

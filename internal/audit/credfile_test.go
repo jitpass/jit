@@ -1009,3 +1009,86 @@ func TestTargetedScanReachesCargoCredentials(t *testing.T) {
 		}
 	}
 }
+
+// The gcloud store used to be a tool-minted login: reported, uncounted, and
+// manual, because signing out and back in only rewrote the same plaintext
+// file. `jit wrap gcloud` now seals it, so the finding names that fix and
+// counts in the ledger as something jit can protect.
+func TestScanGcloudCLICredentialsPointsAtTheWrap(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".config", "gcloud", "legacy_credentials", "alex@example.com"))
+	writeFile(t, filepath.Join(home, ".config", "gcloud", "credentials.db"),
+		fakeGcloudCredentialsDB(`{"type": "authorized_user", "refresh_token": "1//jit-test-refresh-token-wrap"}`))
+	writeFile(t, filepath.Join(home, ".config", "gcloud", "legacy_credentials", "alex@example.com", "adc.json"),
+		`{"type": "authorized_user", "refresh_token": "1//jit-test-refresh-token-wrap"}`)
+	findings, err := scanGcloudCLICredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want the store and its legacy copy", len(findings))
+	}
+	annotateRemedies(findings, home, nil, nil)
+	for _, f := range findings {
+		if f.Remedy != RemedyWrap || f.FixCommand != "jit wrap gcloud" {
+			t.Errorf("%s: remedy %q fix %q, want the gcloud store wrap", f.FilePath, f.Remedy, f.FixCommand)
+		}
+		if !CountedAsSecret(f) || toolMintedLogin(f) {
+			t.Errorf("%s: not counted in the ledger (tool-minted %v)", f.FilePath, toolMintedLogin(f))
+		}
+	}
+	c := ComputeCoverage(home, "", findings)
+	if c.Exposed != 1 || c.Migratable != 1 {
+		t.Errorf("coverage %+v, want one exposed secret jit can protect", c)
+	}
+}
+
+// gcloud logs every command's arguments, so a token typed on a gcloud
+// command line sits in ~/.config/gcloud/logs in plaintext for 30 days, in a
+// place no other sweep looks (spike/gcloud-sealed-config E1).
+func TestScanGcloudLogs(t *testing.T) {
+	home := t.TempDir()
+	day := filepath.Join(home, ".config", "gcloud", "logs", "2026.10.02")
+	mkdirAll(t, day)
+	refresh := "1//0g" + tokenBody(60)
+	writeFile(t, filepath.Join(day, "10.00.00.000000.log"),
+		`2026-10-02 10:00:00,000 DEBUG    root            Running [gcloud.auth.activate-refresh-token] with arguments: [ACCOUNT: "u@example.com", TOKEN: "`+refresh+`"]`+"\n")
+	writeFile(t, filepath.Join(day, "10.01.00.000000.log"),
+		"2026-10-02 10:01:00,000 DEBUG    root            Running [gcloud.auth.list] with arguments: []\n")
+	writeFile(t, filepath.Join(day, "notes.txt"), refresh+"\n") // not a gcloud log
+	findings, err := scanGcloudLogs(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want the one log holding a token", len(findings))
+	}
+	f := findings[0]
+	if f.FindingType != FindingTypeExposedSecret || *f.KeyName != "Google OAuth Refresh Token" ||
+		!strings.HasSuffix(f.FilePath, "10.00.00.000000.log") || !strings.Contains(f.Evidence, "gcloud logs") {
+		t.Errorf("finding %+v", f)
+	}
+	if got, err := scanGcloudLogs(Config{HomeDir: t.TempDir()}); err != nil || got != nil {
+		t.Errorf("no logs folder: %v, %v", got, err)
+	}
+}
+
+// A token in a gcloud log is not "move it out": nothing reads the log, and
+// the token is usually the live login. The arrow says revoke, then delete.
+func TestGcloudLogTokenSaysRevokeThenDelete(t *testing.T) {
+	home := t.TempDir()
+	f := Finding{
+		FindingType: FindingTypeExposedSecret,
+		FilePath:    filepath.Join(home, ".config", "gcloud", "logs", "2026.10.02", "10.00.00.000000.log"),
+	}
+	kind, action := manualAction(f, manualContext{secrets: 1, copies: 1}, home)
+	if kind != kindRotateDelete || !strings.Contains(action, "gcloud auth revoke") || !strings.HasSuffix(action, "delete the log") {
+		t.Errorf("kind %q action %q", kind, action)
+	}
+	if n := manualNoun(f); n != "A token in a gcloud command log" {
+		t.Errorf("noun %q", n)
+	}
+	if isGcloudLog(filepath.Join(home, "project", "logs", "x.log")) {
+		t.Error("a project's own log was taken for gcloud's")
+	}
+}

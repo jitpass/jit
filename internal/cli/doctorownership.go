@@ -504,6 +504,12 @@ func dropOrphansReferencedElsewhere(findings []checkFinding, m *launchers.Map) [
 			referenced[path] = true
 		}
 	}
+	// Pointer files and store-wraps name vault paths directly, with no
+	// profile between: clisso's client-secret, a sealed gcloud login.
+	// `jit vault orphans` already counts them (vaultUsageFromMap).
+	for _, l := range append(append([]launchers.Launcher{}, m.Pointers...), m.StoreWraps...) {
+		referenced[l.VaultPath] = true
+	}
 	if len(referenced) == 0 {
 		return findings
 	}

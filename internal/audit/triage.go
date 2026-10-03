@@ -154,10 +154,16 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				wraps++
 			}
 		}
-		intro := fmt.Sprintf("one command; it vaults the values and rewrites %s", countWord(len(migratable)-wraps, "file", "files"))
-		if wraps > 0 {
-			intro += " and wraps " + countWord(wraps, "CLI", "CLIs")
+		// Name only what happens: a plan that is all wraps (the gcloud store,
+		// clisso) used to read "rewrites 0 files and wraps 1 CLI".
+		var does []string
+		if files := len(migratable) - wraps; files > 0 {
+			does = append(does, "rewrites "+countWord(files, "file", "files"))
 		}
+		if wraps > 0 {
+			does = append(does, "wraps "+countWord(wraps, "CLI", "CLIs"))
+		}
+		intro := "one command; it vaults the values and " + strings.Join(does, " and ")
 		fmt.Fprint(w, manifestIndent)
 		termtext.Wrap(w, len(manifestIndent), manifestIndent,
 			fmt.Sprintf("%s — every tool that reads them keeps working:", intro))
@@ -1644,6 +1650,8 @@ func manualTitle(causes []*triageCause, files []string, worst Finding, home stri
 // manualNoun is the one-line "what is this" for a single manual secret.
 func manualNoun(f Finding) string {
 	switch {
+	case isGcloudLog(f.FilePath):
+		return "A token in a gcloud command log"
 	case f.FindingType == FindingTypePrivateKeyRisk && f.KeyKind == keyKindGCPServiceAccount:
 		// Named for what it is, not the bucket it was found by: "at-risk
 		// private key" plus passphrase advice sent a real user toward
@@ -2183,6 +2191,15 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		// directories, so whatever else is true of the secret, the instruction
 		// has to name the file explicitly or it will not run.
 		return kindArchived, fmt.Sprintf("jit migrate %s", shellSafePath(home, f.FilePath))
+	case isGcloudLog(f.FilePath):
+		// A gcloud command log: nothing reads it, so "move it out" is not
+		// the fix, and the token in it is usually the live login. Revoking
+		// is what un-exposes it; the log is the copy to delete.
+		logs := "the log"
+		if ctx.copies > 1 {
+			logs = "the logs"
+		}
+		return kindRotateDelete, "revoke " + them + " (`gcloud auth revoke`), log in again, then delete " + logs
 	case f.FindingType == FindingTypePrivateKeyRisk && f.KeyKind == keyKindGCPServiceAccount:
 		// Not the passphrase advice below: a service-account key has no
 		// passphrase to add, and the only revocation lives at the provider.

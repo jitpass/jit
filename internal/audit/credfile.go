@@ -67,6 +67,7 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanGitCredentials,
 		scanGCPApplicationDefaultCredentials,
 		scanGcloudCLICredentials,
+		scanGcloudLogs,
 		scanNetrc,
 		scanClissoConfig,
 	} {
@@ -1068,6 +1069,61 @@ func scanGcloudCLICredentials(cfg Config) ([]Finding, error) {
 	return findings, err
 }
 
+// scanGcloudLogs sweeps gcloud's own command logs for tokens. gcloud writes
+// every command's arguments to ~/.config/gcloud/logs/<date>/<time>.log, so a
+// token typed on a gcloud command line (`auth activate-refresh-token ACCOUNT
+// TOKEN`, an `--access-token-file` read into a flag) stays there in
+// plaintext for the log's lifetime, 30 days by default — and sealing the
+// store (`jit wrap gcloud`) does not touch it. Measured on SDK 587.0.0
+// (spike/gcloud-sealed-config E1): access tokens printed by
+// `print-access-token` are not logged; tokens passed as arguments are.
+//
+// The logs are not in any other scan's path: the content sweep's name gate
+// admits no `*.log` under a dated folder. Each file goes through the same
+// vendor-format sweep as a credential dump, so the findings are ordinary
+// exposed_secret ones and land in "rotate, then delete every copy".
+func scanGcloudLogs(cfg Config) ([]Finding, error) {
+	logs := filepath.Join(cfg.HomeDir, ".config", "gcloud", "logs")
+	days, err := os.ReadDir(logs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var findings []Finding
+	for _, day := range days {
+		if !day.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(logs, day.Name()))
+		if err != nil {
+			continue // one unreadable day never costs the rest
+		}
+		for _, f := range files {
+			if !f.Type().IsRegular() || filepath.Ext(f.Name()) != ".log" {
+				continue
+			}
+			path := filepath.Join(logs, day.Name(), f.Name())
+			found, err := scanFileContentForTokens(cfg, path)
+			if err != nil {
+				continue
+			}
+			for i := range found {
+				found[i].Evidence = "gcloud logs each command's arguments, and this token was on one; it stays here until the log is deleted"
+			}
+			findings = append(findings, found...)
+		}
+	}
+	return findings, nil
+}
+
+// isGcloudLog reports whether path is one of gcloud's own command logs.
+func isGcloudLog(path string) bool {
+	sep := string(filepath.Separator)
+	return strings.Contains(path, sep+filepath.Join(".config", "gcloud", "logs")+sep) && filepath.Ext(path) == ".log"
+}
+
 // scanGcloudSerializedCredential reports the secret fields of a serialized
 // gcloud OAuth credential found in path's raw bytes — SQLite store and
 // legacy JSON copy alike. One finding per secret field kind, not per
@@ -1116,15 +1172,22 @@ func scanGcloudSerializedCredential(cfg Config, path, what string) ([]Finding, e
 		if len(matches) > 1 {
 			evidence = fmt.Sprintf("%s (%s) found for %d accounts", what, credType, len(matches))
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      sp.field,
 			RawValue:     string(matches[0][1]),
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
-			Evidence:     evidence,
-		}))
+			Evidence:     evidence + "; `jit wrap gcloud` seals the store in the vault and unseals it per gcloud run",
+		})
+		// The store is gcloud's own, so no mount and no migrate can take it
+		// — but the store-wrap can (design/gcloud-sealed-store.md). Set here
+		// rather than left to annotateRemedies, which would call the file
+		// manual for being tool-rewritten (selfRotatingCaches).
+		f.Remedy = RemedyWrap
+		f.FixCommand = "jit wrap gcloud"
+		findings = append(findings, f)
 	}
 	return findings, nil
 }

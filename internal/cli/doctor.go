@@ -795,6 +795,8 @@ func findingLabel(f checkFinding) string {
 		// have to infer it from the glyph — and so two wrap groups in one
 		// report are distinguishable rather than the same word twice.
 		return "[wrap: this shell]"
+	case kindWrapStore:
+		return "[wrap: login on disk]"
 	case kindMount:
 		return "[mount]"
 	case kindMountStale:
@@ -883,7 +885,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindVaultKeyCopy, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindWrapStore, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindVaultKeyCopy, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)

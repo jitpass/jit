@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
@@ -20,6 +21,17 @@ import (
 // (sealstore.Gcloud), class gcp, so one unseal is one consent prompt naming
 // the credential the user knows from ADC (design/gcloud-sealed-store.md D2).
 const GcloudStorePath = "gcloud-cli/store"
+
+// StoreVaultPath maps a store-wrap's store name (wrap.Entry.Store) to the
+// vault path its sealed store lives at. One table, so everything that asks
+// "what does this wrap use" agrees.
+func StoreVaultPath(store string) (string, bool) {
+	switch store {
+	case "gcloud":
+		return GcloudStorePath, true
+	}
+	return "", false
+}
 
 // GcloudConfigDir is the gcloud config dir jit seals: the default one.
 // A CLOUDSDK_CONFIG pointing elsewhere is the user's own arrangement and is
@@ -144,6 +156,14 @@ func UnsealGcloudStore(v *vault.Vault, home string) ([]string, error) {
 		return nil, err
 	}
 	return gcloudStoreFiles(dir)
+}
+
+// IsGcloudStoreFile reports whether path is one of the files sealing moves
+// into the vault: credentials.db, or anything under legacy_credentials/.
+func IsGcloudStoreFile(home, path string) bool {
+	dir := GcloudConfigDir(home)
+	return path == filepath.Join(dir, "credentials.db") ||
+		strings.HasPrefix(path, filepath.Join(dir, "legacy_credentials")+string(filepath.Separator))
 }
 
 // GcloudStoreSealed reports whether the vault holds gcloud's login store.

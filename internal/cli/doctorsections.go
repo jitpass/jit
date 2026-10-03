@@ -749,5 +749,8 @@ func wrapFindings() ([]checkFinding, []string) {
 		}
 		out = append(out, checkFinding{Kind: kind, Detail: fmt.Sprintf("%s: %s", c.Name, c.Detail)})
 	}
+	if root, err := vaultRootDir(); err == nil {
+		out = append(out, storeWrapFindings(home, root)...)
+	}
 	return out, ok
 }

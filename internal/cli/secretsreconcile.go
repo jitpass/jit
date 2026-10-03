@@ -4,13 +4,16 @@
 package cli
 
 import (
+	"os"
 	"sort"
 	"strings"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/settings"
 	"github.com/jitpass/jit/internal/vault"
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 // secretState classifies one stored secret (or a whole group of them) by who
@@ -181,6 +184,13 @@ func reconcileSecrets(root, cwd string, v *vault.Vault) (secretsReconciliation, 
 		}
 	}
 
+	// A store-wrap's sealed login is in use while the wrap is installed,
+	// with no profile in between (KindStoreWrap). Tolerant like the rest:
+	// an unreadable wrap manifest adds nothing.
+	for _, vp := range storeWrapVaultPaths() {
+		elsewhereRefs[vp] = true
+	}
+
 	paths, err := v.List()
 	if err != nil {
 		return secretsReconciliation{}, err
@@ -319,4 +329,30 @@ func markDuplicateGroups(rec *secretsReconciliation) {
 			rec.DuplicateSecrets += len(g.Members)
 		}
 	}
+}
+
+// storeWrapVaultPaths lists the sealed stores the installed store-wraps
+// unseal, by vault path. Lenient: no home or no manifest is none.
+func storeWrapVaultPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	m, err := wrap.LoadManifest(home)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range m.Tools {
+		if !e.IsStore() {
+			continue
+		}
+		if vp, ok := migrate.StoreVaultPath(e.Store); ok && !seen[vp] {
+			seen[vp] = true
+			out = append(out, vp)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/sealstore"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -54,6 +55,9 @@ const (
 	restoreShell   restoreKind = "shell"
 	restoreBackup  restoreKind = "backup"
 	restoreCreated restoreKind = "created"
+	// restoreStore is a sealed login store (gcloud's): written back from
+	// its current vaulted copy, which is newer than any per-file backup.
+	restoreStore restoreKind = "store"
 )
 
 // driftGrace is how long after its backup a file's mtime still counts as
@@ -176,6 +180,10 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 		switch {
 		case mounted[path]:
 			// the registry entry above covers it
+		case migrate.IsGcloudStoreFile(home, path):
+			// Sealing deleted it on purpose, so it would read as Gone (and
+			// its gcp class as mount-born). The store item below brings the
+			// whole login back instead.
 		case rec.RemoveOnRestore:
 			if _, err := os.Lstat(path); err == nil {
 				plan.Restore = append(plan.Restore, restoreItem{Path: path, Kind: restoreCreated, rec: rec})
@@ -225,6 +233,16 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 				item.Drifted = info.ModTime().After(time.Unix(rec.UnixTS, 0).Add(driftGrace))
 			}
 			plan.Restore = append(plan.Restore, item)
+		}
+	}
+
+	// The sealed gcloud login: one item for the whole store, unless the
+	// login is already back in plaintext (then gcloud has it, and writing
+	// the vaulted copy over it would replace a newer login with an older).
+	if sealed, err := migrate.GcloudStoreSealed(rv); err == nil && sealed {
+		dir := migrate.GcloudConfigDir(home)
+		if present, err := sealstore.Gcloud.Plaintext(dir); err == nil && !containsString(present, "credentials.db") {
+			plan.Restore = append(plan.Restore, restoreItem{Path: filepath.Join(dir, "credentials.db"), Kind: restoreStore})
 		}
 	}
 
@@ -364,6 +382,10 @@ func restoreOneItem(v *vault.Vault, home string, item restoreItem, registryPath 
 	case restoreCreated:
 		return "", migrate.RestoreFromBackup(v, item.rec)
 
+	case restoreStore:
+		_, err := migrate.UnsealGcloudStore(v, home)
+		return "", err
+
 	default:
 		if err := checkRestoreDestination(item.Path); err != nil {
 			return "", err
@@ -486,6 +508,8 @@ func restoreKindPhrase(k restoreKind) string {
 		return "shell config, jit's line becomes exports again"
 	case restoreCreated:
 		return "created by jit, deleted"
+	case restoreStore:
+		return "gcloud login, its latest from the vault"
 	default:
 		return "its content from before jit"
 	}

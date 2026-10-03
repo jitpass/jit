@@ -77,28 +77,30 @@ var selfRotatingCaches = []selfRotatingCache{
 	// legacy_credentials tree on every login — and both are doubly out of
 	// mount's reach: a SQLite file needs seeks and byte-range locks no FIFO
 	// can serve, and the tool writes back. scanGcloudCLICredentials reports
-	// what is inside; these entries keep the remedy manual so scan never
-	// promises a `jit migrate` that migrate would refuse.
+	// what is inside and points it at `jit wrap gcloud`, which seals the
+	// whole store (design/gcloud-sealed-store.md); these entries keep any
+	// OTHER secret the sweep finds in those files from being offered a mount.
+	// Not toolMinted since 2026-10-02: the wrap is a fix that does not
+	// reproduce the plaintext, so the store counts in the ledger like
+	// clisso's config does.
 	// One shared action string for both gcloud entries: the triage group
 	// prints a single arrow for the class, so two entries that will always
 	// appear together must agree on it or the group shows one of them
 	// picked arbitrarily.
 	{
-		match:      filepath.Join(".config", "gcloud", "credentials.db"),
-		title:      "The gcloud CLI's own login (gcloud rewrites this store itself)",
-		action:     "revoke with `gcloud auth revoke` if exposed, then log in again when needed",
-		toolMinted: true,
+		match:  filepath.Join(".config", "gcloud", "credentials.db"),
+		title:  "The gcloud CLI's own login (gcloud rewrites this store itself)",
+		action: "`jit wrap gcloud` seals it in the vault; if it was exposed, `gcloud auth revoke` first",
 	},
 	{
 		// Anchored under .config/gcloud, not a bare component match: a
 		// project's own legacy_credentials/ directory holding, say, a
 		// Stripe key must keep its migrate offer and must not be told to
 		// run `gcloud auth revoke` (code review, 2026-09-10).
-		match:      filepath.Join(".config", "gcloud", "legacy_credentials"),
-		dir:        true,
-		title:      "A gcloud legacy credential copy (rewritten on every login)",
-		action:     "revoke with `gcloud auth revoke` if exposed, then log in again when needed",
-		toolMinted: true,
+		match:  filepath.Join(".config", "gcloud", "legacy_credentials"),
+		dir:    true,
+		title:  "A gcloud legacy credential copy (rewritten on every login)",
+		action: "`jit wrap gcloud` seals it in the vault; if it was exposed, `gcloud auth revoke` first",
 	},
 	// A variant of the class: the value (a OneLogin API client-secret)
 	// never rotates, but the file is still tool-rewritten — clisso creates

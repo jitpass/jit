@@ -26,6 +26,7 @@ import (
 	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/screenlock"
+	"github.com/jitpass/jit/internal/sealstore"
 )
 
 // This file is `jit service run`: the daemon mode itself — what the installed
@@ -214,6 +215,18 @@ var agentRunCmd = &cobra.Command{
 			}
 			for _, err := range errs {
 				fmt.Fprintf(stderr, "jit service: unused-key cleanup: %v\n", err)
+			}
+		}
+		// A gcloud-run killed before its cleanup leaves its private folder,
+		// the unsealed login inside (design/gcloud-sealed-store.md D1).
+		// Every gcloud run sweeps these; this catches the case where no
+		// gcloud runs again for a while.
+		if removed, err := sealstore.Sweep(gcloudRunBase(root), gcloudRunOwnerAlive); len(removed) > 0 || err != nil {
+			if len(removed) > 0 {
+				fmt.Fprintf(stdout, "jit service: removed %s an interrupted gcloud run left behind\n", countWord(len(removed), "unsealed login folder", "unsealed login folders"))
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "jit service: gcloud run cleanup: %v\n", err)
 			}
 		}
 		// Best-effort "how were you asked" for the audit trail: probe once per

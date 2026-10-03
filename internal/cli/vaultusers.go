@@ -156,6 +156,13 @@ func vaultUsageFromMap(m *launchers.Map) vaultUsage {
 	for _, pl := range m.Pointers {
 		usage.byPath[pl.VaultPath] = append(usage.byPath[pl.VaultPath], secretUse{PointerFile: pl.File})
 	}
+	// A store-wrap's sealed store is used by the wrap manifest that names
+	// it, the way a pointer file uses the secret it names: `jit vault
+	// orphans` must never offer to prune a wrapped tool's login, and `jit
+	// vault rm` must name what still unseals it.
+	for _, sw := range m.StoreWraps {
+		usage.byPath[sw.VaultPath] = append(usage.byPath[sw.VaultPath], secretUse{PointerFile: sw.File})
+	}
 
 	for p, list := range usage.byPath {
 		sort.SliceStable(list, func(i, j int) bool { return useSortKey(list[i]) < useSortKey(list[j]) })

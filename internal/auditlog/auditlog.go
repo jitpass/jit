@@ -239,7 +239,7 @@ const RedactToken = "<redacted>"
 var secretPrefixes = []string{
 	"sk-", "sk_", "pk_", "rk_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
 	"github_pat_", "glpat-", "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xapp-", "xwfp-",
-	"AKIA", "ASIA", "AIza", "ya29.", "AGPA", "shpat_", "shpss_",
+	"AKIA", "ASIA", "AIza", "ya29.", "1//0", "AGPA", "shpat_", "shpss_",
 	"npm_", "dop_v1_", "dckr_pat_", "hf_", "sk-ant-",
 	// GitLab issues a distinct prefix per token class; glpat- above is only
 	// the personal one.

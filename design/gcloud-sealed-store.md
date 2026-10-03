@@ -1,6 +1,6 @@
 # Spec: gcloud's credential store, sealed in the vault
 
-Status: approved for build 2026-10-02, phase A in progress
+Status: approved for build 2026-10-02; phase A built (#210), phase B built
 Scope: vaulting the gcloud CLI's own login store (`credentials.db`,
 `legacy_credentials/`), the `jit gcloud-run` plumbing that materializes it
 for one command, the `store` wrap kind and its five shims, undo.
@@ -140,13 +140,35 @@ keeps the vault copy.
 kind with its five catalog entries and docs, seal and undo, CLAUDE.md and
 `wrap/doc.go` prose.
 
-**B:** scan and coverage. `scanGcloudCLICredentials` reports a sealed store
-as protected (a new protected source beside `countProtectedSecrets`, which
-counts only FIFOs), the gcloud entries leave `selfRotatingCaches`, the
-finding's fix becomes `jit wrap gcloud`, the `access_tokens.db` advisory is
-dropped when sealed, `~/.config/gcloud/logs` is swept for tokens (E1), and
-status, doctor and the app's Tools window show the wrap. Leftover run dirs
-become a doctor finding and a service-start sweep.
+**B (built):** making the sealed store a first-class citizen everywhere
+else jit looks.
+
+- *Referenced, never an orphan.* A store-wrap is a new launcher kind
+  (`launchers.KindStoreWrap`, `Map.StoreWraps`): the wrap manifest uses the
+  sealed store's vault path the way a pointer file does. `jit vault orphans`
+  never offers to prune it, `jit vault rm` names what still unseals it,
+  doctor's orphan check honours it (and pointer files, which it had missed),
+  and `jit status` counts it as managed elsewhere. After `jit wrap undo` the
+  kept vault copy is a genuine orphan again.
+- *Scan.* The store findings carry `jit wrap gcloud` as their fix and count
+  in the ledger: they left the tool-minted class, because the wrap is a fix
+  that does not reproduce the plaintext. Coverage follows the existing wrap
+  rule rather than a new protected source: a wrapped tool's secret leaves
+  Exposed and was never in Protected (only live mounts are), so the sealed
+  store does the same. Bare `jit migrate` plans the wrap like any other.
+- *Logs.* gcloud logs every command's arguments, so a token typed on a
+  gcloud command line sits in `~/.config/gcloud/logs` for 30 days, where no
+  sweep looked. `scanGcloudLogs` reads them, with the arrow "revoke it,
+  log in again, then delete the log". Google OAuth refresh (`1//0`) and
+  access (`ya29.`) tokens joined the shared format catalog, so the deep
+  scan, transcript redaction and the audit-log masker know them too.
+- *Leftovers.* The service sweeps dead runs' folders at start, before the
+  socket opens. Doctor's wrap section reports a leftover folder and a
+  plaintext store that came back while wrapped.
+- *Remove JitPass.* `uninstall --restore` planned the deleted store files as
+  Gone and lost the login. It now restores one `store` item from the
+  vault's current copy (the latest login), unless a plaintext login is
+  already there.
 
 ## Limits, stated plainly
 

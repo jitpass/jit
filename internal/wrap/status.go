@@ -58,11 +58,11 @@ func CheckTool(home, pathEnv, tool string, entry Entry) ToolStatus {
 	switch {
 	case err != nil:
 		st.Shim = ShimMissing
-		st.Detail = "shim symlink missing, `jit wrap add " + tool + " ...` reinstalls it"
+		st.Detail = "shim symlink missing, " + reinstallCommand(tool, entry) + " reinstalls it"
 	default:
 		if info, statErr := os.Stat(target); statErr != nil || info.Mode()&0o111 == 0 {
 			st.Shim = ShimBroken
-			st.Detail = "shim points at " + target + ", which isn't an executable, jit moved? re-run `jit wrap add " + tool + " ...`"
+			st.Detail = "shim points at " + target + ", which isn't an executable, jit moved? re-run " + reinstallCommand(tool, entry)
 		}
 	}
 
@@ -123,4 +123,18 @@ func ShimDirOnPath(home, pathEnv string) bool {
 func RcHasPathLine(home, shell string) bool {
 	data, err := os.ReadFile(RcFile(home, shell)) // #nosec G304 -- the user's own rc file
 	return err == nil && RcMentionsShimDir(string(data))
+}
+
+// reinstallCommand is the command that puts a wrap's shim back. A catalog
+// tool is wrapped by name (a store family by its store's namesake, which
+// reinstalls every member); only a hand-made wrap needs `jit wrap add`
+// again, whose flags the manifest does not keep.
+func reinstallCommand(tool string, entry Entry) string {
+	if entry.IsStore() {
+		return "`jit wrap " + entry.Store + "`"
+	}
+	if ce, ok := Lookup(tool); ok && (entry.With == "" || entry.With == ce.Grant) {
+		return "`jit wrap " + tool + "`"
+	}
+	return "`jit wrap add " + tool + " ...`"
 }

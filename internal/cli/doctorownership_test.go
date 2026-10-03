@@ -807,3 +807,23 @@ func TestOrphansDroppedWhenAProfileElsewhereUsesThem(t *testing.T) {
 		t.Errorf("unrelated findings must survive, got %+v", got[1])
 	}
 }
+
+// A secret named by a pointer file (clisso's client-secret) or unsealed by
+// a store-wrap (a gcloud login) has no profile between it and its user.
+// Doctor called both orphans, and offered `jit vault orphans --prune` for
+// them; `jit vault orphans` itself never listed them.
+func TestOrphansDroppedWhenAPointerOrStoreWrapUsesThem(t *testing.T) {
+	m := &launchers.Map{
+		Pointers:   []launchers.Launcher{{Kind: launchers.KindPointerFile, VaultPath: "wrap-clisso/acme-client-secret"}},
+		StoreWraps: []launchers.Launcher{{Kind: launchers.KindStoreWrap, Detail: "gcloud", VaultPath: "gcloud-cli/store"}},
+	}
+	in := []checkFinding{
+		{Kind: kindOrphan, Path: "wrap-clisso/acme-client-secret"},
+		{Kind: kindOrphan, Path: "gcloud-cli/store"},
+		{Kind: kindOrphan, Path: "really-unused/KEY"},
+	}
+	got := dropOrphansReferencedElsewhere(in, m)
+	if len(got) != 1 || got[0].Path != "really-unused/KEY" {
+		t.Fatalf("findings = %+v, want only the unused secret", got)
+	}
+}
