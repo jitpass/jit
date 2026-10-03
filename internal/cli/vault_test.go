@@ -1617,3 +1617,26 @@ func TestVaultRmDropsARemovedBackupsIndexRow(t *testing.T) {
 		t.Fatalf("index after rm: %+v, %v", recs, err)
 	}
 }
+
+// A sealed login is marked in the listing and refused by `vault set`.
+func TestVaultSealedLoginsAreMarkedAndNotSettable(t *testing.T) {
+	withFixtureHome(t)
+	root := seedFixtureVault(t, "gcloud-cli/store")
+	_ = root
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "list", "--format", "json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("vault list: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), `"store": "gcloud"`) {
+		t.Fatalf("the sealed store is not marked:\n%s", buf.String())
+	}
+	buf.Reset()
+	rootCmd.SetIn(strings.NewReader("x"))
+	rootCmd.SetArgs([]string{"vault", "set", "aws-sso/cache", "--stdin"})
+	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "is a sealed login (aws-sso)") {
+		t.Fatalf("vault set on a sealed login: %v", err)
+	}
+}

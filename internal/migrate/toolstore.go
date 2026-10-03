@@ -87,6 +87,29 @@ func StoreVaultPath(store string) (string, bool) {
 	return "", false
 }
 
+// SealedStoreName is StoreVaultPath's inverse: the store a vault path holds
+// ("gcloud", "az", "aws-sso"), the same name a store's vault users carry.
+func SealedStoreName(path string) (string, bool) {
+	for _, s := range ToolStores() {
+		if s.VaultPath == path {
+			return s.Name, true
+		}
+	}
+	if path == AWSSSOStorePath {
+		return "aws-sso", true
+	}
+	return "", false
+}
+
+// SealedStoreOwner names the command that takes a sealed store out of the
+// vault, for a refusal to say what to run instead.
+func SealedStoreOwner(name string) string {
+	if name == "aws-sso" {
+		return "`jit aws-sso logout` signs out; `jit migrate undo ~/.aws/config` puts the login back"
+	}
+	return "`jit wrap undo " + name + "` puts the login back"
+}
+
 // StoreSealResult says what Seal did.
 type StoreSealResult struct {
 	// Files are the plaintext files moved into the vault (backed up first).

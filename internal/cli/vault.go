@@ -129,6 +129,10 @@ type vaultSecretJSON struct {
 	// class index beside the vault. Omitted when unknown: vaulted before the
 	// index existed (design/secrets-only-vault.md).
 	Scan string `json:"scan,omitempty"`
+	// Store marks a sealed CLI login ("gcloud", "az", "aws-sso"): a packed
+	// login store the tool unseals per run, not a value to reveal, copy or
+	// replace. The same name a store's vault users carry.
+	Store string `json:"store,omitempty"`
 }
 
 // vaultGetResult is `jit vault get --json`'s object: the decrypted value plus
@@ -1091,6 +1095,11 @@ var vaultSetCmd = &cobra.Command{
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
+		// A sealed CLI login is a packed store the tool reads per run:
+		// pasting a value over it only breaks the tool's sign-in.
+		if store, ok := migrate.SealedStoreName(path); ok {
+			return fmt.Errorf("jit vault set: %s is a sealed login (%s), not a value to set; %s", path, store, migrate.SealedStoreOwner(store))
+		}
 
 		value, err := readSecretValue(cmd, args)
 		if err != nil {
@@ -1441,6 +1450,7 @@ var vaultListCmd = &cobra.Command{
 					UpdatedUnix:     info.UpdatedUnix,
 					Storage:         info.Storage,
 					Scan:            classOf(classes, p),
+					Store:           sealedStoreName(p),
 				})
 			}
 			return writeJSON(cmd.OutOrStdout(), out)
@@ -3141,4 +3151,11 @@ func classOf(c *settings.Classes, path string) string {
 		return ""
 	}
 	return c.Get(path)
+}
+
+// sealedStoreName is migrate.SealedStoreName for a listing row: "" for an
+// ordinary secret.
+func sealedStoreName(path string) string {
+	name, _ := migrate.SealedStoreName(path)
+	return name
 }
