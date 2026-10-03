@@ -364,7 +364,11 @@ func (s ToolStore) store(v *vault.Vault, home string, blob []byte) error {
 	if err := v.SetWithMeta(s.VaultPath, blob, meta); err != nil {
 		return fmt.Errorf("storing %s in the vault: %w", s.Label, err)
 	}
-	return nil
+	// A login's previous versions are logins the tool has since refreshed
+	// away or signed out of: kept, a `jit vault restore` would hand a
+	// signed-out refresh token back. Undo works from backups and the
+	// current copy, never from history.
+	return v.ForgetHistory(s.VaultPath)
 }
 
 // files lists the regular files of dir's secret set, sorted.

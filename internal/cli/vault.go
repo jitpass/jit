@@ -3007,6 +3007,9 @@ func requireFreshUserPresence(v *vault.Vault, reason string) error {
 	if !ok {
 		return fmt.Errorf("internal error: fresh-auth vault has no explicit user-presence challenge")
 	}
+	// Said before blocking, as the service path says it: a command that
+	// printed its plan and then sat silent looked hung (release QA).
+	announceTouchIDWait()
 	if err := presence.RequireUserPresence(reason); err != nil {
 		return err
 	}

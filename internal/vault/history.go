@@ -231,6 +231,18 @@ func (v *Vault) Restore(path string, stamp int64) error {
 	return nil
 }
 
+// ForgetHistory drops every archived previous version of path, keeping the
+// live secret. For a value whose old versions are worth nothing and risk
+// much: a sealed CLI login, whose previous versions are refresh tokens the
+// tool has since rotated away or signed out of, and which a `jit vault
+// restore` would otherwise bring back.
+func (v *Vault) ForgetHistory(path string) error {
+	if _, err := sanitizeSecretPath(v.vaultDir(), path); err != nil {
+		return err
+	}
+	return v.removeHistory(path)
+}
+
 // removeHistory deletes every archived version of path — Remove calls
 // this so `jit vault rm` means GONE: leaving recoverable copies behind a
 // command whose whole point is deletion would betray it.

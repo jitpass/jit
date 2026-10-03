@@ -408,7 +408,7 @@ func TestProfileRmDeletesUnsharedSecretsWithTouchID(t *testing.T) {
 			"deletes the profile and 1 secret nothing else uses:\n"+
 			"  token/JSON_WEB_TOKEN_JWT\n"+
 			"Delete both? [y/N] ",
-		glyphLock+" Touch ID required",
+		glyphLock+" approve the prompt on your Mac",
 		glyphDone+" deleted profile token and 1 secret\n")
 	if h.gestures != 1 || h.reasons[0] != "delete profile token and 1 secret" {
 		t.Errorf("gestures = %d %v, want one naming the profile and count", h.gestures, h.reasons)

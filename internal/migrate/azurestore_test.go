@@ -281,3 +281,27 @@ func TestAzureStoreRestoreCurrentAndRewrap(t *testing.T) {
 		t.Fatalf("restored cache %s", b)
 	}
 }
+
+// A sealed login keeps no history: its previous versions are refresh tokens
+// rotated away or signed out of, and `jit vault restore` must not hand one
+// back (AWS sign-out found it in release QA).
+func TestSealedLoginsKeepNoHistory(t *testing.T) {
+	home := t.TempDir()
+	v := newTestVault(t)
+	for _, blob := range [][]byte{
+		store(t, map[string][]byte{"msal_token_cache.json": msal(t, map[string]string{"dev": "rt-1"})}),
+		store(t, map[string][]byte{}), // signed out
+	} {
+		if err := AzureStore.store(v, home, blob); err != nil {
+			t.Fatal(err)
+		}
+		if err := StoreAWSSSOCache(v, home, blob); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{AzureStorePath, AWSSSOStorePath} {
+		if hv, err := v.HistoryVersions(p); err != nil || len(hv) != 0 {
+			t.Fatalf("%s history: %d versions, %v", p, len(hv), err)
+		}
+	}
+}
