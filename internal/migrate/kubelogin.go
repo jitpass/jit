@@ -276,8 +276,13 @@ func setKubeconfigExecArgs(path string, args map[string][]interface{}) ([]byte, 
 		}
 		content := make([]*yaml.Node, 0, len(args[name.Value]))
 		for _, a := range args[name.Value] {
-			s, _ := a.(string)
-			content = append(content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s})
+			if s, ok := a.(string); ok {
+				content = append(content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s})
+				continue
+			}
+			// An unquoted 300 or true, which kubectl reads as a string:
+			// written back as it was, never blanked (2.4.1 release QA).
+			content = append(content, &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(a)})
 		}
 		seq.Content = content
 		done[name.Value] = true

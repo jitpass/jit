@@ -85,8 +85,8 @@ need once the path is fixed.
   host at login) waits 20 seconds for that approval and then exits with an
   explanation, rather than hanging until the host's own startup timeout
   kills it. The message lands in the host's server log. Run `jit unlock`
-  and start the server again; approving the prompt late also works, since
-  the challenge outlives the launch that asked for it.
+  and start the server again. The prompt closes when that launch exits, so
+  it can't be approved late.
 - **Restart the host to pick up the change.** A running server keeps the
   environment it started with. `jit migrate` says so when it rewrites a
   config.

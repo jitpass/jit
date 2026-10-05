@@ -404,15 +404,15 @@ func (s ToolStore) store(v *vault.Vault, home string, blob []byte) error {
 	if err := v.ForgetHistory(s.VaultPath); err != nil {
 		return err
 	}
-	if err := writeLoginState(s.statePath(v.Root), s.HoldsLogin(blob)); err != nil {
-		return err
-	}
 	if sealstore.Empty(blob) {
 		// Signed out: the seal-day backups hold the login too, and an undo
 		// would write it back to disk (release QA: a signed-out `aws login`
 		// came back live). They go with the sign-out.
-		return dropLoginBackups(v, func(p string) bool { return s.IsStoreFile(home, p) })
+		if err := dropLoginBackups(v, func(p string) bool { return s.IsStoreFile(home, p) }); err != nil {
+			return err
+		}
 	}
+	recordLoginState(s.statePath(v.Root), s.HoldsLogin(blob))
 	return nil
 }
 
@@ -439,14 +439,26 @@ func (s ToolStore) SignedIn(root string) (signedIn, known bool) {
 
 // loginState is the one fact about a sealed login a listing may know
 // without decrypting it: whether it holds a login at all. Not secret.
-// Written beside every write of the sealed login by that write's only
-// writer (ToolStore.store, StoreAWSSSOCache), so the two cannot disagree.
+// Written after every write of the sealed login by that write's only
+// writer (ToolStore.store, StoreAWSSSOCache). A pointer, so a file that
+// parses but says nothing ({} or null) reads as unknown, not signed out.
 type loginState struct {
-	SignedIn bool `json:"signed_in"`
+	SignedIn *bool `json:"signed_in"`
+}
+
+// recordLoginState is best-effort: the file is display metadata, and the
+// login is already sealed when it is written. Failing the seal over it
+// sent the store run down its rescue path and wrote a sealed login back
+// to disk in plaintext (2.4.1 release QA). A file that cannot be written
+// is removed instead, so the listing says unknown rather than stale.
+func recordLoginState(path string, signedIn bool) {
+	if writeLoginState(path, signedIn) != nil {
+		_ = os.Remove(path)
+	}
 }
 
 func writeLoginState(path string, signedIn bool) error {
-	data, err := json.Marshal(loginState{SignedIn: signedIn})
+	data, err := json.Marshal(loginState{SignedIn: &signedIn})
 	if err != nil {
 		return err
 	}
@@ -462,10 +474,10 @@ func readLoginState(path string) (signedIn, known bool) {
 		return false, false
 	}
 	var state loginState
-	if json.Unmarshal(data, &state) != nil {
+	if json.Unmarshal(data, &state) != nil || state.SignedIn == nil {
 		return false, false
 	}
-	return state.SignedIn, true
+	return *state.SignedIn, true
 }
 
 // dropLoginBackups deletes every recorded backup of a file a sealed login is

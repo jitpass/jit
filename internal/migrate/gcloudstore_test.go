@@ -178,3 +178,41 @@ func TestUnsealGcloudStore(t *testing.T) {
 		t.Fatal("unseal wrote over a plaintext store already there")
 	}
 }
+
+// The login-state file is display metadata, written after the login is
+// sealed: a write that fails must not fail the seal (release QA: the store
+// run took the error for a failed seal and put the login back on disk in
+// plaintext). The listing then says unknown, not stale.
+func TestSealGcloudStoreSurvivesAnUnwritableStateFile(t *testing.T) {
+	home := t.TempDir()
+	writeGcloudLogin(t, GcloudConfigDir(home), "1//FIRST")
+	v := newTestVault(t)
+	// A file where the state folder belongs: MkdirAll fails.
+	if err := os.WriteFile(filepath.Join(v.Root, "stores"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GcloudStore.Seal(v, home); err != nil {
+		t.Fatalf("a state-file failure failed the seal: %v", err)
+	}
+	if _, known := GcloudStore.SignedIn(v.Root); known {
+		t.Fatal("state known although it could not be written")
+	}
+}
+
+// A state file that parses but says nothing reads as unknown, never as a
+// recorded sign-out.
+func TestGcloudSignedInEmptyStateIsUnknown(t *testing.T) {
+	v := newTestVault(t)
+	for _, body := range []string{"{}", "null"} {
+		p := GcloudStore.statePath(v.Root)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, known := GcloudStore.SignedIn(v.Root); known {
+			t.Errorf("%s read as a known state", body)
+		}
+	}
+}

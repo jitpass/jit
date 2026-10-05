@@ -271,7 +271,7 @@ func (c *Client) call(req Request) (Response, error) {
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		if c.bounded && errors.Is(err, os.ErrDeadlineExceeded) {
 			return Response{}, fmt.Errorf(
-				"%w within %s: the service is most likely waiting on a Touch ID/consent prompt, and this launch has no terminal for anyone to see it from. Run `jit unlock` in a terminal (or approve the prompt still on screen), then relaunch",
+				"%w within %s: the service is most likely waiting on a Touch ID/consent prompt, and this launch has no terminal for anyone to see it from. Run `jit unlock` in a terminal, then relaunch",
 				ErrPromptUnanswered, c.respTimeout)
 		}
 		return Response{}, fmt.Errorf("reading response: %w", err)

@@ -25,23 +25,51 @@ import (
 // service) must keep their handling, and nothing has changed yet while the
 // prompt is up, so dying there is safe. The signal is re-raised once the
 // line is written, and the process ends as it would have.
+//
+// A signal the process inherited as ignored (nohup's SIGHUP) stays
+// ignored: catching it would turn a signal the user asked jit to ride out
+// into one that kills it. And the watcher is joined before the command
+// goes on, a signal that landed as the wait returned handled first, so an
+// approved command never runs on while its stop is being recorded.
 func awaitApproval(wait func() error) error {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	var watch []os.Signal
+	for _, sig := range []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
+		if !signal.Ignored(sig) {
+			watch = append(watch, sig)
+		}
+	}
+	if len(watch) == 0 {
+		return wait()
+	}
+	sigs := make(chan os.Signal, len(watch))
+	signal.Notify(sigs, watch...)
 	done := make(chan struct{})
-	defer func() {
-		signal.Stop(sigs)
-		close(done)
-	}()
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		select {
 		case sig := <-sigs:
-			recordStoppedInvocation(sig)
-			dieBySignal(sig)
+			stopBySignal(sig)
 		case <-done:
+			// Stop has run, so anything still buffered arrived during
+			// the wait: it wins over carrying on.
+			select {
+			case sig := <-sigs:
+				stopBySignal(sig)
+			default:
+			}
 		}
 	}()
-	return wait()
+	err := wait()
+	signal.Stop(sigs)
+	close(done)
+	<-exited
+	return err
+}
+
+func stopBySignal(sig os.Signal) {
+	recordStoppedInvocation(sig)
+	dieBySignal(sig)
 }
 
 // recordStoppedInvocation writes the line Execute never will.
