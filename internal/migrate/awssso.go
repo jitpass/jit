@@ -263,7 +263,8 @@ func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
 			return err
 		}
 	}
-	return writeLoginState(awsSSOStatePath(v.Root), blobHasAWSSSOToken(blob))
+	recordLoginState(awsSSOStatePath(v.Root), blobHasAWSSSOToken(blob))
+	return nil
 }
 
 func awsSSOStatePath(root string) string { return filepath.Join(root, "aws-sso", "state.json") }

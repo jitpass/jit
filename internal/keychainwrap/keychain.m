@@ -41,7 +41,7 @@ KWResult kw_challenge(const char *reason) {
         LAContext *ctx = [[LAContext alloc] init];
         @synchronized(currentLock()) { kwCurrent = ctx; }
 
-        __block int done = 0;
+        dispatch_semaphore_t replied = dispatch_semaphore_create(0);
         __block BOOL approved = NO;
         __block NSString *errMsg = nil;
 
@@ -52,16 +52,16 @@ KWResult kw_challenge(const char *reason) {
             if (error) {
                 errMsg = [error localizedDescription];
             }
-            done = 1;
+            dispatch_semaphore_signal(replied);
         }];
 
-        // evaluatePolicy's reply runs on an arbitrary queue; block this
-        // thread until it fires by pumping the run loop, since this is a
-        // synchronous CGo call with no async story on the Go side.
-        NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:120];
-        while (!done && [timeout timeIntervalSinceNow] > 0) {
-            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-        }
+        // evaluatePolicy's reply runs on LocalAuthentication's own queue,
+        // never this thread's run loop, so block on the semaphore it
+        // signals: this is a synchronous CGo call with no async story on
+        // the Go side. Pumping the run loop here instead spun a whole core
+        // for as long as the sheet was up, since a run loop with no sources
+        // returns at once (2.4.1 release QA).
+        BOOL done = dispatch_semaphore_wait(replied, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC)) == 0;
 
         @synchronized(currentLock()) {
             if (kwCurrent == ctx) kwCurrent = nil;

@@ -550,7 +550,11 @@ main(){
   command -v "$JIT" >/dev/null 2>&1 || die "jit binary not found: $JIT"
   WORK=$(mktemp -d "${TMPDIR:-/tmp}/jit-e2e.XXXXXX") || die "cannot make work dir"
   RUN_START=$(date +%s)
-  trap 'cleanup' EXIT INT TERM
+  # A stop must stop: a trap that only cleaned up let the run carry on into
+  # the next phase after a SIGTERM (2.4.1 release QA).
+  trap 'cleanup' EXIT
+  trap 'cleanup; exit 130' INT
+  trap 'cleanup; exit 143' TERM
 
   printf "${BLD}jit pre-release live test${RST}  (binary: %s)\n" "$(command -v "$JIT")"
   [ "$OS_CREDS" = 1 ] && PHASES="$PHASES,7"

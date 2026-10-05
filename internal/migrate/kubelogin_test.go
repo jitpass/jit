@@ -199,3 +199,31 @@ func TestApplyKubeloginKeyringKeepsTheRestOfTheFile(t *testing.T) {
 		t.Errorf("keys reordered:\n%s", out)
 	}
 }
+
+// An unquoted number or bool in the args is written back as it was:
+// rebuilding them from the parsed values blanked every non-string (release
+// QA: `--authentication-timeout-sec, 300` became `""` and kubectl broke).
+func TestApplyKubeloginKeyringKeepsNonStringArgs(t *testing.T) {
+	home := t.TempDir()
+	cfg := KubeconfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "apiVersion: v1\nkind: Config\nusers:\n- name: dev\n  user:\n    exec:\n      command: kubectl\n      args: [oidc-login, get-token, --oidc-issuer-url=https://x, --authentication-timeout-sec, 300, --skip-open-browser, true]\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyKubeloginKeyring(newTestVault(t), home, []string{"dev"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfg) // #nosec G304 -- test path
+	out := string(b)
+	for _, want := range []string{"--authentication-timeout-sec, 300,", "--skip-open-browser, true,", "--token-cache-storage=keyring"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `""`) {
+		t.Errorf("an arg was blanked:\n%s", out)
+	}
+}

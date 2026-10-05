@@ -48,10 +48,9 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, MCP s
   The server launched with the session locked and no terminal for anyone to
   see the prompt from, so jit gave up after 20 seconds rather than hang past
   the host's own startup timeout. Run `jit unlock`, then restart the server
-  (usually: restart the editor). Approving the prompt late works too - the
-  challenge outlives the launch that asked for it, so the next start needs
-  no prompt at all. Doing `jit unlock` before opening the editor avoids it
-  entirely.
+  (usually: restart the editor). The prompt closes when the launch that
+  asked for it exits, so it can't be approved late. Doing `jit unlock`
+  before opening the editor avoids it entirely.
 - **An MCP server fails to start and nothing else explains why.** Run
   `jit doctor`: an `[mcp]` finding means the entry jit wrote no longer works
   - the jit binary it names has moved, or its profile is gone. Hosts report
