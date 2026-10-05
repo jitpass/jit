@@ -263,44 +263,15 @@ func StoreAWSSSOCache(v *vault.Vault, home string, blob []byte) error {
 			return err
 		}
 	}
-	return writeAWSSSOState(v.Root, blob)
-}
-
-// awsSSOState is the one fact about the sealed login a listing may know
-// without decrypting it: whether it holds a login at all (a token, not
-// just the client registration a sign-out leaves). Not secret. Written
-// beside every write of the sealed login, StoreAWSSSOCache being the only
-// writer, so the two cannot disagree.
-type awsSSOState struct {
-	SignedIn bool `json:"signed_in"`
+	return writeLoginState(awsSSOStatePath(v.Root), blobHasAWSSSOToken(blob))
 }
 
 func awsSSOStatePath(root string) string { return filepath.Join(root, "aws-sso", "state.json") }
 
-func writeAWSSSOState(root string, blob []byte) error {
-	state := awsSSOState{SignedIn: blobHasAWSSSOToken(blob)}
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(awsSSOStatePath(root)), 0o700); err != nil {
-		return err
-	}
-	return atomicfile.WriteFileMode(awsSSOStatePath(root), data, 0o600)
-}
-
 // AWSSSOSignedIn reports, prompt-free, whether the vault holds an AWS SSO
 // login: known is false when nothing was ever sealed.
 func AWSSSOSignedIn(root string) (signedIn, known bool) {
-	data, err := os.ReadFile(awsSSOStatePath(root)) // #nosec G304 -- jit's own file under its root
-	if err != nil {
-		return false, false
-	}
-	var state awsSSOState
-	if json.Unmarshal(data, &state) != nil {
-		return false, false
-	}
-	return state.SignedIn, true
+	return readLoginState(awsSSOStatePath(root))
 }
 
 // blobHasAWSSSOToken reports whether a sealed cache holds a token file (an

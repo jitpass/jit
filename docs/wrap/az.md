@@ -38,7 +38,8 @@ each run's changes are merged into the vault's copy, so neither loses the
 other's login.
 
 `az login`, `az logout` and `az account clear` work as usual, and their
-result goes straight into the vault. If saving it needs a Touch ID and you
+result goes straight into the vault. Once the last account is signed out,
+`jit wrap list` shows az as signed out. If saving it needs a Touch ID and you
 decline, jit leaves the login in `~/.azure` in plaintext rather than lose
 it, and says so.
 

@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,7 +121,11 @@ func TestWrapGcloudSealsTheStoreAndUndoPutsItBack(t *testing.T) {
 const fakeGcloud = `#!/bin/sh
 case "$1" in
   peek)  cat "$CLOUDSDK_CONFIG/credentials.db" > "$OUT"; cat "$CLOUDSDK_CONFIG/active_config" >> "$OUT" ;;
-  login) printf '1//NEW' > "$CLOUDSDK_CONFIG/credentials.db" ;;
+  login) printf '1//NEW' > "$CLOUDSDK_CONFIG/credentials.db"
+         mkdir -p "$CLOUDSDK_CONFIG/legacy_credentials/new@x.com"
+         printf '1//NEW' > "$CLOUDSDK_CONFIG/legacy_credentials/new@x.com/adc.json" ;;
+  revoke) rm -rf "$CLOUDSDK_CONFIG/legacy_credentials"
+          printf 'SQLite format 3 1//FIRST' > "$CLOUDSDK_CONFIG/credentials.db" ;;
   setting) echo work > "$CLOUDSDK_CONFIG/new_setting" ;;
   where) echo "$CLOUDSDK_CONFIG" > "$OUT" ;;
 esac
@@ -199,6 +204,98 @@ func TestGcloudRunCapturesALogin(t *testing.T) {
 	}
 	if left, _ := sealstore.Gcloud.Plaintext(migrate.GcloudConfigDir(home)); len(left) != 0 {
 		t.Fatalf("a login left plaintext in the settings dir: %q", left)
+	}
+}
+
+// TestGcloudRunRecordsASignOut: a revoke through the wrap leaves a sealed
+// store with no account in it, and the listing must say so rather than
+// "login sealed". The revoked token's bytes stay in credentials.db, as
+// SQLite leaves them, so only the account folders can tell.
+func TestGcloudRunRecordsASignOut(t *testing.T) {
+	_, tool := gcloudRunFixture(t)
+	if got := storeSignedIn("gcloud"); got == nil || !*got {
+		t.Fatalf("after the seal: %s, want signed in", signedInState(got))
+	}
+	if _, stderr := runGcloudRunForTest(t, tool, "revoke"); !strings.Contains(stderr, "gcloud is signed out") {
+		t.Errorf("a revoke announced %q, want the sign-out", stderr)
+	}
+	if got := storeSignedIn("gcloud"); got == nil || *got {
+		t.Fatalf("after a revoke: %s, want signed out", signedInState(got))
+	}
+	runGcloudRunForTest(t, tool, "login")
+	if got := storeSignedIn("gcloud"); got == nil || !*got {
+		t.Fatalf("after a new login: %s, want signed in", signedInState(got))
+	}
+}
+
+func signedInState(b *bool) string {
+	switch {
+	case b == nil:
+		return "unknown"
+	case *b:
+		return "signed in"
+	}
+	return "signed out"
+}
+
+// The app's view of a store-wrap: each wrapped row says whether the
+// sealed store holds a login, and carries the store's own login command
+// (a family member, its namesake's), so a signed-out row can offer to log
+// in through the shim. The text table says "signed out".
+func TestWrapListShowsAStoreSignedOut(t *testing.T) {
+	home := withFixtureHome(t)
+	withTestKeystore(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	putToolOnPath(t, "gcloud")
+	putToolOnPath(t, "bq")
+	plantGcloudLogin(t, home, "1//FIRST")
+	if out, err := execWrap(t, "gcloud"); err != nil {
+		t.Fatalf("jit wrap gcloud: %v\n%s", err, out)
+	}
+	rows := func() map[string]wrapToolJSON {
+		t.Helper()
+		listed, err := execWrap(t, "list", "--format", "json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var res wrapListResult
+		if err := json.Unmarshal([]byte(listed), &res); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]wrapToolJSON{}
+		for _, r := range res.Tools {
+			out[r.Tool] = r
+		}
+		return out
+	}
+	for _, tool := range []string{"gcloud", "bq"} {
+		r := rows()[tool]
+		if r.LoginCommand != "gcloud auth login" || r.StoreSignedIn == nil || !*r.StoreSignedIn {
+			t.Fatalf("%s row: login %q, %s; want gcloud auth login, signed in", tool, r.LoginCommand, signedInState(r.StoreSignedIn))
+		}
+	}
+
+	tool := filepath.Join(t.TempDir(), "gcloud")
+	if err := os.WriteFile(tool, []byte(fakeGcloud), 0o755); err != nil { // #nosec G306 -- a test stub must be executable
+		t.Fatal(err)
+	}
+	runGcloudRunForTest(t, tool, "revoke")
+	if r := rows()["bq"]; r.StoreSignedIn == nil || *r.StoreSignedIn {
+		t.Fatalf("bq row after a revoke: %s, want signed out", signedInState(r.StoreSignedIn))
+	}
+	if out, _ := execWrap(t, "list"); !strings.Contains(out, "signed out") || strings.Contains(out, "login sealed") {
+		t.Fatalf("wrap list after a revoke:\n%s", out)
+	}
+}
+
+func TestStoreSignedInUnknownBeforeAnyWrite(t *testing.T) {
+	withFixtureHome(t)
+	if got := storeSignedIn("gcloud"); got != nil {
+		t.Fatalf("no store ever sealed: %s, want unknown", signedInState(got))
+	}
+	if got := storeSignedIn("nope"); got != nil {
+		t.Fatalf("an unknown store: %s, want unknown", signedInState(got))
 	}
 }
 

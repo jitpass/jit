@@ -186,6 +186,19 @@ func TestGcloudRunE2E(t *testing.T) {
 		}
 	}
 
+	// 7. A revoke of every account signs the store out. gcloud keeps
+	//    credentials.db, revoked tokens' bytes and all; the listing must
+	//    still say signed out.
+	if got := storeSignedIn("gcloud"); got == nil || !*got {
+		t.Fatalf("before the revoke: %s, want signed in", signedInState(got))
+	}
+	if _, stderr := run(gcloud, "auth", "revoke", "--all"); !strings.Contains(stderr, "gcloud is signed out") {
+		t.Fatalf("revoke --all announced %q, want the sign-out", stderr)
+	}
+	if got := storeSignedIn("gcloud"); got == nil || *got {
+		t.Fatalf("after revoke --all: %s, want signed out", signedInState(got))
+	}
+
 	assertNoPlaintext(t, dir)
 	root, _ := vaultRootDir()
 	if entries, _ := os.ReadDir(storeRunBase(root, migrate.GcloudStore)); len(entries) != 0 {

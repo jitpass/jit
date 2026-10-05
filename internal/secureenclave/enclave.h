@@ -44,6 +44,10 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
                  const char *reason, unsigned char **out, int *out_len, int *decrypting);
 
+// se_cancel_open invalidates the context of an se_open in progress, which
+// closes its dialog and fails the open; a no-op when none is.
+void se_cancel_open(void);
+
 // se_list_tags returns the tag of every enclave key in group whose tag
 // starts with prefix, from attributes only (never uses a key, never
 // prompts). *tags is a malloc'd array of *count malloc'd strings.

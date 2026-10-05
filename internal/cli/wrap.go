@@ -666,6 +666,9 @@ var wrapListCmd = &cobra.Command{
 			}
 			if entry.IsStore() {
 				kind, detail = "store", "login sealed"
+				if signedIn := storeSignedIn(entry.Store); signedIn != nil && !*signedIn {
+					detail = "signed out"
+				}
 				if s, ok := migrate.ToolStoreNamed(entry.Store); ok {
 					if found, _ := s.Layout.Plaintext(s.ConfigDir(home)); len(found) > 0 {
 						// The wrap was cancelled before sealing, or a login

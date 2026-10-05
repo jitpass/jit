@@ -110,6 +110,13 @@ func runFixture(t *testing.T, token string) (dir, runDir string, baseline []byte
 	if err := os.WriteFile(filepath.Join(runDir, "credentials.db"), []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	legacy := filepath.Join(runDir, "legacy_credentials", "u@x.com")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "adc.json"), []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	b, err := sealstore.Gcloud.Pack(runDir)
 	if err != nil {
 		t.Fatal(err)
@@ -156,9 +163,11 @@ func TestFailedResealKeepsTheLogin(t *testing.T) {
 	}
 }
 
-func TestSignOutReportsAnEmptyStore(t *testing.T) {
+// A revoke drops the account's legacy folder and leaves credentials.db
+// behind, the revoked token's bytes still in it: signed out all the same.
+func TestSignOutReportsAStoreWithNoAccount(t *testing.T) {
 	dir, runDir, baseline := runFixture(t, "1//OLD")
-	if err := os.Remove(filepath.Join(runDir, "credentials.db")); err != nil {
+	if err := os.RemoveAll(filepath.Join(runDir, "legacy_credentials")); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
